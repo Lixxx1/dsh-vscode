@@ -51,19 +51,21 @@ export class DshRuntime implements vscode.Disposable {
     this.changes.fire(state)
   }
 
-  async start(): Promise<vscode.Uri> {
+  async start(workspaceUri?: vscode.Uri): Promise<vscode.Uri> {
     if (this._state.kind === 'ready') return this._state.localUri
     if (this.pending !== undefined) return this.pending.promise
     if (this.child !== undefined) await this.stop()
 
-    const workspace = vscode.workspace.workspaceFolders?.[0]
+    const workspace = workspaceUri === undefined
+      ? vscode.workspace.workspaceFolders?.[0]?.uri
+      : workspaceUri
     if (workspace === undefined) {
       const error = new Error('Open a folder or workspace before starting DeepSeek Harness.')
       this.publish({ kind: 'failed', message: error.message })
       throw error
     }
 
-    const config = vscode.workspace.getConfiguration('deepseekHarness', workspace.uri)
+    const config = vscode.workspace.getConfiguration('deepseekHarness', workspace)
     const configuredExecutable = config.get<string>('executable', '')
     const args = config.get<string[]>('arguments', ['web', '--host', '127.0.0.1', '--port', '0'])
     const timeoutMs = config.get<number>('startupTimeout', 60_000)
@@ -75,7 +77,7 @@ export class DshRuntime implements vscode.Disposable {
     this.stdoutBuffer = ''
     this.stopping = false
     const renderedCommand = [launch.command, ...launch.args].map(part => JSON.stringify(part)).join(' ')
-    this.output.appendLine(`[runtime] cwd: ${workspace.uri.fsPath}`)
+    this.output.appendLine(`[runtime] cwd: ${workspace.fsPath}`)
     this.output.appendLine(`[runtime] launch: ${renderedCommand}`)
     if (storedApiKey !== undefined) this.output.appendLine('[runtime] DeepSeek credential: VS Code SecretStorage')
     this.publish({
@@ -86,7 +88,7 @@ export class DshRuntime implements vscode.Disposable {
     let child: ChildProcessWithoutNullStreams
     try {
       child = spawn(launch.command, launch.args, {
-        cwd: workspace.uri.fsPath,
+        cwd: workspace.fsPath,
         env: {
           ...process.env,
           NO_COLOR: '1',

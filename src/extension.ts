@@ -5,6 +5,7 @@ import { ConversationProjector, type ConversationMessage, type DshEvent } from '
 import { DEEPSEEK_API_KEY_SECRET, normalizeDeepSeekApiKey } from './credentials.js'
 import {
   DshClient,
+  type CommandDescriptor,
   type DshFrame,
   type ImageMediaType,
   type ModelSelection,
@@ -69,6 +70,18 @@ interface QuestionAnswer {
   custom?: string
 }
 
+interface WorkspacePick extends vscode.QuickPickItem {
+  action?: 'switch' | 'open'
+  uri?: vscode.Uri
+}
+
+interface PermissionPresetItem {
+  value: string
+  label: string
+  description?: string
+  selected: boolean
+}
+
 interface ChatViewState {
   phase: 'loading' | 'ready' | 'error'
   statusText: string
@@ -82,6 +95,8 @@ interface ChatViewState {
   models: ModelItem[]
   approval: ApprovalItem | null
   question: QuestionRequest | null
+  commands: CommandDescriptor[]
+  permissions: PermissionPresetItem[]
 }
 
 function initialState(cwd: string): ChatViewState {
@@ -98,12 +113,32 @@ function initialState(cwd: string): ChatViewState {
     models: [],
     approval: null,
     question: null,
+    commands: [],
+    permissions: [],
   }
 }
 
 function titleOf(summary: SessionSummary): string {
   const value = summary.projections?.values?.title
   return typeof value === 'string' && value.trim() !== '' ? value : 'New conversation'
+}
+
+function permissionPresetsOf(value: unknown): PermissionPresetItem[] {
+  if (typeof value !== 'object' || value === null) return []
+  const select = value as Record<string, unknown>
+  const current = typeof select.currentValue === 'string' ? select.currentValue : ''
+  if (!Array.isArray(select.options)) return []
+  return select.options.flatMap((value): PermissionPresetItem[] => {
+    if (typeof value !== 'object' || value === null) return []
+    const option = value as Record<string, unknown>
+    if (typeof option.value !== 'string' || option.value === 'custom') return []
+    return [{
+      value: option.value,
+      label: typeof option.name === 'string' ? option.name : option.value,
+      ...(typeof option.description === 'string' ? { description: option.description } : {}),
+      selected: option.value === current,
+    }]
+  })
 }
 
 class DshChatController implements vscode.Disposable {
@@ -120,9 +155,13 @@ class DshChatController implements vscode.Disposable {
   constructor(
     private readonly runtime: DshRuntime,
     private readonly output: vscode.OutputChannel,
-    readonly cwd: string,
+    private _cwd: string,
   ) {
-    this._state = initialState(cwd)
+    this._state = initialState(_cwd)
+  }
+
+  get cwd(): string {
+    return this._cwd
   }
 
   get state(): ChatViewState {
@@ -156,9 +195,11 @@ class DshChatController implements vscode.Disposable {
       models: [],
       approval: null,
       question: null,
+      commands: [],
+      permissions: [],
     })
     try {
-      const uri = await this.runtime.start()
+      const uri = await this.runtime.start(this.cwd === '' ? undefined : vscode.Uri.file(this.cwd))
       if (generation !== this.generation) return
       const client = new DshClient(new URL(uri.toString(true)))
       this.client = client
@@ -193,6 +234,19 @@ class DshChatController implements vscode.Disposable {
     await this.start()
   }
 
+  async switchWorkspace(cwd: string): Promise<void> {
+    if (cwd === '' || cwd === this.cwd) return
+    if (this._state.running) throw new Error('Wait for the current DeepSeek task to finish before switching projects.')
+    this._cwd = cwd
+    this.summaries = []
+    this.projector.reset([])
+    this.publish({
+      ...initialState(cwd),
+      statusText: 'Switching DeepSeek Harness to this project…',
+    })
+    await this.restart()
+  }
+
   async newSession(): Promise<void> {
     const client = this.requireClient()
     const reusable = this.summaries.find(summary => summary.blank && summary.cwd === this.cwd)
@@ -208,6 +262,17 @@ class DshChatController implements vscode.Disposable {
   async send(text: string, images: readonly PromptImage[] = []): Promise<void> {
     const normalized = text.trim()
     if ((normalized === '' && images.length === 0) || this._state.sessionId === '') return
+    if (normalized.startsWith('/')) {
+      const token = normalized.split(/\s/, 1)[0] ?? normalized
+      const name = /^\/([a-z0-9-]+)$/.exec(token)?.[1]
+      if (name === undefined || !this._state.commands.some(command => command.name === name)) {
+        throw new Error(`Unknown DeepSeek command: ${token}`)
+      }
+      if (images.length > 0) throw new Error('DeepSeek commands cannot include image attachments.')
+      const execution = await this.requireClient().executeCommand(this._state.sessionId, normalized)
+      if (execution === undefined) throw new Error(`DeepSeek did not recognize ${token}.`)
+      return
+    }
     await this.requireClient().prompt(this._state.sessionId, normalized, images)
   }
 
@@ -311,8 +376,23 @@ class DshChatController implements vscode.Disposable {
       running: summary?.running ?? false,
       approval: null,
       question: null,
+      commands: [],
+      permissions: permissionPresetsOf(summary?.projections?.values?.permissions),
       ...this.modelPatch(models),
     })
+    void this.loadCommands(client, sessionId)
+  }
+
+  private async loadCommands(client: DshClient, sessionId: string): Promise<void> {
+    try {
+      const commands = await client.listCommands(sessionId)
+      if (this.client === client && this._state.sessionId === sessionId) {
+        this.publish({ commands: commands.filter(command => command.name !== 'export') })
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.output.appendLine(`[commands] Discovery unavailable: ${message}`)
+    }
   }
 
   private async loadModels(sessionId: string): Promise<void> {
@@ -415,13 +495,18 @@ class DshChatController implements vscode.Disposable {
       return
     }
 
-    if (frame.channel === 'mux' && type === 'session/projection' && typeof payload.value === 'string') {
+    if (frame.channel === 'mux' && type === 'session/projection') {
       const summary = this.summaries.find(item => item.sessionId === sessionId)
-      if (summary !== undefined && payload.key === 'title') {
-        summary.projections = { values: { ...summary.projections?.values, title: payload.value } }
+      if (summary !== undefined && typeof payload.key === 'string') {
+        summary.projections = { values: { ...summary.projections?.values, [payload.key]: payload.value } }
+      }
+      if (typeof payload.value === 'string' && payload.key === 'title') {
         this.publish({
           sessions: this._state.sessions.map(item => item.id === sessionId ? { ...item, title: payload.value as string } : item),
         })
+      }
+      if (payload.key === 'permissions' && sessionId === this._state.sessionId) {
+        this.publish({ permissions: permissionPresetsOf(payload.value) })
       }
       return
     }
@@ -494,6 +579,44 @@ class DshSurface implements vscode.Disposable {
     await this.publishDraftImages()
   }
 
+  private async chooseWorkspace(): Promise<void> {
+    const current = this.controller.state.cwd
+    const folders = vscode.workspace.workspaceFolders ?? []
+    const items: WorkspacePick[] = [
+      ...folders.map(folder => ({
+        label: `$(folder) ${folder.name}`,
+        ...(folder.uri.fsPath === current ? { description: 'Current project' } : {}),
+        detail: folder.uri.fsPath,
+        uri: folder.uri,
+        action: 'switch' as const,
+      })),
+      { label: '', kind: vscode.QuickPickItemKind.Separator },
+      {
+        label: '$(folder-opened) Open another project…',
+        detail: 'Open a different folder in this VS Code window',
+        action: 'open' as const,
+      },
+    ]
+    const selected = await vscode.window.showQuickPick(items, {
+      title: 'Choose DeepSeek project',
+      placeHolder: 'DeepSeek reads, writes, and runs commands in this project',
+    })
+    if (selected === undefined) return
+    if (selected.action === 'switch' && selected.uri !== undefined) {
+      await this.controller.switchWorkspace(selected.uri.fsPath)
+      return
+    }
+    if (selected.action === 'open') {
+      const opened = await vscode.window.showOpenDialog({
+        title: 'Open a project for DeepSeek Harness',
+        canSelectFiles: false,
+        canSelectFolders: true,
+        canSelectMany: false,
+      })
+      if (opened?.[0] !== undefined) await vscode.commands.executeCommand('vscode.openFolder', opened[0], false)
+    }
+  }
+
   private async publishDraftImages(): Promise<void> {
     await this.webview.postMessage({
       type: 'draft-images',
@@ -517,12 +640,24 @@ class DshSurface implements vscode.Disposable {
           return
         case 'send':
           if (typeof value.text === 'string') {
+            if (value.text.trim() === '/permission danger-full-access') {
+              const confirmed = await vscode.window.showWarningMessage(
+                'Enable Full access?',
+                {
+                  modal: true,
+                  detail: 'Full access reduces confirmation steps and lets the agent perform more actions directly, including sensitive operations, file changes, or external commands. Only use it when you trust the current task.',
+                },
+                'Enable Full Access',
+              )
+              if (confirmed !== 'Enable Full Access') return
+            }
             await this.controller.send(value.text, this.draftImages)
             this.draftImages.length = 0
             await this.publishDraftImages()
           }
           return
         case 'attach': await this.chooseImages(); return
+        case 'choose-workspace': await this.chooseWorkspace(); return
         case 'remove-attachment':
           if (typeof value.id === 'string') {
             const index = this.draftImages.findIndex(image => image.id === value.id)

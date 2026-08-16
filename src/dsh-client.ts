@@ -23,6 +23,21 @@ export interface ModelSelection {
   reasoningEffort?: string
 }
 
+export interface CommandDescriptor {
+  name: string
+  description: string
+  input?: { hint: string }
+}
+
+export interface CommandExecution {
+  commandId: string
+  result: {
+    kind: 'success' | 'error'
+    text?: string
+    sourceEventSeq?: number
+  }
+}
+
 export type ImageMediaType = 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'
 
 export interface PromptImage {
@@ -156,19 +171,27 @@ export class DshClient {
     return this.call('session.selectModel', { sessionId, ...selection })
   }
 
+  listCommands(sessionId: string): Promise<CommandDescriptor[]> {
+    return this.call('commands/list', { args: { agentId: sessionId } }, 10_000)
+  }
+
+  executeCommand(sessionId: string, line: string): Promise<CommandExecution | undefined> {
+    return this.call('commands/execute', { args: { agentId: sessionId, line } }, 300_000)
+  }
+
   dispose(): void {
     this.streamAbort.abort()
     this.frameListeners.clear()
     this.errorListeners.clear()
   }
 
-  private async call<T>(method: string, payload: unknown): Promise<T> {
+  private async call<T>(method: string, payload: unknown, timeoutMs = 30_000): Promise<T> {
     const rpcId = randomUUID()
     const response = await fetch(new URL(`/api/${method}`, this.baseUrl), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ type: 'client-request', rpcId, method, payload }),
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(timeoutMs),
     })
     if (!response.ok) throw new Error(`DSH transport failed: HTTP ${String(response.status)}`)
     const envelope = await response.json() as RpcEnvelope<T>

@@ -1,4 +1,4 @@
-import * as vscode from 'vscode'
+import type * as vscode from 'vscode'
 
 function nonce(): string {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
@@ -72,6 +72,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     .tool-detail { color: var(--vscode-descriptionForeground); font-size: 11px; }
     .tool-body { padding: 0 10px 9px 34px; min-width: 0; overflow: hidden; color: var(--vscode-descriptionForeground); }
     .tool-body pre { color: var(--vscode-foreground); }
+    .command-card { margin: 7px 0 10px; padding: 8px 10px; border: 1px solid var(--vscode-widget-border); border-radius: 8px; background: color-mix(in srgb, var(--vscode-editor-background) 72%, transparent); }
+    .command-card.failed { border-color: var(--vscode-errorForeground); }
+    .command-head { min-width: 0; display: flex; align-items: center; gap: 7px; }
+    .command-name { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-family: var(--vscode-editor-font-family); font-weight: 600; }
+    .command-result { margin: 5px 0 0 25px; color: var(--vscode-descriptionForeground); white-space: pre-wrap; overflow-wrap: anywhere; }
     .diff-path, .result-title { margin: 7px 0 4px; font-weight: 600; color: var(--vscode-foreground); }
     .diff-old { border-left: 2px solid var(--vscode-gitDecoration-deletedResourceForeground); }
     .diff-new { border-left: 2px solid var(--vscode-gitDecoration-addedResourceForeground); }
@@ -97,6 +102,15 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     .custom-answer { width: 100%; margin-top: 7px; padding: 6px 8px; border: 1px solid var(--vscode-input-border, var(--vscode-widget-border)); outline: 0; border-radius: 4px; background: var(--vscode-input-background); }
     .composer-wrap { width: 100%; min-width: 0; padding: 0 10px 10px; overflow: hidden; background: linear-gradient(transparent, var(--vscode-sideBar-background) 18px); }
     .composer { width: 100%; min-width: 0; max-width: 760px; margin: 0 auto; overflow: hidden; border: 1px solid var(--vscode-input-border, var(--vscode-widget-border)); border-radius: 14px; background: var(--vscode-input-background); box-shadow: 0 2px 10px color-mix(in srgb, var(--vscode-widget-shadow) 75%, transparent); }
+    .command-menu { max-height: 210px; padding: 5px; overflow-y: auto; border-bottom: 1px solid var(--vscode-widget-border); }
+    .command-option { width: 100%; min-width: 0; padding: 7px 8px; display: block; border: 0; border-radius: 6px; text-align: left; background: transparent; }
+    .command-option:hover, .command-option.selected { color: var(--vscode-list-activeSelectionForeground); background: var(--vscode-list-activeSelectionBackground); }
+    .command-option-line { min-width: 0; display: flex; align-items: baseline; gap: 7px; }
+    .command-option-name { flex: 0 0 auto; font-family: var(--vscode-editor-font-family); font-weight: 600; }
+    .command-option-hint { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; opacity: .72; }
+    .command-option-current { margin-left: auto; padding: 1px 5px; border-radius: 999px; color: var(--vscode-badge-foreground); background: var(--vscode-badge-background); font-family: var(--vscode-font-family); font-size: 10px; font-weight: 500; }
+    .command-option-description { margin-top: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--vscode-descriptionForeground); font-size: 11px; }
+    .command-option:hover .command-option-description, .command-option.selected .command-option-description { color: inherit; opacity: .82; }
     .attachments { display: flex; flex-wrap: wrap; gap: 5px; padding: 8px 10px 0; }
     .attachment-chip { min-width: 0; max-width: 100%; display: flex; align-items: center; gap: 5px; padding: 3px 5px 3px 8px; border: 1px solid var(--vscode-widget-border); border-radius: 6px; color: var(--vscode-descriptionForeground); background: var(--vscode-editor-background); }
     .attachment-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
@@ -105,7 +119,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     textarea { width: 100%; min-height: 72px; max-height: 220px; resize: none; display: block; padding: 11px 12px 4px; border: 0; outline: 0; background: transparent; color: var(--vscode-input-foreground); }
     textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
     .composer-row { width: 100%; min-width: 0; min-height: 39px; padding: 4px 6px 6px; display: grid; grid-template-columns: 28px minmax(38px, .65fr) minmax(0, 1.25fr) minmax(50px, .65fr) 28px; align-items: center; gap: 5px; }
-    .project { min-width: 0; overflow: hidden; display: flex; align-items: center; gap: 5px; color: var(--vscode-descriptionForeground); }
+    .project { width: 100%; min-width: 0; height: 28px; padding: 0 4px; overflow: hidden; display: flex; align-items: center; gap: 5px; border: 0; border-radius: 6px; color: var(--vscode-descriptionForeground); background: transparent; }
+    .project:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
     .project span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .project svg { width: 15px; height: 15px; flex: 0 0 auto; }
     .model-select, .effort-select { width: 100%; min-width: 0; max-width: 100%; border: 0; outline: 0; color: var(--vscode-descriptionForeground); background: transparent; text-overflow: ellipsis; }
@@ -126,10 +141,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     <footer class="composer-wrap">
       <div class="composer">
         <div id="attachments" class="attachments hidden"></div>
+        <div id="commandMenu" class="command-menu hidden" role="listbox" aria-label="DeepSeek commands"></div>
         <textarea id="prompt" rows="3" placeholder="Ask DeepSeek about this project" aria-label="Message DeepSeek"></textarea>
         <div class="composer-row">
           <button id="attach" class="icon-button" title="Attach image" aria-label="Attach image"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
-          <div class="project" title="Current VS Code workspace"><svg viewBox="0 0 24 24"><path d="M3 7.5h7l2 2h9v9.5H3z"/><path d="M3 7.5V5h7l2 2h5"/></svg><span id="workspace">Workspace</span></div>
+          <button id="project" class="project" title="Choose DeepSeek project" aria-label="Choose DeepSeek project"><svg viewBox="0 0 24 24"><path d="M3 7.5h7l2 2h9v9.5H3z"/><path d="M3 7.5V5h7l2 2h5"/></svg><span id="workspace">Workspace</span></button>
           <select id="models" class="model-select" aria-label="Model"></select>
           <select id="efforts" class="effort-select" aria-label="Reasoning effort"></select>
           <button id="send" class="icon-button send" title="Send (Enter)" aria-label="Send"><svg viewBox="0 0 24 24"><path d="M12 19V5M6.5 10.5 12 5l5.5 5.5"/></svg></button>
@@ -143,13 +159,14 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     const elements = {
       conversation: document.getElementById('conversation'), scroll: document.getElementById('scroll'),
       sessions: document.getElementById('sessions'), newSession: document.getElementById('newSession'),
-      prompt: document.getElementById('prompt'), workspace: document.getElementById('workspace'),
+      prompt: document.getElementById('prompt'), project: document.getElementById('project'), workspace: document.getElementById('workspace'),
       models: document.getElementById('models'), efforts: document.getElementById('efforts'),
       send: document.getElementById('send'), cancel: document.getElementById('cancel'),
-      attach: document.getElementById('attach'), attachments: document.getElementById('attachments'),
+      attach: document.getElementById('attach'), attachments: document.getElementById('attachments'), commandMenu: document.getElementById('commandMenu'),
     };
     let state;
     let draftImages = [];
+    let commandIndex = 0;
 
     function node(tag, className, text) {
       const value = document.createElement(tag);
@@ -297,8 +314,19 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       item.append(summary, renderToolBody(message, callView, resultView));
       return item;
     }
+    function renderCommand(message) {
+      const item = node('div', 'command-card' + (message.failed ? ' failed' : ''));
+      const head = node('div', 'command-head');
+      head.append(node('span', 'tool-icon', message.streaming ? '●' : (message.failed ? '!' : '✓')));
+      head.append(node('span', 'command-name', message.text));
+      head.append(node('span', 'tool-detail', message.detail || ''));
+      item.append(head);
+      if (message.rawResult) item.append(node('div', 'command-result', message.rawResult));
+      return item;
+    }
     function renderMessage(message) {
       if (message.role === 'tool') return renderTool(message);
+      if (message.role === 'command') return renderCommand(message);
       if (message.role === 'notice') return node('div', 'status' + (message.failed ? ' error' : ''), message.text);
       const item = node('article', 'message ' + message.role);
       const head = node('div', 'message-head');
@@ -379,9 +407,70 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       }
       updateSend();
     }
+    function menuCandidates() {
+      if (!state) return [];
+      const raw = elements.prompt.value;
+      if (raw.includes('\\n')) return [];
+      if (raw.toLowerCase().startsWith('/permission ')) {
+        const query = raw.slice('/permission '.length).trim().toLowerCase();
+        if (query.includes(' ')) return [];
+        return (state.permissions || [])
+          .filter(permission => permission.value.toLowerCase().includes(query) || permission.label.toLowerCase().includes(query))
+          .map(permission => ({ kind: 'permission', permission }));
+      }
+      const text = raw.trim();
+      if (!text.startsWith('/') || text.includes(' ')) return [];
+      const query = text.slice(1).toLowerCase();
+      return (state.commands || [])
+        .filter(command => command.name.toLowerCase().includes(query))
+        .map(command => ({ kind: 'command', command }));
+    }
+    function renderCommandMenu() {
+      const candidates = menuCandidates();
+      elements.commandMenu.replaceChildren();
+      if (!candidates.length) { elements.commandMenu.classList.add('hidden'); return; }
+      commandIndex = Math.min(commandIndex, candidates.length - 1);
+      elements.commandMenu.classList.remove('hidden');
+      candidates.forEach((candidate, index) => {
+        const option = node('button', 'command-option' + (index === commandIndex ? ' selected' : ''));
+        option.type = 'button'; option.setAttribute('role', 'option'); option.setAttribute('aria-selected', String(index === commandIndex));
+        const line = node('div', 'command-option-line');
+        if (candidate.kind === 'permission') {
+          const permission = candidate.permission;
+          line.append(node('span', 'command-option-name', permission.label));
+          if (permission.label !== permission.value) line.append(node('span', 'command-option-hint', permission.value));
+          if (permission.selected) line.append(node('span', 'command-option-current', 'Current'));
+          option.append(line, node('div', 'command-option-description', permission.description || 'Use this permission preset'));
+        } else {
+          const command = candidate.command;
+          line.append(node('span', 'command-option-name', '/' + command.name));
+          if (command.input && command.input.hint) line.append(node('span', 'command-option-hint', command.input.hint));
+          option.append(line, node('div', 'command-option-description', command.description));
+        }
+        option.addEventListener('mousedown', event => { event.preventDefault(); pickCandidate(candidate); });
+        elements.commandMenu.append(option);
+      });
+    }
+    function pickCandidate(candidate) {
+      if (candidate.kind === 'permission') {
+        vscode.postMessage({ type: 'send', text: '/permission ' + candidate.permission.value });
+        elements.prompt.value = ''; commandIndex = 0; resetPrompt(); return;
+      }
+      pickCommand(candidate.command);
+    }
+    function pickCommand(command) {
+      if (command.input) {
+        elements.prompt.value = '/' + command.name + ' ';
+        elements.prompt.placeholder = command.input.hint || 'Command arguments';
+        commandIndex = 0; resizePrompt(); renderCommandMenu(); elements.prompt.focus(); return;
+      }
+      vscode.postMessage({ type: 'send', text: '/' + command.name });
+      elements.prompt.value = ''; commandIndex = 0; resetPrompt();
+    }
+    function resetPrompt() { elements.prompt.placeholder = 'Ask DeepSeek about this project'; resizePrompt(); renderCommandMenu(); }
     function render(current) {
       const nearBottom = elements.scroll.scrollHeight - elements.scroll.scrollTop - elements.scroll.clientHeight < 80;
-      state = current; elements.workspace.textContent = current.workspaceName || 'Workspace'; elements.workspace.parentElement.title = current.cwd || 'Current VS Code workspace';
+      state = current; elements.workspace.textContent = current.workspaceName || 'Workspace'; elements.project.title = current.cwd ? 'DeepSeek project: ' + current.cwd : 'Choose DeepSeek project';
       elements.sessions.replaceChildren();
       for (const session of current.sessions || []) { const option = new Option(session.title, session.id, false, session.id === current.sessionId); elements.sessions.append(option); }
       if (!elements.sessions.childElementCount) elements.sessions.append(new Option('New conversation', ''));
@@ -398,9 +487,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
         if (current.question) elements.conversation.append(renderQuestions(current.question));
       }
       const enabled = current.phase === 'ready' && current.routable !== false && Boolean(current.sessionId);
-      elements.prompt.disabled = !enabled; elements.attach.disabled = !enabled; elements.newSession.disabled = current.phase !== 'ready'; elements.sessions.disabled = current.phase !== 'ready';
+      elements.prompt.disabled = !enabled; elements.attach.disabled = !enabled; elements.project.disabled = current.running === true; elements.newSession.disabled = current.phase !== 'ready'; elements.sessions.disabled = current.phase !== 'ready';
       elements.models.disabled = !enabled || !(current.models || []).length; elements.efforts.disabled = !enabled || !elements.efforts.options.length || elements.efforts.value === '';
       elements.send.classList.toggle('hidden', current.running === true); elements.cancel.classList.toggle('hidden', current.running !== true); updateSend();
+      renderCommandMenu();
       if (nearBottom || current.approval || current.question) requestAnimationFrame(() => { elements.scroll.scrollTop = elements.scroll.scrollHeight; });
     }
     function updateSend() { elements.send.disabled = !state || state.phase !== 'ready' || (elements.prompt.value.trim() === '' && draftImages.length === 0); }
@@ -408,11 +498,20 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     function selectionFor(model, reasoningEffort) { return { provider: model.provider, model: model.model, ...(reasoningEffort ? { reasoningEffort } : {}) }; }
     function send() {
       const text = elements.prompt.value.trim(); if ((!text && !draftImages.length) || !state || state.phase !== 'ready') return;
-      vscode.postMessage({ type: 'send', text }); elements.prompt.value = ''; resizePrompt();
+      vscode.postMessage({ type: 'send', text }); elements.prompt.value = ''; commandIndex = 0; resetPrompt();
     }
-    elements.prompt.addEventListener('input', resizePrompt);
-    elements.prompt.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); send(); } });
+    elements.prompt.addEventListener('input', () => { commandIndex = 0; elements.prompt.placeholder = 'Ask DeepSeek about this project'; resizePrompt(); renderCommandMenu(); });
+    elements.prompt.addEventListener('keydown', event => {
+      const candidates = menuCandidates(); const menuOpen = !elements.commandMenu.classList.contains('hidden') && candidates.length > 0;
+      if (menuOpen && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+        event.preventDefault(); commandIndex = (commandIndex + (event.key === 'ArrowDown' ? 1 : candidates.length - 1)) % candidates.length; renderCommandMenu(); return;
+      }
+      if (menuOpen && event.key === 'Escape') { event.preventDefault(); elements.commandMenu.classList.add('hidden'); return; }
+      if (menuOpen && (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey && !event.isComposing))) { event.preventDefault(); pickCandidate(candidates[commandIndex]); return; }
+      if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); send(); }
+    });
     elements.send.addEventListener('click', send); elements.cancel.addEventListener('click', () => vscode.postMessage({ type: 'cancel' })); elements.attach.addEventListener('click', () => vscode.postMessage({ type: 'attach' }));
+    elements.project.addEventListener('click', () => vscode.postMessage({ type: 'choose-workspace' }));
     elements.newSession.addEventListener('click', () => vscode.postMessage({ type: 'new-session' })); elements.sessions.addEventListener('change', () => vscode.postMessage({ type: 'select-session', sessionId: elements.sessions.value }));
     elements.models.addEventListener('change', () => {
       if (!elements.models.value) return; const selected = JSON.parse(elements.models.value); const model = (state.models || []).find(item => item.provider === selected.provider && item.model === selected.model); if (!model) return;

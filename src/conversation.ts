@@ -1,4 +1,4 @@
-export type ConversationRole = 'user' | 'assistant' | 'tool' | 'notice'
+export type ConversationRole = 'user' | 'assistant' | 'tool' | 'command' | 'notice'
 
 export interface ConversationMessage {
   id: string
@@ -137,6 +137,35 @@ export class ConversationProjector {
         ...(current?.rawInput === undefined ? {} : { rawInput: current.rawInput }),
         resultView: toolView(view, 'result'),
         ...(rawResult === '' ? {} : { rawResult }),
+      })
+      return
+    }
+
+    if (event.type === 'command/run') {
+      if (typeof data.commandId !== 'string' || typeof data.name !== 'string') return
+      const id = `command:${data.commandId}`
+      this.set(id, {
+        id,
+        role: 'command',
+        text: `/${data.name}${typeof data.args === 'string' ? data.args : ''}`,
+        detail: 'Running…',
+        streaming: true,
+      })
+      return
+    }
+
+    if (event.type === 'command/done') {
+      if (typeof data.commandId !== 'string') return
+      const id = `command:${data.commandId}`
+      const current = this.byId.get(id)
+      const failed = data.kind === 'error'
+      this.set(id, {
+        id,
+        role: 'command',
+        text: current?.text ?? 'DeepSeek command',
+        detail: failed ? 'Failed' : 'Completed',
+        failed,
+        ...(typeof data.text === 'string' && data.text !== '' ? { rawResult: data.text } : {}),
       })
     }
   }
