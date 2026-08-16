@@ -1,32 +1,13 @@
 import * as vscode from 'vscode'
 
-function escapeHtml(value: string): string {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;')
-}
-
 function nonce(): string {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
   let value = ''
-  for (let index = 0; index < 32; index += 1) {
-    value += alphabet.charAt(Math.floor(Math.random() * alphabet.length))
-  }
+  for (let index = 0; index < 32; index += 1) value += alphabet.charAt(Math.floor(Math.random() * alphabet.length))
   return value
 }
 
-export function loadingHtml(webview: vscode.Webview, detail: string): string {
-  return messageHtml(webview, 'Starting DeepSeek Harness', detail, false)
-}
-
-export function errorHtml(webview: vscode.Webview, message: string): string {
-  return messageHtml(webview, 'DeepSeek Harness could not start', message, true)
-}
-
-function messageHtml(webview: vscode.Webview, title: string, detail: string, retry: boolean): string {
+export function chatHtml(webview: vscode.Webview): string {
   const token = nonce()
   return `<!doctype html>
 <html lang="en">
@@ -35,61 +16,264 @@ function messageHtml(webview: vscode.Webview, title: string, detail: string, ret
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${token}';">
   <style>
-    html, body { height: 100%; margin: 0; }
-    body { display: grid; place-items: center; color: var(--vscode-foreground); background: var(--vscode-sideBar-background); font-family: var(--vscode-font-family); }
-    main { width: min(28rem, calc(100% - 2rem)); text-align: center; }
-    .mark { width: 2.5rem; height: 2.5rem; margin: 0 auto 1rem; border: 2px solid var(--vscode-progressBar-background); border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite; }
-    h2 { margin: 0 0 .65rem; font-size: 1rem; font-weight: 600; }
-    p { margin: 0; color: var(--vscode-descriptionForeground); line-height: 1.45; overflow-wrap: anywhere; }
-    button { margin-top: 1rem; padding: .45rem .8rem; border: 0; border-radius: 2px; color: var(--vscode-button-foreground); background: var(--vscode-button-background); cursor: pointer; }
-    button:hover { background: var(--vscode-button-hoverBackground); }
-    .links { display: flex; justify-content: center; gap: .5rem; }
-    @keyframes spin { to { transform: rotate(360deg); } }
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+    body {
+      color: var(--vscode-foreground);
+      background: var(--vscode-sideBar-background);
+      font: 13px/1.5 var(--vscode-font-family);
+      overflow: hidden;
+    }
+    button, select, textarea { font: inherit; color: inherit; }
+    button { cursor: pointer; }
+    #app { width: 100%; max-width: 100%; height: 100%; min-width: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; }
+    .toolbar {
+      width: 100%; min-width: 0; min-height: 38px; padding: 4px 8px 4px 12px; display: flex; align-items: center; gap: 6px;
+      border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, transparent);
+    }
+    .session-select {
+      min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; font-weight: 600;
+      text-overflow: ellipsis;
+    }
+    .icon-button {
+      width: 28px; height: 28px; min-width: 28px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 5px;
+      background: transparent; color: var(--vscode-icon-foreground);
+    }
+    .icon-button:hover { background: var(--vscode-toolbar-hoverBackground); }
+    .icon-button:focus-visible, select:focus-visible, textarea:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+    svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+    .scroll { width: 100%; min-width: 0; min-height: 0; overflow-x: hidden; overflow-y: auto; scrollbar-color: var(--vscode-scrollbarSlider-background) transparent; }
+    .conversation { width: 100%; min-width: 0; max-width: 720px; margin: 0 auto; padding: 12px 14px 28px; overflow: hidden; }
+    .empty { min-height: 55vh; display: grid; place-content: center; justify-items: center; text-align: center; padding: 28px 10px; }
+    .empty-logo { width: 38px; height: 38px; margin-bottom: 13px; color: var(--vscode-foreground); }
+    .empty-logo svg { width: 38px; height: 38px; stroke-width: 1.35; }
+    .empty h2 { margin: 0 0 7px; font-size: 15px; font-weight: 600; }
+    .empty p { max-width: 270px; margin: 0; color: var(--vscode-descriptionForeground); }
+    .message { width: 100%; min-width: 0; max-width: 100%; padding: 10px 0 14px; overflow: hidden; }
+    .message + .message { border-top: 1px solid var(--vscode-widget-border, transparent); }
+    .message-head { min-width: 0; display: flex; align-items: center; gap: 7px; margin-bottom: 6px; font-size: 12px; font-weight: 600; }
+    .avatar {
+      width: 19px; height: 19px; display: grid; place-items: center; border-radius: 50%;
+      background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); font-size: 10px;
+    }
+    .assistant .avatar { color: var(--vscode-button-foreground); background: var(--vscode-button-background); }
+    .message-body { width: 100%; min-width: 0; max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; font-size: 13px; line-height: 1.62; }
+    .user .message-body { padding: 9px 11px; border-radius: 8px; background: var(--vscode-textBlockQuote-background); }
+    .tool { margin: 5px 0; padding: 7px 9px; border: 1px solid var(--vscode-widget-border); border-radius: 6px; }
+    .tool .message-head { margin: 0; }
+    .tool-detail { margin-left: auto; color: var(--vscode-descriptionForeground); font-weight: 400; }
+    .failed { color: var(--vscode-errorForeground); }
+    .streaming::after { content: ''; display: inline-block; width: 6px; height: 13px; margin-left: 2px; vertical-align: -2px; background: var(--vscode-foreground); animation: blink 1s steps(2) infinite; }
+    @keyframes blink { 50% { opacity: 0; } }
+    .status {
+      margin: 10px 0; padding: 10px; border-radius: 6px; color: var(--vscode-descriptionForeground);
+      background: var(--vscode-textBlockQuote-background); overflow-wrap: anywhere;
+    }
+    .status.error { color: var(--vscode-errorForeground); }
+    .status-actions { display: flex; gap: 7px; margin-top: 9px; }
+    .secondary { padding: 4px 9px; border: 1px solid var(--vscode-button-border, transparent); border-radius: 4px; background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
+    .composer-wrap { width: 100%; min-width: 0; max-width: 100%; padding: 0 10px 10px; overflow: hidden; background: linear-gradient(transparent, var(--vscode-sideBar-background) 18px); }
+    .composer {
+      width: 100%; min-width: 0; max-width: 720px; margin: 0 auto; overflow: hidden; border: 1px solid var(--vscode-input-border, var(--vscode-widget-border));
+      border-radius: 9px; background: var(--vscode-input-background); box-shadow: 0 2px 8px var(--vscode-widget-shadow);
+    }
+    textarea {
+      width: 100%; min-height: 76px; max-height: 220px; resize: none; display: block; padding: 11px 12px 4px;
+      border: 0; outline: 0; background: transparent; color: var(--vscode-input-foreground);
+    }
+    textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
+    .composer-row {
+      width: 100%; min-width: 0; min-height: 39px; padding: 4px 6px 6px 9px;
+      display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 44%) 28px; align-items: center; gap: 7px;
+    }
+    .project { min-width: 0; overflow: hidden; display: flex; align-items: center; gap: 5px; color: var(--vscode-descriptionForeground); }
+    .project span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .project svg { width: 15px; height: 15px; flex: 0 0 auto; }
+    .model-select { width: 100%; min-width: 0; max-width: 100%; border: 0; outline: 0; color: var(--vscode-descriptionForeground); background: transparent; text-overflow: ellipsis; }
+    .composer-row > .send { grid-column: 3; grid-row: 1; }
+    .send { color: var(--vscode-button-foreground); background: var(--vscode-button-background); }
+    .send:hover { background: var(--vscode-button-hoverBackground); }
+    .send:disabled, textarea:disabled { opacity: .55; cursor: default; }
+    .hidden { display: none !important; }
+    @media (max-width: 300px) {
+      .conversation { padding-inline: 10px; }
+      .composer-row { grid-template-columns: 20px minmax(0, 1fr) 28px; }
+      .project span { display: none; }
+    }
   </style>
 </head>
 <body>
-  <main>
-    <div class="mark" aria-hidden="true"></div>
-    <h2>${escapeHtml(title)}</h2>
-    <p>${escapeHtml(detail)}</p>
-    ${retry ? '<div class="links"><button data-command="restart">Restart</button><button data-command="output">Show output</button></div>' : ''}
-  </main>
+  <div id="app">
+    <header class="toolbar">
+      <select id="sessions" class="session-select" aria-label="Project conversations"></select>
+      <button id="newSession" class="icon-button" title="New conversation" aria-label="New conversation">
+        <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+      </button>
+    </header>
+    <main id="scroll" class="scroll">
+      <div id="conversation" class="conversation"></div>
+    </main>
+    <footer class="composer-wrap">
+      <div class="composer">
+        <textarea id="prompt" rows="3" placeholder="Ask DeepSeek about this project" aria-label="Message DeepSeek"></textarea>
+        <div class="composer-row">
+          <div class="project" title="Current VS Code workspace">
+            <svg viewBox="0 0 24 24"><path d="M3 7.5h7l2 2h9v9.5H3z"/><path d="M3 7.5V5h7l2 2h5"/></svg>
+            <span id="workspace">Workspace</span>
+          </div>
+          <select id="models" class="model-select" aria-label="Model"></select>
+          <button id="send" class="icon-button send" title="Send (Enter)" aria-label="Send">
+            <svg viewBox="0 0 24 24"><path d="M12 19V5M6.5 10.5 12 5l5.5 5.5"/></svg>
+          </button>
+          <button id="cancel" class="icon-button send hidden" title="Stop" aria-label="Stop">
+            <svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1"/></svg>
+          </button>
+        </div>
+      </div>
+    </footer>
+  </div>
   <script nonce="${token}">
     const vscode = acquireVsCodeApi();
-    document.querySelectorAll('[data-command]').forEach((button) => {
-      button.addEventListener('click', () => vscode.postMessage({ type: button.dataset.command }));
-    });
-  </script>
-</body>
-</html>`
-}
+    const elements = {
+      conversation: document.getElementById('conversation'),
+      scroll: document.getElementById('scroll'),
+      sessions: document.getElementById('sessions'),
+      newSession: document.getElementById('newSession'),
+      prompt: document.getElementById('prompt'),
+      workspace: document.getElementById('workspace'),
+      models: document.getElementById('models'),
+      send: document.getElementById('send'),
+      cancel: document.getElementById('cancel'),
+    };
+    let state;
 
-export function appHtml(webview: vscode.Webview, uri: vscode.Uri): string {
-  const token = nonce()
-  const source = escapeHtml(uri.toString(true))
-  const origin = escapeHtml(new URL(uri.toString(true)).origin)
-  return `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; frame-src ${origin}; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${token}';">
-  <style>
-    html, body, iframe { width: 100%; height: 100%; margin: 0; border: 0; overflow: hidden; background: var(--vscode-sideBar-background); }
-    #loading { position: fixed; inset: 0; display: grid; place-items: center; color: var(--vscode-descriptionForeground); background: var(--vscode-sideBar-background); font: 13px var(--vscode-font-family); z-index: 1; }
-    body.loaded #loading { display: none; }
-  </style>
-</head>
-<body>
-  <div id="loading">Connecting to DeepSeek Harness…</div>
-  <iframe
-    title="DeepSeek Harness"
-    src="${source}"
-    sandbox="allow-same-origin allow-scripts allow-forms allow-downloads allow-popups allow-modals"
-    allow="clipboard-read; clipboard-write"
-  ></iframe>
-  <script nonce="${token}">
-    document.querySelector('iframe').addEventListener('load', () => document.body.classList.add('loaded'));
+    function node(tag, className, text) {
+      const value = document.createElement(tag);
+      if (className) value.className = className;
+      if (text !== undefined) value.textContent = text;
+      return value;
+    }
+
+    function renderMessage(message) {
+      if (message.role === 'tool') {
+        const item = node('article', 'message tool' + (message.failed ? ' failed' : ''));
+        const head = node('div', 'message-head');
+        head.append(node('span', 'avatar', '›'), node('span', '', message.text));
+        head.append(node('span', 'tool-detail', message.detail || ''));
+        item.append(head);
+        return item;
+      }
+      if (message.role === 'notice') return node('div', 'status' + (message.failed ? ' error' : ''), message.text);
+      const item = node('article', 'message ' + message.role);
+      const head = node('div', 'message-head');
+      head.append(node('span', 'avatar', message.role === 'user' ? 'Y' : 'D'));
+      head.append(node('span', '', message.role === 'user' ? 'You' : 'DeepSeek'));
+      const body = node('div', 'message-body' + (message.streaming ? ' streaming' : ''), message.text);
+      item.append(head, body);
+      return item;
+    }
+
+    function renderStatus(current) {
+      const box = node('div', 'status' + (current.phase === 'error' ? ' error' : ''), current.statusText || 'Starting DeepSeek Harness…');
+      if (current.phase === 'error') {
+        const actions = node('div', 'status-actions');
+        const retry = node('button', 'secondary', 'Restart');
+        const output = node('button', 'secondary', 'Show output');
+        retry.addEventListener('click', () => vscode.postMessage({ type: 'restart' }));
+        output.addEventListener('click', () => vscode.postMessage({ type: 'output' }));
+        actions.append(retry, output);
+        box.append(actions);
+      }
+      return box;
+    }
+
+    function renderEmpty(current) {
+      const empty = node('div', 'empty');
+      const logo = node('div', 'empty-logo');
+      logo.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 15.5c1.8 2.8 5.2 4.4 8.6 3.4 4.1-1.2 6.2-5.7 4.4-9.4-.7 1.8-2.4 3.1-4.3 3.3.2-3-1.8-5.8-4.8-6.5.7 1.3.8 2.8.3 4.2-1.2-.8-2.8-1-4.2-.5.8.8 1.3 1.8 1.4 2.9-1 .5-1.6 1.5-1.4 2.6Z"/><path d="M16.8 7.3c1.3-.1 2.5-.8 3.2-1.9-.1 1.8-1.1 3.5-2.7 4.4"/></svg>';
+      empty.append(logo, node('h2', '', 'Build with DeepSeek'));
+      empty.append(node('p', '', 'Ask questions, explore code, and make changes in ' + current.workspaceName + '.'));
+      return empty;
+    }
+
+    function render(current) {
+      state = current;
+      elements.workspace.textContent = current.workspaceName || 'Workspace';
+      elements.workspace.parentElement.title = current.cwd || 'Current VS Code workspace';
+
+      elements.sessions.replaceChildren();
+      for (const session of current.sessions || []) {
+        const option = document.createElement('option');
+        option.value = session.id;
+        option.textContent = session.title;
+        option.selected = session.id === current.sessionId;
+        elements.sessions.append(option);
+      }
+      if (!elements.sessions.childElementCount) elements.sessions.append(new Option('New conversation', ''));
+
+      elements.models.replaceChildren();
+      for (const model of current.models || []) {
+        const option = document.createElement('option');
+        option.value = JSON.stringify({ provider: model.provider, model: model.model, reasoningEffort: model.reasoningEffort });
+        option.textContent = model.label;
+        option.selected = model.selected === true;
+        elements.models.append(option);
+      }
+      if (!elements.models.childElementCount) elements.models.append(new Option(current.modelLabel || 'Default model', ''));
+
+      elements.conversation.replaceChildren();
+      if (current.phase !== 'ready') {
+        elements.conversation.append(renderStatus(current));
+      } else if (!current.messages || current.messages.length === 0) {
+        elements.conversation.append(renderEmpty(current));
+      } else {
+        for (const message of current.messages) elements.conversation.append(renderMessage(message));
+      }
+
+      const enabled = current.phase === 'ready' && current.routable !== false && Boolean(current.sessionId);
+      elements.prompt.disabled = !enabled;
+      elements.send.disabled = !enabled || elements.prompt.value.trim() === '';
+      elements.newSession.disabled = current.phase !== 'ready';
+      elements.sessions.disabled = current.phase !== 'ready';
+      elements.models.disabled = !enabled || (current.models || []).length === 0;
+      elements.send.classList.toggle('hidden', current.running === true);
+      elements.cancel.classList.toggle('hidden', current.running !== true);
+      requestAnimationFrame(() => { elements.scroll.scrollTop = elements.scroll.scrollHeight; });
+    }
+
+    function resizePrompt() {
+      elements.prompt.style.height = 'auto';
+      elements.prompt.style.height = Math.min(elements.prompt.scrollHeight, 220) + 'px';
+      elements.send.disabled = !state || state.phase !== 'ready' || elements.prompt.value.trim() === '';
+    }
+
+    function send() {
+      const text = elements.prompt.value.trim();
+      if (!text || !state || state.phase !== 'ready') return;
+      vscode.postMessage({ type: 'send', text });
+      elements.prompt.value = '';
+      resizePrompt();
+    }
+
+    elements.prompt.addEventListener('input', resizePrompt);
+    elements.prompt.addEventListener('keydown', event => {
+      if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+        event.preventDefault();
+        send();
+      }
+    });
+    elements.send.addEventListener('click', send);
+    elements.cancel.addEventListener('click', () => vscode.postMessage({ type: 'cancel' }));
+    elements.newSession.addEventListener('click', () => vscode.postMessage({ type: 'new-session' }));
+    elements.sessions.addEventListener('change', () => vscode.postMessage({ type: 'select-session', sessionId: elements.sessions.value }));
+    elements.models.addEventListener('change', () => {
+      if (elements.models.value) vscode.postMessage({ type: 'select-model', selection: JSON.parse(elements.models.value) });
+    });
+    window.addEventListener('message', event => {
+      if (event.data?.type === 'state') render(event.data.state);
+    });
+    vscode.postMessage({ type: 'ready' });
   </script>
 </body>
 </html>`

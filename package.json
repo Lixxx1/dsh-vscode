@@ -1,8 +1,8 @@
 {
   "name": "dsh-vscode",
   "displayName": "DeepSeek Harness",
-  "description": "Run the official DeepSeek Harness Cordis client in a VS Code sidebar.",
-  "version": "0.1.1",
+  "description": "A project-aware VS Code chat sidebar powered by the official DeepSeek Harness runtime.",
+  "version": "0.0.0",
   "private": true,
   "publisher": "lixxx1",
   "license": "MIT",

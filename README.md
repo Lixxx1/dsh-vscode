@@ -15,9 +15,9 @@
 
 # dsh-vscode
 
-A VS Code sidebar for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). It starts the real official `dsh web` Cordis profile as a child process and hosts the official DSH client inside VS Code.
+A project-aware VS Code chat sidebar for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). It renders its own Copilot-style interface and uses the real official `dsh web` Cordis profile as a local backend process.
 
-There is no mock runtime, copied agent loop, or parallel session protocol. Sessions, streaming, tool cards, approvals, user questions, model selection, persistence, and permission policy remain owned by DeepSeek Harness.
+There is no mock runtime, copied agent loop, or parallel session protocol. Sessions, streaming, tools, models, persistence, and permission policy remain owned by DeepSeek Harness; the extension consumes its existing HTTP/WebSocket API.
 
 > [!IMPORTANT]
 > This project is an early community extension and is not an official DeepSeek product. DeepSeek Harness is under active development, so compatible DSH versions and integration details may change.
@@ -26,11 +26,12 @@ There is no mock runtime, copied agent loop, or parallel session protocol. Sessi
 
 | Capability | Behavior |
 |---|---|
-| Activity Bar chat | Opens the official responsive DSH client in a VS Code sidebar |
+| Activity Bar chat | Opens a compact, VS Code-native-feeling chat surface with no nested app navigation |
 | Real DSH runtime | Starts `dsh web --host 127.0.0.1 --port 0`; no simulated backend |
-| Shared surfaces | Sidebar, editor tab, and browser reuse one child process |
-| Official interactions | Tool presentation, approvals, questions, models, queues, and session replay come from DSH |
-| Workspace ownership | DSH starts with the first VS Code workspace folder as its working directory |
+| Project sessions | Lists and creates only sessions whose `cwd` is the current VS Code workspace |
+| Real protocol | Loads history and models over official RPC and receives live events over official WebSockets |
+| Shared surfaces | Sidebar and editor tab reuse one child process and one project conversation state |
+| Workspace ownership | DSH starts with the first VS Code workspace folder as its working directory; new sessions use that exact `cwd` |
 | Lifecycle | Bounded startup, runtime output, restart, SIGTERM shutdown, and final forced termination |
 | Remote support | Uses `vscode.env.asExternalUri` for Remote SSH, Dev Containers, and port forwarding |
 
@@ -40,15 +41,16 @@ There is no mock runtime, copied agent loop, or parallel session protocol. Sessi
 VS Code Extension Host
   ├─ starts: dsh web --host 127.0.0.1 --port 0
   ├─ reads the official "dsh web: http://127.0.0.1:<port>" announcement
-  └─ embeds the resolved URL in a trusted-workspace Webview
+  ├─ sends session/model/prompt RPC over loopback HTTP
+  └─ consumes session and host events over loopback WebSockets
 
 VS Code Webview
-  └─ official DSH Web client
-       └─ API Proxy HTTP/WebSocket carrier
-            └─ Cordis services → Agents → sessions/tools/approval/persistence
+  └─ dsh-vscode project chat UI
+       └─ postMessage boundary to the Extension Host
+            └─ official DSH API → Cordis services → Agent/session/tools/persistence
 ```
 
-The extension is a process and presentation adapter. It does not interpret model events or make permission decisions. See [Architecture](docs/architecture.md) for the ownership and security boundaries.
+The extension is a process and presentation adapter. It projects official session events into chat rows, but does not run the agent or make permission decisions. See [Architecture](docs/architecture.md) for the ownership and security boundaries.
 
 ## Prerequisites
 
@@ -98,9 +100,11 @@ If a GUI-launched VS Code cannot see your shell-installed `dsh`, set an absolute
 }
 ```
 
-### API key input in the sidebar
+### Pasting and API keys
 
-VS Code routes editing shortcuts to the outer Webview, so `Cmd/Ctrl+V` cannot reach password fields inside the nested official DSH iframe. Select the key icon in the view title, or run **DeepSeek Harness: Configure API Key** from the Command Palette. The native password prompt supports paste, stores the value in VS Code SecretStorage, and exposes it only as `DEEPSEEK_API_KEY` to the official DSH child process. Use **DeepSeek Harness: Clear Stored API Key** to remove it.
+The custom composer is a normal Webview `textarea`, so `Cmd/Ctrl+V` works directly without a clipboard bridge or custom keybinding.
+
+The key icon and **DeepSeek Harness: Configure API Key** command use a native VS Code password input that supports paste. The value is stored in VS Code SecretStorage and exposed only as `DEEPSEEK_API_KEY` to the official DSH child process. Use **DeepSeek Harness: Clear Stored API Key** to remove an extension-managed key.
 
 ## Commands
 
@@ -121,7 +125,7 @@ corepack pnpm run build
 corepack pnpm run package
 ```
 
-The tests cover launch resolution and the exact official loopback URL announcement. Product code contains no mock DSH mode. A real no-prompt smoke check should start the official Web profile, request `/`, and verify graceful shutdown; sending a model prompt belongs to credentialed integration testing.
+The tests cover launch resolution, credentials, event-to-message projection, and the exact official loopback URL announcement. Product code contains no mock DSH mode. A real no-prompt smoke check starts the official profile and loads an existing workspace session; sending a model prompt belongs to credentialed integration testing.
 
 See [Contributing](CONTRIBUTING.md) before submitting a change.
 
@@ -129,15 +133,16 @@ See [Contributing](CONTRIBUTING.md) before submitting a change.
 
 - The extension is disabled in untrusted workspaces because DSH can run commands and edit files.
 - The default server binds only to `127.0.0.1` on an OS-assigned port.
-- Only the exact official loopback URL announcement is accepted for embedding.
-- Credentials are inherited by the DSH child process; the extension does not read or forward credential values through Webview messages.
+- Only the exact official loopback URL announcement is accepted as the backend address.
+- Credentials come from the inherited environment or VS Code SecretStorage and are passed only to the DSH child process; they are never sent to the chat Webview.
 - Sandbox and approval behavior come from the selected official DSH profile. Review that profile before working with sensitive repositories.
 
 Please report vulnerabilities according to [SECURITY.md](SECURITY.md).
 
 ## Known limitations
 
-- The first version embeds the official responsive Web client rather than providing VS Code-native message renderers.
+- Approval prompts, user-question forms, rich tool presenters, attachments, and older-history pagination are not rendered in the first demo yet.
+- The first demo uses a safe plain-text conversation renderer rather than Markdown and rich media.
 - One Extension Host currently follows the first workspace folder in a multi-root workspace.
 - DSH must be installed separately and available to the Extension Host.
 - Marketplace publishing and signed releases are not configured yet.

@@ -6,7 +6,7 @@ import { parseDshWebUrl, resolveLaunch } from './launch.js'
 export type RuntimeState =
   | { kind: 'stopped' }
   | { kind: 'starting'; detail: string }
-  | { kind: 'ready'; localUri: vscode.Uri; externalUri: vscode.Uri }
+  | { kind: 'ready'; localUri: vscode.Uri }
   | { kind: 'failed'; message: string }
 
 interface PendingStart {
@@ -52,7 +52,7 @@ export class DshRuntime implements vscode.Disposable {
   }
 
   async start(): Promise<vscode.Uri> {
-    if (this._state.kind === 'ready') return this._state.externalUri
+    if (this._state.kind === 'ready') return this._state.localUri
     if (this.pending !== undefined) return this.pending.promise
     if (this.child !== undefined) await this.stop()
 
@@ -151,17 +151,11 @@ export class DshRuntime implements vscode.Disposable {
     const url = parseDshWebUrl(line)
     if (url === undefined) return
     const localUri = vscode.Uri.parse(url)
-    void vscode.env.asExternalUri(localUri).then((externalUri) => {
-      const pending = this.pending
-      if (pending === undefined) return
-      this.pending = undefined
-      this.clearStartupTimer()
-      this.publish({ kind: 'ready', localUri, externalUri })
-      pending.resolve(externalUri)
-    }, (error: unknown) => {
-      this.failStart(error instanceof Error ? error : new Error(String(error)))
-      void this.stop()
-    })
+    const pending = this.pending
+    this.pending = undefined
+    this.clearStartupTimer()
+    this.publish({ kind: 'ready', localUri })
+    pending.resolve(localUri)
   }
 
   private failStart(error: Error): void {
