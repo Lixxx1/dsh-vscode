@@ -23,6 +23,20 @@ export interface ModelSelection {
   reasoningEffort?: string
 }
 
+export type ImageMediaType = 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'
+
+export interface PromptImage {
+  type: 'image'
+  mediaType: ImageMediaType
+  data: string
+  name?: string
+}
+
+export interface RpcReceipt {
+  accepted: boolean
+  reason?: 'not-pending' | 'bad-response'
+}
+
 export interface ModelOption extends ModelSelection {
   label: string
 }
@@ -97,13 +111,41 @@ export class DshClient {
     return this.call('session.models', { sessionId })
   }
 
-  prompt(sessionId: string, text: string): Promise<{ accepted: true }> {
+  prompt(sessionId: string, text: string, images: readonly PromptImage[] = []): Promise<{ accepted: true }> {
+    const content: Array<{ type: 'text'; text: string } | PromptImage> = images.map(image => ({
+      type: 'image',
+      mediaType: image.mediaType,
+      data: image.data,
+      ...(image.name === undefined ? {} : { name: image.name }),
+    }))
+    if (text !== '') content.push({ type: 'text', text })
     return this.call('session.prompt', {
       sessionId,
       mode: 'queue',
-      content: [{ type: 'text', text }],
+      content,
       clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     })
+  }
+
+  async respond(rpcId: string, value: unknown): Promise<RpcReceipt> {
+    const response = await fetch(new URL('/api/respond', this.baseUrl), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        type: 'client-response',
+        rpcId,
+        result: { ok: true, value },
+      }),
+      signal: AbortSignal.timeout(30_000),
+    })
+    if (!response.ok) throw new Error(`DSH response transport failed: HTTP ${String(response.status)}`)
+    const receipt = await response.json() as RpcReceipt
+    if (receipt.accepted !== true) {
+      throw new Error(receipt.reason === 'not-pending'
+        ? 'This request has already been answered.'
+        : 'DeepSeek Harness rejected the response.')
+    }
+    return receipt
   }
 
   cancel(sessionId: string): Promise<{ accepted: true }> {

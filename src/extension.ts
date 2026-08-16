@@ -1,8 +1,17 @@
+import { randomUUID } from 'node:crypto'
 import * as path from 'node:path'
 import * as vscode from 'vscode'
 import { ConversationProjector, type ConversationMessage, type DshEvent } from './conversation.js'
 import { DEEPSEEK_API_KEY_SECRET, normalizeDeepSeekApiKey } from './credentials.js'
-import { DshClient, type DshFrame, type ModelSelection, type SessionModels, type SessionSummary } from './dsh-client.js'
+import {
+  DshClient,
+  type DshFrame,
+  type ImageMediaType,
+  type ModelSelection,
+  type PromptImage,
+  type SessionModels,
+  type SessionSummary,
+} from './dsh-client.js'
 import { DshRuntime, type RuntimeState } from './runtime.js'
 import { chatHtml } from './webview.js'
 
@@ -28,6 +37,38 @@ interface ModelItem {
   defaultReasoningEffort?: string
 }
 
+interface ApprovalItem {
+  rpcId: string
+  approvalId: string
+  toolName: string
+  reason?: string
+}
+
+interface QuestionOption {
+  label: string
+  description?: string
+}
+
+interface QuestionItem {
+  id: string
+  question: string
+  detail?: string
+  header?: string
+  options: QuestionOption[]
+  multiSelect: boolean
+}
+
+interface QuestionRequest {
+  rpcId: string
+  questions: QuestionItem[]
+}
+
+interface QuestionAnswer {
+  id: string
+  selected: string[]
+  custom?: string
+}
+
 interface ChatViewState {
   phase: 'loading' | 'ready' | 'error'
   statusText: string
@@ -39,6 +80,8 @@ interface ChatViewState {
   running: boolean
   routable: boolean
   models: ModelItem[]
+  approval: ApprovalItem | null
+  question: QuestionRequest | null
 }
 
 function initialState(cwd: string): ChatViewState {
@@ -53,6 +96,8 @@ function initialState(cwd: string): ChatViewState {
     running: false,
     routable: true,
     models: [],
+    approval: null,
+    question: null,
   }
 }
 
@@ -109,6 +154,8 @@ class DshChatController implements vscode.Disposable {
       sessionId: '',
       running: false,
       models: [],
+      approval: null,
+      question: null,
     })
     try {
       const uri = await this.runtime.start()
@@ -116,7 +163,13 @@ class DshChatController implements vscode.Disposable {
       const client = new DshClient(new URL(uri.toString(true)))
       this.client = client
       this.clientDisposables.push(
-        client.onFrame(frame => { this.acceptFrame(frame) }),
+        client.onFrame(frame => {
+          const type = frame.payload.type
+          if (typeof type === 'string' && (type.startsWith('approval/') || type.startsWith('question/'))) {
+            this.output.appendLine(`[protocol] ${type} for ${String(frame.payload.sessionId ?? 'unknown session')}`)
+          }
+          this.acceptFrame(frame)
+        }),
         client.onError(error => {
           this.output.appendLine(`[protocol] ${error.message}`)
           this.publish({ phase: 'error', statusText: `Lost the DSH event stream: ${error.message}` })
@@ -152,10 +205,10 @@ class DshChatController implements vscode.Disposable {
     await this.loadSession(sessionId)
   }
 
-  async send(text: string): Promise<void> {
+  async send(text: string, images: readonly PromptImage[] = []): Promise<void> {
     const normalized = text.trim()
-    if (normalized === '' || this._state.sessionId === '') return
-    await this.requireClient().prompt(this._state.sessionId, normalized)
+    if ((normalized === '' && images.length === 0) || this._state.sessionId === '') return
+    await this.requireClient().prompt(this._state.sessionId, normalized, images)
   }
 
   async cancel(): Promise<void> {
@@ -167,6 +220,31 @@ class DshChatController implements vscode.Disposable {
     if (this._state.sessionId === '') return
     await this.requireClient().selectModel(this._state.sessionId, selection)
     await this.loadModels(this._state.sessionId)
+  }
+
+  async answerApproval(rpcId: string, approvalId: string, outcome: 'allowed-once' | 'rejected'): Promise<void> {
+    if (this._state.sessionId === '') return
+    await this.requireClient().respond(rpcId, {
+      sessionId: this._state.sessionId,
+      approvalId,
+      outcome,
+    })
+    if (this._state.approval?.rpcId === rpcId) this.publish({ approval: null })
+  }
+
+  async answerQuestions(rpcId: string, answers: readonly QuestionAnswer[]): Promise<void> {
+    if (this._state.sessionId === '') return
+    const pending = this._state.question
+    if (pending?.rpcId !== rpcId) throw new Error('This question is no longer pending.')
+    const expected = new Set(pending.questions.map(question => question.id))
+    if (answers.length !== expected.size || answers.some(answer => !expected.has(answer.id))) {
+      throw new Error('Every DeepSeek question needs an answer.')
+    }
+    await this.requireClient().respond(rpcId, {
+      sessionId: this._state.sessionId,
+      answer: { answers },
+    })
+    if (this._state.question?.rpcId === rpcId) this.publish({ question: null })
   }
 
   report(error: unknown): void {
@@ -223,7 +301,7 @@ class DshChatController implements vscode.Disposable {
       client.models(sessionId),
     ])
     if (this.client !== client || this._state.sessionId !== sessionId) return
-    this.projector.reset(events.map(entry => entry.event))
+    this.projector.reset(events)
     const summary = this.summaries.find(item => item.sessionId === sessionId)
     this.publish({
       phase: 'ready',
@@ -231,6 +309,8 @@ class DshChatController implements vscode.Disposable {
       sessionId,
       messages: this.projector.messages(),
       running: summary?.running ?? false,
+      approval: null,
+      question: null,
       ...this.modelPatch(models),
     })
   }
@@ -276,9 +356,62 @@ class DshChatController implements vscode.Disposable {
     if (frame.channel === 'mux' && type === 'session/event' && sessionId === this._state.sessionId) {
       const event = payload.event
       if (typeof event === 'object' && event !== null) {
-        this.projector.apply(event as DshEvent)
+        this.projector.apply(event as DshEvent, payload.view)
         this.publish({ messages: this.projector.messages() })
       }
+      return
+    }
+
+    if (frame.channel === 'mux' && type === 'approval/requested' && sessionId === this._state.sessionId) {
+      if (typeof payload.approvalId !== 'string' || typeof payload.toolName !== 'string') return
+      this.publish({
+        approval: {
+          rpcId: frame.rpcId,
+          approvalId: payload.approvalId,
+          toolName: payload.toolName,
+          ...(typeof payload.reason === 'string' ? { reason: payload.reason } : {}),
+        },
+      })
+      return
+    }
+
+    if (frame.channel === 'mux' && type === 'approval/resolved' && sessionId === this._state.sessionId) {
+      if (this._state.approval?.approvalId === payload.approvalId) this.publish({ approval: null })
+      return
+    }
+
+    if (frame.channel === 'mux' && type === 'question/requested' && sessionId === this._state.sessionId) {
+      if (!Array.isArray(payload.questions)) return
+      const questions = payload.questions.flatMap((value): QuestionItem[] => {
+        if (typeof value !== 'object' || value === null) return []
+        const item = value as Record<string, unknown>
+        if (typeof item.id !== 'string' || typeof item.question !== 'string') return []
+        const options = Array.isArray(item.options)
+          ? item.options.flatMap((option): QuestionOption[] => {
+            if (typeof option !== 'object' || option === null) return []
+            const candidate = option as Record<string, unknown>
+            if (typeof candidate.label !== 'string') return []
+            return [{
+              label: candidate.label,
+              ...(typeof candidate.description === 'string' ? { description: candidate.description } : {}),
+            }]
+          })
+          : []
+        return [{
+          id: item.id,
+          question: item.question,
+          ...(typeof item.detail === 'string' ? { detail: item.detail } : {}),
+          ...(typeof item.header === 'string' ? { header: item.header } : {}),
+          options,
+          multiSelect: item.multiSelect === true,
+        }]
+      })
+      if (questions.length > 0) this.publish({ question: { rpcId: frame.rpcId, questions } })
+      return
+    }
+
+    if (frame.channel === 'mux' && type === 'question/resolved' && sessionId === this._state.sessionId) {
+      if (this._state.question?.rpcId === payload.questionRpcId) this.publish({ question: null })
       return
     }
 
@@ -316,6 +449,7 @@ class DshChatController implements vscode.Disposable {
 
 class DshSurface implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[]
+  private readonly draftImages: Array<PromptImage & { id: string }> = []
 
   constructor(
     private readonly webview: vscode.Webview,
@@ -336,6 +470,37 @@ class DshSurface implements vscode.Disposable {
     for (const disposable of this.disposables) disposable.dispose()
   }
 
+  private async chooseImages(): Promise<void> {
+    const selected = await vscode.window.showOpenDialog({
+      title: 'Attach images to the DeepSeek prompt',
+      canSelectFiles: true,
+      canSelectFolders: false,
+      canSelectMany: true,
+      filters: { Images: ['png', 'jpg', 'jpeg', 'webp', 'gif'] },
+    })
+    if (selected === undefined) return
+    for (const uri of selected) {
+      const mediaType = imageMediaType(uri.fsPath)
+      if (mediaType === undefined) continue
+      const bytes = await vscode.workspace.fs.readFile(uri)
+      this.draftImages.push({
+        id: randomUUID(),
+        type: 'image',
+        mediaType,
+        data: Buffer.from(bytes).toString('base64'),
+        name: path.basename(uri.fsPath),
+      })
+    }
+    await this.publishDraftImages()
+  }
+
+  private async publishDraftImages(): Promise<void> {
+    await this.webview.postMessage({
+      type: 'draft-images',
+      images: this.draftImages.map(image => ({ id: image.id, name: image.name, mediaType: image.mediaType })),
+    })
+  }
+
   private acceptMessage(message: unknown): void {
     if (typeof message !== 'object' || message === null || !('type' in message)) return
     const value = message as Record<string, unknown>
@@ -351,9 +516,49 @@ class DshSurface implements vscode.Disposable {
           if (typeof value.sessionId === 'string') await this.controller.selectSession(value.sessionId)
           return
         case 'send':
-          if (typeof value.text === 'string') await this.controller.send(value.text)
+          if (typeof value.text === 'string') {
+            await this.controller.send(value.text, this.draftImages)
+            this.draftImages.length = 0
+            await this.publishDraftImages()
+          }
+          return
+        case 'attach': await this.chooseImages(); return
+        case 'remove-attachment':
+          if (typeof value.id === 'string') {
+            const index = this.draftImages.findIndex(image => image.id === value.id)
+            if (index >= 0) this.draftImages.splice(index, 1)
+            await this.publishDraftImages()
+          }
           return
         case 'cancel': await this.controller.cancel(); return
+        case 'approval':
+          if (
+            typeof value.rpcId === 'string'
+            && typeof value.approvalId === 'string'
+            && (value.outcome === 'allowed-once' || value.outcome === 'rejected')
+          ) await this.controller.answerApproval(value.rpcId, value.approvalId, value.outcome)
+          return
+        case 'question':
+          if (typeof value.rpcId === 'string' && Array.isArray(value.answers)) {
+            const answers = value.answers.flatMap((answer): QuestionAnswer[] => {
+              if (typeof answer !== 'object' || answer === null) return []
+              const item = answer as Record<string, unknown>
+              if (typeof item.id !== 'string' || !Array.isArray(item.selected) || !item.selected.every(label => typeof label === 'string')) return []
+              return [{
+                id: item.id,
+                selected: item.selected as string[],
+                ...(typeof item.custom === 'string' && item.custom.trim() !== '' ? { custom: item.custom.trim() } : {}),
+              }]
+            })
+            await this.controller.answerQuestions(value.rpcId, answers)
+          }
+          return
+        case 'open-link':
+          if (typeof value.href === 'string') {
+            const uri = vscode.Uri.parse(value.href)
+            if (uri.scheme === 'http' || uri.scheme === 'https') await vscode.env.openExternal(uri)
+          }
+          return
         case 'select-model':
           if (typeof value.selection === 'object' && value.selection !== null) {
             const selection = value.selection as Record<string, unknown>
@@ -368,6 +573,17 @@ class DshSurface implements vscode.Disposable {
       }
     }
     void run().catch(error => { this.controller.report(error) })
+  }
+}
+
+function imageMediaType(filePath: string): ImageMediaType | undefined {
+  switch (path.extname(filePath).toLowerCase()) {
+    case '.png': return 'image/png'
+    case '.jpg':
+    case '.jpeg': return 'image/jpeg'
+    case '.webp': return 'image/webp'
+    case '.gif': return 'image/gif'
+    default: return undefined
   }
 }
 

@@ -7,6 +7,10 @@ export interface ConversationMessage {
   detail?: string
   streaming?: boolean
   failed?: boolean
+  callView?: unknown
+  resultView?: unknown
+  rawInput?: string
+  rawResult?: string
 }
 
 export interface DshEvent {
@@ -32,18 +36,35 @@ function textContent(value: unknown): string {
   }).join('\n')
 }
 
+function resultContent(value: unknown): string {
+  const item = record(value)
+  if (item === undefined) return ''
+  if (typeof item.text === 'string') return item.text
+  if (Array.isArray(item.content)) return textContent(item.content)
+  if (typeof item.content === 'string') return item.content
+  return ''
+}
+
+function toolView(value: unknown, expected: 'call' | 'result'): unknown {
+  const wrapper = record(value)
+  return wrapper?.for === expected ? wrapper.view : undefined
+}
+
 /** Projects the official append-only DSH event log into the small chat surface. */
 export class ConversationProjector {
   private readonly orderedIds: string[] = []
   private readonly byId = new Map<string, ConversationMessage>()
 
-  reset(events: readonly DshEvent[]): void {
+  reset(entries: readonly (DshEvent | { event: DshEvent; view?: unknown })[]): void {
     this.orderedIds.length = 0
     this.byId.clear()
-    for (const event of events) this.apply(event)
+    for (const entry of entries) {
+      if ('event' in entry) this.apply(entry.event, entry.view)
+      else this.apply(entry)
+    }
   }
 
-  apply(event: DshEvent): void {
+  apply(event: DshEvent, view?: unknown): void {
     const data = record(event.data)
     if (data === undefined) return
 
@@ -87,6 +108,8 @@ export class ConversationProjector {
         text: name,
         detail: 'Running…',
         streaming: true,
+        callView: toolView(view, 'call'),
+        ...(typeof data.arguments === 'string' ? { rawInput: data.arguments } : {}),
       })
       return
     }
@@ -103,12 +126,17 @@ export class ConversationProjector {
       const id = `tool:${callId}`
       const current = this.byId.get(id)
       const failed = data.error !== undefined || firstBlock?.isError === true
+      const rawResult = resultContent(firstBlock)
       this.set(id, {
         id,
         role: 'tool',
         text: current?.text ?? 'Tool',
         detail: failed ? 'Failed' : 'Completed',
         failed,
+        ...(current?.callView === undefined ? {} : { callView: current.callView }),
+        ...(current?.rawInput === undefined ? {} : { rawInput: current.rawInput }),
+        resultView: toolView(view, 'result'),
+        ...(rawResult === '' ? {} : { rawResult }),
       })
     }
   }

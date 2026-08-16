@@ -45,4 +45,33 @@ describe('ConversationProjector', () => {
       { id: 'tool:call-1', role: 'tool', text: 'bash', detail: 'Completed', failed: false },
     ])
   })
+
+  it('keeps official call and result presentation views for rich tool cards', () => {
+    const projector = new ConversationProjector()
+    projector.apply(event('tool/call', 1, {
+      callId: 'call-rich',
+      name: 'bash',
+      arguments: '{"command":"pnpm test"}',
+    }), {
+      for: 'call',
+      view: { card: 'terminal', title: 'pnpm test', cwd: '/workspace' },
+    })
+    projector.apply(event('tool/result', 2, {
+      message: {
+        source: { kind: 'tool', callId: 'call-rich' },
+        content: [{ type: 'tool-result', toolCallId: 'call-rich', content: [{ type: 'text', text: 'passed' }] }],
+      },
+    }), {
+      for: 'result',
+      view: { card: 'terminal', output: 'passed', exitCode: 0 },
+    })
+
+    expect(projector.messages()).toEqual([expect.objectContaining({
+      id: 'tool:call-rich',
+      callView: { card: 'terminal', title: 'pnpm test', cwd: '/workspace' },
+      resultView: { card: 'terminal', output: 'passed', exitCode: 0 },
+      rawInput: '{"command":"pnpm test"}',
+      rawResult: 'passed',
+    })])
+  })
 })
