@@ -2,7 +2,7 @@ import * as path from 'node:path'
 import * as vscode from 'vscode'
 import { ConversationProjector, type ConversationMessage, type DshEvent } from './conversation.js'
 import { DEEPSEEK_API_KEY_SECRET, normalizeDeepSeekApiKey } from './credentials.js'
-import { DshClient, type DshFrame, type ModelOption, type ModelSelection, type SessionModels, type SessionSummary } from './dsh-client.js'
+import { DshClient, type DshFrame, type ModelSelection, type SessionModels, type SessionSummary } from './dsh-client.js'
 import { DshRuntime, type RuntimeState } from './runtime.js'
 import { chatHtml } from './webview.js'
 
@@ -13,8 +13,19 @@ interface SessionItem {
   title: string
 }
 
-interface ModelItem extends ModelOption {
+interface ReasoningEffortItem {
+  id: string
+  label: string
   selected: boolean
+}
+
+interface ModelItem {
+  provider: string
+  model: string
+  label: string
+  selected: boolean
+  reasoningEfforts: ReasoningEffortItem[]
+  defaultReasoningEffort?: string
 }
 
 interface ChatViewState {
@@ -27,7 +38,6 @@ interface ChatViewState {
   messages: ConversationMessage[]
   running: boolean
   routable: boolean
-  modelLabel: string
   models: ModelItem[]
 }
 
@@ -42,7 +52,6 @@ function initialState(cwd: string): ChatViewState {
     messages: [],
     running: false,
     routable: true,
-    modelLabel: 'Default model',
     models: [],
   }
 }
@@ -50,12 +59,6 @@ function initialState(cwd: string): ChatViewState {
 function titleOf(summary: SessionSummary): string {
   const value = summary.projections?.values?.title
   return typeof value === 'string' && value.trim() !== '' ? value : 'New conversation'
-}
-
-function selectionEqual(left: ModelSelection, right: ModelSelection): boolean {
-  return left.provider === right.provider
-    && left.model === right.model
-    && left.reasoningEffort === right.reasoningEffort
 }
 
 class DshChatController implements vscode.Disposable {
@@ -238,25 +241,29 @@ class DshChatController implements vscode.Disposable {
     if (this.client === client && this._state.sessionId === sessionId) this.publish(this.modelPatch(models))
   }
 
-  private modelPatch(models: SessionModels): Pick<ChatViewState, 'models' | 'modelLabel' | 'routable'> {
+  private modelPatch(models: SessionModels): Pick<ChatViewState, 'models' | 'routable'> {
     const options: ModelItem[] = []
     for (const group of models.groups) {
       for (const model of group.models) {
-        const base: ModelOption = { provider: group.id, model: model.id, label: model.name }
-        if (model.reasoning === undefined) {
-          options.push({ ...base, selected: selectionEqual(base, models.current) })
-        } else {
-          for (const effort of model.reasoning.efforts) {
-            const option = { ...base, reasoningEffort: effort.id, label: `${model.name} · ${effort.name}` }
-            options.push({ ...option, selected: selectionEqual(option, models.current) })
-          }
-        }
+        const selected = group.id === models.current.provider && model.id === models.current.model
+        options.push({
+          provider: group.id,
+          model: model.id,
+          label: model.name,
+          selected,
+          reasoningEfforts: (model.reasoning?.efforts ?? []).map(effort => ({
+            id: effort.id,
+            label: effort.name,
+            selected: selected && effort.id === models.current.reasoningEffort,
+          })),
+          ...(model.reasoning?.defaultEffort === undefined
+            ? {}
+            : { defaultReasoningEffort: model.reasoning.defaultEffort }),
+        })
       }
     }
-    const selected = options.find(option => option.selected)
     return {
       models: options,
-      modelLabel: selected?.label ?? models.current.model,
       routable: models.routable,
     }
   }
@@ -314,9 +321,11 @@ class DshSurface implements vscode.Disposable {
     private readonly webview: vscode.Webview,
     private readonly controller: DshChatController,
     private readonly output: vscode.OutputChannel,
+    extensionUri: vscode.Uri,
   ) {
-    webview.options = { enableScripts: true, localResourceRoots: [] }
-    webview.html = chatHtml(webview)
+    const mediaRoot = vscode.Uri.joinPath(extensionUri, 'media')
+    webview.options = { enableScripts: true, localResourceRoots: [mediaRoot] }
+    webview.html = chatHtml(webview, webview.asWebviewUri(vscode.Uri.joinPath(mediaRoot, 'deepseek.svg')))
     this.disposables = [
       controller.onDidChangeState(state => { void webview.postMessage({ type: 'state', state }) }),
       webview.onDidReceiveMessage(message => { this.acceptMessage(message) }),
@@ -368,11 +377,12 @@ class DshViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   constructor(
     private readonly controller: DshChatController,
     private readonly output: vscode.OutputChannel,
+    private readonly extensionUri: vscode.Uri,
   ) {}
 
   resolveWebviewView(view: vscode.WebviewView): void {
     this.surface?.dispose()
-    const surface = new DshSurface(view.webview, this.controller, this.output)
+    const surface = new DshSurface(view.webview, this.controller, this.output, this.extensionUri)
     this.surface = surface
     view.onDidDispose(() => {
       surface.dispose()
@@ -398,7 +408,7 @@ export function activate(context: vscode.ExtensionContext): void {
   }
   const cwd = workspace?.uri.fsPath ?? ''
   const controller = new DshChatController(runtime, output, cwd)
-  const provider = new DshViewProvider(controller, output)
+  const provider = new DshViewProvider(controller, output, context.extensionUri)
   const panels = new Set<{ panel: vscode.WebviewPanel; surface: DshSurface }>()
 
   context.subscriptions.push(output, runtime, controller, provider)
@@ -416,7 +426,7 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.ViewColumn.Beside,
       { enableScripts: true, retainContextWhenHidden: true },
     )
-    const entry = { panel, surface: new DshSurface(panel.webview, controller, output) }
+    const entry = { panel, surface: new DshSurface(panel.webview, controller, output, context.extensionUri) }
     panels.add(entry)
     panel.onDidDispose(() => {
       entry.surface.dispose()

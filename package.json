@@ -50,7 +50,7 @@
   },
   "contributes": {
     "viewsContainers": {
-      "activitybar": [
+      "secondarySidebar": [
         {
           "id": "deepseekHarness",
           "title": "DeepSeek Harness",

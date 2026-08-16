@@ -26,7 +26,7 @@
 
 | 能力 | 行为 |
 |---|---|
-| Activity Bar 对话 | 打开紧凑的 Copilot 风格界面，没有嵌套应用导航 |
+| 右侧辅助侧栏对话 | 在右侧打开紧凑的 Copilot 风格界面，没有嵌套应用导航 |
 | 真实 DSH 运行时 | 启动 `dsh web --host 127.0.0.1 --port 0`，没有模拟后端 |
 | 项目会话 | 只列出并创建 `cwd` 与当前 VS Code workspace 一致的会话 |
 | 真实协议 | 通过官方 RPC 读取历史和模型，通过官方 WebSocket 接收实时事件 |
@@ -79,7 +79,7 @@ corepack pnpm run package
 code --install-extension dsh-vscode.vsix
 ```
 
-重载 VS Code，打开受信任的文件夹，再点击 Activity Bar 中的 DeepSeek 鲸鱼图标。第一次打开侧边栏时会自动启动 DSH。
+重载 VS Code，打开受信任的文件夹，再在右侧辅助侧栏中选择 **DeepSeek Harness**。如果多个聊天扩展共用右侧区域，请先打开 **其他视图**，再选择一次 DeepSeek Harness。第一次打开侧边栏时会自动启动 DSH。
 
 开发扩展时，直接用 VS Code 打开本仓库并按 `F5`；随仓库提供的 Extension Development Host 配置会先执行构建。
 

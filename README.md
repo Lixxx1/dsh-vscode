@@ -26,7 +26,7 @@ There is no mock runtime, copied agent loop, or parallel session protocol. Sessi
 
 | Capability | Behavior |
 |---|---|
-| Activity Bar chat | Opens a compact, VS Code-native-feeling chat surface with no nested app navigation |
+| Secondary Sidebar chat | Opens a compact, Copilot-style chat surface on the right with no nested app navigation |
 | Real DSH runtime | Starts `dsh web --host 127.0.0.1 --port 0`; no simulated backend |
 | Project sessions | Lists and creates only sessions whose `cwd` is the current VS Code workspace |
 | Real protocol | Loads history and models over official RPC and receives live events over official WebSockets |
@@ -79,7 +79,7 @@ corepack pnpm run package
 code --install-extension dsh-vscode.vsix
 ```
 
-Reload VS Code, open a trusted folder, and select the DeepSeek whale in the Activity Bar. The extension starts DSH on the first open.
+Reload VS Code, open a trusted folder, and select **DeepSeek Harness** in the right Secondary Sidebar. If several chat extensions share that area, open **Other Views** and choose DeepSeek Harness once. The extension starts DSH on the first open.
 
 For extension development, open this repository in VS Code and press `F5`. The included Extension Development Host configuration builds the extension first.
 
