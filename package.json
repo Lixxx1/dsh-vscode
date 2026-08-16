@@ -1,0 +1,153 @@
+{
+  "name": "dsh-vscode",
+  "displayName": "DeepSeek Harness",
+  "description": "Run the official DeepSeek Harness Cordis client in a VS Code sidebar.",
+  "version": "0.1.0",
+  "private": true,
+  "publisher": "lixxx1",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Lixxx1/dsh-vscode.git"
+  },
+  "homepage": "https://github.com/Lixxx1/dsh-vscode#readme",
+  "bugs": {
+    "url": "https://github.com/Lixxx1/dsh-vscode/issues"
+  },
+  "type": "commonjs",
+  "packageManager": "pnpm@11.7.0",
+  "engines": {
+    "vscode": "^1.100.0",
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "keywords": [
+    "deepseek",
+    "deepseek-harness",
+    "dsh",
+    "cordis",
+    "coding-agent"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onView:deepseekHarness.chat",
+    "onCommand:deepseekHarness.openInEditor",
+    "onCommand:deepseekHarness.restart"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "DeepSeek Harness can run tools and edit files in the current workspace."
+    }
+  },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "deepseekHarness",
+          "title": "DeepSeek Harness",
+          "icon": "media/deepseek.svg"
+        }
+      ]
+    },
+    "views": {
+      "deepseekHarness": [
+        {
+          "id": "deepseekHarness.chat",
+          "name": "Chat",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "deepseekHarness.openInEditor",
+        "title": "DeepSeek Harness: Open Chat in Editor",
+        "icon": "$(open-preview)"
+      },
+      {
+        "command": "deepseekHarness.restart",
+        "title": "DeepSeek Harness: Restart Runtime",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "deepseekHarness.showOutput",
+        "title": "DeepSeek Harness: Show Runtime Output"
+      },
+      {
+        "command": "deepseekHarness.openInBrowser",
+        "title": "DeepSeek Harness: Open in Browser"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "deepseekHarness.openInEditor",
+          "when": "view == deepseekHarness.chat",
+          "group": "navigation@1"
+        },
+        {
+          "command": "deepseekHarness.restart",
+          "when": "view == deepseekHarness.chat",
+          "group": "navigation@2"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "DeepSeek Harness",
+      "properties": {
+        "deepseekHarness.executable": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "DSH executable. Leave empty to use a source checkout when nested inside deepseek-harness, otherwise `dsh` from PATH."
+        },
+        "deepseekHarness.arguments": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "web",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "0"
+          ],
+          "markdownDescription": "Arguments passed to DSH. The default starts the official Cordis Web profile on an OS-assigned loopback port."
+        },
+        "deepseekHarness.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Start DSH when the sidebar first opens."
+        },
+        "deepseekHarness.startupTimeout": {
+          "type": "number",
+          "default": 60000,
+          "minimum": 1000,
+          "maximum": 300000,
+          "description": "Milliseconds to wait for DSH to report its local Web URL."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --config vitest.config.ts",
+    "check": "tsc -p tsconfig.json --noEmit && vitest run --config vitest.config.ts && tsc -p tsconfig.json",
+    "package": "vsce package --out dsh-vscode.vsix"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.0",
+    "@types/vscode": "^1.100.0",
+    "@vscode/vsce": "^3.6.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8"
+  }
+}
