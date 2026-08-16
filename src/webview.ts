@@ -48,7 +48,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     .assistant .avatar { border-radius: 0; background-color: #4d6bfe; }
     .message-body { width: 100%; min-width: 0; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; font-size: 13px; line-height: 1.65; }
     .assistant .message-body { padding-left: 29px; }
-    .user .message-body { width: fit-content; max-width: calc(100% - 29px); margin-left: 29px; padding: 9px 12px; white-space: pre-wrap; border-radius: 12px; background: color-mix(in srgb, #4d6bfe 7%, var(--vscode-textBlockQuote-background)); }
+    .message.user { display: flex; flex-direction: column; align-items: flex-end; padding-top: 6px; }
+    .user .message-head { display: none; }
+    .user .message-body { width: fit-content; max-width: 82%; margin-left: auto; padding: 8px 12px; white-space: pre-wrap; border-radius: 16px; background: color-mix(in srgb, var(--vscode-foreground) 8%, var(--vscode-editor-background)); }
     .markdown > :first-child { margin-top: 0; }
     .markdown > :last-child { margin-bottom: 0; }
     .markdown p { margin: 0 0 9px; }
