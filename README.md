@@ -11,7 +11,7 @@ The goal is the same kind of workflow offered by Claude Code and Codex in VS Cod
 ![Status](https://img.shields.io/badge/status-alpha-7da1de?style=flat-square)
 
 <p align="center">
-  <img src="media/sidebar-preview.jpg" alt="DeepSeek Harness in the VS Code sidebar">
+  <img src="media/demo.gif" alt="DeepSeek Harness in the VS Code sidebar">
 </p>
 
 ## Features

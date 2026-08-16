@@ -11,7 +11,7 @@
 ![Status](https://img.shields.io/badge/status-alpha-7da1de?style=flat-square)
 
 <p align="center">
-  <img src="media/sidebar-preview.jpg" alt="VS Code 侧边栏中的 DeepSeek Harness">
+  <img src="media/demo.gif" alt="VS Code 侧边栏中的 DeepSeek Harness">
 </p>
 
 ## 功能
