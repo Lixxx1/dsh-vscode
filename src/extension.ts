@@ -1,4 +1,5 @@
 import * as vscode from 'vscode'
+import { DEEPSEEK_API_KEY_SECRET, normalizeDeepSeekApiKey } from './credentials.js'
 import { DshRuntime, type RuntimeState } from './runtime.js'
 import { appHtml, errorHtml, loadingHtml } from './webview.js'
 
@@ -126,6 +127,45 @@ export function activate(context: vscode.ExtensionContext): void {
     } catch (error) {
       void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error))
     }
+  }))
+
+  context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.configureApiKey', async () => {
+    const value = await vscode.window.showInputBox({
+      title: 'Configure DeepSeek API Key',
+      prompt: 'Paste the key here. It is stored in VS Code SecretStorage and passed only to the official DSH child process.',
+      placeHolder: 'sk-…',
+      password: true,
+      ignoreFocusOut: true,
+      validateInput: (candidate) => {
+        try {
+          normalizeDeepSeekApiKey(candidate)
+          return undefined
+        } catch (error) {
+          return error instanceof Error ? error.message : String(error)
+        }
+      },
+    })
+    if (value === undefined) return
+
+    const apiKey = normalizeDeepSeekApiKey(value)
+    await context.secrets.store(DEEPSEEK_API_KEY_SECRET, apiKey)
+    output.appendLine('[credentials] DeepSeek API key stored in VS Code SecretStorage.')
+    await runtime.restart()
+    void vscode.window.showInformationMessage('DeepSeek API key configured. DeepSeek Harness restarted.')
+  }))
+
+  context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.clearApiKey', async () => {
+    const choice = await vscode.window.showWarningMessage(
+      'Remove the DeepSeek API key stored by this extension?',
+      { modal: true },
+      'Remove',
+    )
+    if (choice !== 'Remove') return
+
+    await context.secrets.delete(DEEPSEEK_API_KEY_SECRET)
+    output.appendLine('[credentials] DeepSeek API key removed from VS Code SecretStorage.')
+    await runtime.restart()
+    void vscode.window.showInformationMessage('Stored DeepSeek API key removed. DeepSeek Harness restarted.')
   }))
 }
 

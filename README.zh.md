@@ -98,12 +98,18 @@ code --install-extension dsh-vscode.vsix
 }
 ```
 
+### 在侧边栏配置 API Key
+
+VS Code 会把编辑快捷键交给外层 Webview，因此 `Cmd/Ctrl+V` 无法继续传到嵌套的官方 DSH iframe 密码输入框。点击视图标题栏的钥匙图标，或从命令面板运行 **DeepSeek Harness: Configure API Key**。VS Code 原生密码输入框支持粘贴；密钥保存在 VS Code SecretStorage 中，只会作为 `DEEPSEEK_API_KEY` 传给官方 DSH 子进程。运行 **DeepSeek Harness: Clear Stored API Key** 可删除它。
+
 ## 命令
 
 - `DeepSeek Harness: Open Chat in Editor`
 - `DeepSeek Harness: Restart Runtime`
 - `DeepSeek Harness: Show Runtime Output`
 - `DeepSeek Harness: Open in Browser`
+- `DeepSeek Harness: Configure API Key`
+- `DeepSeek Harness: Clear Stored API Key`
 
 ## 开发
 

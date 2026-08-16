@@ -98,12 +98,18 @@ If a GUI-launched VS Code cannot see your shell-installed `dsh`, set an absolute
 }
 ```
 
+### API key input in the sidebar
+
+VS Code routes editing shortcuts to the outer Webview, so `Cmd/Ctrl+V` cannot reach password fields inside the nested official DSH iframe. Select the key icon in the view title, or run **DeepSeek Harness: Configure API Key** from the Command Palette. The native password prompt supports paste, stores the value in VS Code SecretStorage, and exposes it only as `DEEPSEEK_API_KEY` to the official DSH child process. Use **DeepSeek Harness: Clear Stored API Key** to remove it.
+
 ## Commands
 
 - `DeepSeek Harness: Open Chat in Editor`
 - `DeepSeek Harness: Restart Runtime`
 - `DeepSeek Harness: Show Runtime Output`
 - `DeepSeek Harness: Open in Browser`
+- `DeepSeek Harness: Configure API Key`
+- `DeepSeek Harness: Clear Stored API Key`
 
 ## Development
 

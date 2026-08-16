@@ -2,6 +2,13 @@
 
 All notable changes to dsh-vscode are documented here.
 
+## 0.1.1
+
+- Add a VS Code-native, paste-capable API key prompt for the nested DSH client.
+- Store the key in VS Code SecretStorage and expose it only to the official DSH child process.
+- Add a command to remove the extension-managed credential.
+- Use the official DeepSeek activity icon from the DeepSeek Harness repository.
+
 ## 0.1.0
 
 - Add the DeepSeek Harness Activity Bar sidebar.

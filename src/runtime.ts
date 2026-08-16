@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import * as vscode from 'vscode'
+import { DEEPSEEK_API_KEY_SECRET } from './credentials.js'
 import { parseDshWebUrl, resolveLaunch } from './launch.js'
 
 export type RuntimeState =
@@ -67,6 +68,7 @@ export class DshRuntime implements vscode.Disposable {
     const args = config.get<string[]>('arguments', ['web', '--host', '127.0.0.1', '--port', '0'])
     const timeoutMs = config.get<number>('startupTimeout', 60_000)
     const launch = resolveLaunch(this.context.extensionUri.fsPath, configuredExecutable, args)
+    const storedApiKey = await this.context.secrets.get(DEEPSEEK_API_KEY_SECRET)
 
     const pending = deferredStart()
     this.pending = pending
@@ -75,6 +77,7 @@ export class DshRuntime implements vscode.Disposable {
     const renderedCommand = [launch.command, ...launch.args].map(part => JSON.stringify(part)).join(' ')
     this.output.appendLine(`[runtime] cwd: ${workspace.uri.fsPath}`)
     this.output.appendLine(`[runtime] launch: ${renderedCommand}`)
+    if (storedApiKey !== undefined) this.output.appendLine('[runtime] DeepSeek credential: VS Code SecretStorage')
     this.publish({
       kind: 'starting',
       detail: launch.sourceCheckout ? 'Starting the official DSH source profile…' : 'Starting the official DSH profile…',
@@ -87,6 +90,7 @@ export class DshRuntime implements vscode.Disposable {
         env: {
           ...process.env,
           NO_COLOR: '1',
+          ...(storedApiKey === undefined ? {} : { DEEPSEEK_API_KEY: storedApiKey }),
           ...launch.env,
         },
         stdio: ['pipe', 'pipe', 'pipe'],

@@ -2,7 +2,7 @@
   "name": "dsh-vscode",
   "displayName": "DeepSeek Harness",
   "description": "Run the official DeepSeek Harness Cordis client in a VS Code sidebar.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "publisher": "lixxx1",
   "license": "MIT",
@@ -38,7 +38,9 @@
   "activationEvents": [
     "onView:deepseekHarness.chat",
     "onCommand:deepseekHarness.openInEditor",
-    "onCommand:deepseekHarness.restart"
+    "onCommand:deepseekHarness.restart",
+    "onCommand:deepseekHarness.configureApiKey",
+    "onCommand:deepseekHarness.clearApiKey"
   ],
   "capabilities": {
     "untrustedWorkspaces": {
@@ -83,6 +85,15 @@
       {
         "command": "deepseekHarness.openInBrowser",
         "title": "DeepSeek Harness: Open in Browser"
+      },
+      {
+        "command": "deepseekHarness.configureApiKey",
+        "title": "DeepSeek Harness: Configure API Key",
+        "icon": "$(key)"
+      },
+      {
+        "command": "deepseekHarness.clearApiKey",
+        "title": "DeepSeek Harness: Clear Stored API Key"
       }
     ],
     "menus": {
@@ -96,6 +107,11 @@
           "command": "deepseekHarness.restart",
           "when": "view == deepseekHarness.chat",
           "group": "navigation@2"
+        },
+        {
+          "command": "deepseekHarness.configureApiKey",
+          "when": "view == deepseekHarness.chat",
+          "group": "navigation@3"
         }
       ]
     },
