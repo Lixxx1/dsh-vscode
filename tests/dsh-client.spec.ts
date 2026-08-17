@@ -79,6 +79,6 @@ describe('DshClient queue protocol', () => {
         fiberPhase: 'active',
       }],
     })
-    expect(requests).toEqual([{ method: 'pluginInventory/list', payload: {} }])
+    expect(requests).toEqual([{ method: 'pluginInventory/list', payload: { args: {} } }])
   })
 })

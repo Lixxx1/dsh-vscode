@@ -135,7 +135,7 @@ export class DshClient {
   }
 
   pluginInventory(): Promise<PluginInventorySnapshot> {
-    return this.call('pluginInventory/list', {})
+    return this.call('pluginInventory/list', { args: {} })
   }
 
   prompt(
