@@ -1,13 +1,10 @@
 .github/**
 .vscode/**
-docs/**
 src/**
 tests/**
 coverage/**
 node_modules/**
 .gitignore
-CONTRIBUTING.md
-SECURITY.md
 README.zh.md
 tsconfig.json
 vitest.config.ts

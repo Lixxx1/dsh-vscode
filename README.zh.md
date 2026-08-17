@@ -52,8 +52,6 @@ code --install-extension dsh-vscode.vsix
 3. 点击钥匙按钮配置 `DEEPSEEK_API_KEY`。
 4. 选择项目、会话、Model 和 Reasoning Effort，然后开始工作。输入 `/` 使用 DSH 官方命令，输入 `@` 添加文件或文件夹。
 
-实现细节见[架构文档](docs/architecture.md)。参与开发前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
-
 ## License
 
 [MIT](LICENSE)

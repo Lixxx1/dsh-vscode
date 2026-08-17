@@ -52,8 +52,6 @@ Requires VS Code 1.100 or newer and Node.js `^22.19` or `>=24`.
 3. Use the key button to configure `DEEPSEEK_API_KEY`.
 4. Choose a project, conversation, Model, and Reasoning Effort, then start working. Type `/` for official DSH commands, or `@` to add files and folders.
 
-For implementation details, see [Architecture](docs/architecture.md). To contribute, read [CONTRIBUTING.md](CONTRIBUTING.md).
-
 ## License
 
 [MIT](LICENSE)
