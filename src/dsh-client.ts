@@ -136,8 +136,12 @@ export class DshClient {
     return this.call('session.create', { cwd })
   }
 
-  history(sessionId: string): Promise<{ events: HistoryEntry[]; hasMore: boolean }> {
-    return this.call('session.history', { sessionId, maxMessages: 100 })
+  history(sessionId: string, beforeSeq?: number): Promise<{ events: HistoryEntry[]; hasMore: boolean }> {
+    return this.call('session.history', {
+      sessionId,
+      ...(beforeSeq === undefined ? {} : { beforeSeq }),
+      maxMessages: 100,
+    })
   }
 
   models(sessionId: string): Promise<SessionModels> {

@@ -198,6 +198,12 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
     return this.changedFiles(sessionId)
   }
 
+  /** Replay an older, complete history page without discarding reversible live snapshots. */
+  prependHistory(sessionId: string, cwd: string, entries: readonly HistoryEntry[]): ChangedFileGroup[] {
+    for (const entry of entries) this.accept(sessionId, cwd, entry.event, entry.view, true)
+    return this.changedFiles(sessionId)
+  }
+
   accept(sessionId: string, cwd: string, event: DshEvent, view?: unknown, replay = false): boolean {
     const callId = callIdOf(event)
     if (callId === undefined) return false

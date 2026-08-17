@@ -17,6 +17,7 @@ import {
   DshClient,
   type CommandDescriptor,
   type DshFrame,
+  type HistoryEntry,
   type ImageMediaType,
   type ModelSelection,
   type PromptMode,
@@ -34,6 +35,7 @@ import { chatHtml } from './webview.js'
 import { DshPluginManager } from './plugin-manager.js'
 import type { PluginInventorySnapshot } from './plugin-profile.js'
 import type { SettingsDescription, SettingsMutation, SettingsNamespace } from './runtime-settings.js'
+import { earliestHistorySequence, mergeHistoryEntries } from './history.js'
 
 let activeRuntime: DshRuntime | undefined
 
@@ -113,6 +115,8 @@ interface ChatViewState {
   changedFiles: ChangedFileGroup[]
   queue: QueueItemState[]
   jobs: JobItem[]
+  hasMoreHistory: boolean
+  loadingHistory: boolean
 }
 
 function initialState(cwd: string): ChatViewState {
@@ -135,6 +139,8 @@ function initialState(cwd: string): ChatViewState {
     changedFiles: [],
     queue: [],
     jobs: [],
+    hasMoreHistory: false,
+    loadingHistory: false,
   }
 }
 
@@ -156,6 +162,7 @@ class DshChatController implements vscode.Disposable {
   private readonly attachmentResults = new Map<string, Pick<ConversationImage, 'data' | 'error'>>()
   private readonly attachmentLoads = new Map<string, Promise<void>>()
   private readonly jobsBySession = new Map<string, JobItem[]>()
+  private historyEntries: HistoryEntry[] = []
 
   readonly onDidChangeState = this.changes.event
 
@@ -200,6 +207,7 @@ class DshChatController implements vscode.Disposable {
     this.attachmentResults.clear()
     this.attachmentLoads.clear()
     this.jobsBySession.clear()
+    this.historyEntries = []
     this.publish({
       phase: 'loading',
       statusText: 'Starting the official DeepSeek Harness runtime…',
@@ -216,6 +224,8 @@ class DshChatController implements vscode.Disposable {
       changedFiles: [],
       queue: [],
       jobs: [],
+      hasMoreHistory: false,
+      loadingHistory: false,
     })
     try {
       const uri = await this.runtime.start(this.cwd === '' ? undefined : vscode.Uri.file(this.cwd))
@@ -259,6 +269,7 @@ class DshChatController implements vscode.Disposable {
     this._cwd = cwd
     this.summaries = []
     this.projector.reset([])
+    this.historyEntries = []
     this.guardedDirtyCalls.clear()
     this.publish({
       ...initialState(cwd),
@@ -276,6 +287,35 @@ class DshChatController implements vscode.Disposable {
   async selectSession(sessionId: string): Promise<void> {
     if (!this.summaries.some(summary => summary.sessionId === sessionId && summary.cwd === this.cwd)) return
     await this.loadSession(sessionId)
+  }
+
+  async loadOlderHistory(): Promise<void> {
+    if (this._state.sessionId === '' || !this._state.hasMoreHistory || this._state.loadingHistory) return
+    const sessionId = this._state.sessionId
+    const client = this.requireClient()
+    const beforeSeq = earliestHistorySequence(this.historyEntries)
+    if (beforeSeq === undefined) {
+      this.publish({ hasMoreHistory: false })
+      return
+    }
+    this.publish({ loadingHistory: true })
+    try {
+      const page = await client.history(sessionId, beforeSeq)
+      if (this.client !== client || this._state.sessionId !== sessionId) return
+      this.historyEntries = mergeHistoryEntries(this.historyEntries, page.events)
+      this.projector.reset(this.historyEntries)
+      this.publish({
+        messages: this.projectedMessages(),
+        changedFiles: this.diffReviews.prependHistory(sessionId, this.cwd, page.events),
+        hasMoreHistory: page.hasMore,
+        loadingHistory: false,
+      })
+      this.hydrateImages(client, sessionId)
+    } finally {
+      if (this.client === client && this._state.sessionId === sessionId && this._state.loadingHistory) {
+        this.publish({ loadingHistory: false })
+      }
+    }
   }
 
   async send(
@@ -421,13 +461,21 @@ class DshChatController implements vscode.Disposable {
 
   private async loadSession(sessionId: string): Promise<void> {
     const client = this.requireClient()
-    this.publish({ phase: 'loading', statusText: 'Loading project conversation…', sessionId })
-    const [{ events }, models] = await Promise.all([
+    this.historyEntries = []
+    this.publish({
+      phase: 'loading',
+      statusText: 'Loading project conversation…',
+      sessionId,
+      hasMoreHistory: false,
+      loadingHistory: false,
+    })
+    const [{ events, hasMore }, models] = await Promise.all([
       client.history(sessionId),
       client.models(sessionId),
     ])
     if (this.client !== client || this._state.sessionId !== sessionId) return
     this.projector.reset(events)
+    this.historyEntries = events
     this.guardedDirtyCalls.clear()
     this.queueRawText.clear()
     const summary = this.summaries.find(item => item.sessionId === sessionId)
@@ -445,6 +493,8 @@ class DshChatController implements vscode.Disposable {
       changedFiles: this.diffReviews.rebuild(sessionId, this.cwd, events),
       queue: [],
       jobs: this.jobsBySession.get(sessionId) ?? [],
+      hasMoreHistory: hasMore,
+      loadingHistory: false,
       ...this.modelPatch(models),
     })
     this.hydrateImages(client, sessionId)
@@ -505,6 +555,7 @@ class DshChatController implements vscode.Disposable {
       const event = payload.event
       if (typeof event === 'object' && event !== null) {
         const dshEvent = event as DshEvent
+        this.historyEntries = mergeHistoryEntries(this.historyEntries, [{ event: dshEvent, view: payload.view }])
         const conflict = this.dirtyConflict(dshEvent, payload.view)
         if (conflict !== undefined) void this.cancelForDirtyConflict(conflict)
         this.projector.apply(dshEvent, payload.view)
@@ -895,6 +946,7 @@ class DshSurface implements vscode.Disposable {
         case 'select-session':
           if (typeof value.sessionId === 'string') await this.controller.selectSession(value.sessionId)
           return
+        case 'load-history': await this.controller.loadOlderHistory(); return
         case 'send':
           if (typeof value.text === 'string') {
             if (value.text.trim() === '/permission danger-full-access') {

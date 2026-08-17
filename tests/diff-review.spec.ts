@@ -130,6 +130,40 @@ describe('DiffReviewManager', () => {
     expect(fs.readFileSync(filePath, 'utf8')).toBe('const value = 1\n')
   })
 
+  it('prepends older review history without losing reversible live snapshots', () => {
+    const cwd = temporaryWorkspace()
+    const filePath = path.join(cwd, 'current.ts')
+    fs.writeFileSync(filePath, 'before\n')
+    const manager = new DiffReviewManager()
+    const liveCall = event('tool/call', 20, { turn: 2, callId: 'live', name: 'edit' })
+    const liveResult = event('tool/result', 21, {
+      turn: 2,
+      message: { source: { kind: 'tool', callId: 'live' }, content: [{ type: 'tool-result', toolCallId: 'live' }] },
+    })
+    const liveCallView = { for: 'call', view: { card: 'diff', diffs: [{ path: 'current.ts', oldText: 'before', newText: 'after' }] } }
+    const liveResultView = { for: 'result', view: { card: 'diff', diffs: [{ path: 'current.ts', oldText: 'before', newText: 'after' }] } }
+    manager.accept('session-pages', cwd, liveCall, liveCallView)
+    fs.writeFileSync(filePath, 'after\n')
+    manager.accept('session-pages', cwd, liveResult, liveResultView)
+
+    const changed = manager.prependHistory('session-pages', cwd, [
+      {
+        event: event('tool/call', 1, { turn: 1, callId: 'older', name: 'write' }),
+        view: { for: 'call', view: { card: 'diff', diffs: [{ path: 'old.ts', oldText: null, newText: 'old' }] } },
+      },
+      {
+        event: event('tool/result', 2, {
+          turn: 1,
+          message: { source: { kind: 'tool', callId: 'older' }, content: [{ type: 'tool-result', toolCallId: 'older' }] },
+        }),
+        view: { for: 'result', view: { card: 'diff', diffs: [{ path: 'old.ts', oldText: null, newText: 'old' }] } },
+      },
+    ])
+
+    expect(changed.find(group => group.turn === 2)?.files[0]?.canRevert).toBe(true)
+    expect(changed.find(group => group.turn === 1)?.files[0]?.canRevert).toBe(false)
+  })
+
   it('refuses to overwrite a file changed after DeepSeek edited it', () => {
     const cwd = temporaryWorkspace()
     const filePath = path.join(cwd, 'app.ts')
