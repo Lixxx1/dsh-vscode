@@ -18,6 +18,7 @@
 ## 功能
 
 - **使用真实的 DSH runtime。** 项目会话、流式回复、工具调用、操作审批、后续问题和官方 `/` 命令都可以在 VS Code 侧边栏中完成。
+- **直接在 VS Code 中扩展 DSH。** 搜索并安装社区 Tools、Skills、MCP、Memory 和 Agent Hook 插件；插件会加入官方 `web` profile，并在 DSH 重启后由官方 runtime 加载。
 - **从正确的代码上下文开始。** DeepSeek 会获取当前工作区、正在查看的文件和选中代码；也可以通过 `@` 添加指定文件或文件夹，或使用 **Add Selection to Chat** 固定选区。
 - **清楚控制每次会话。** 在输入框中切换 DSH 官方 Permission 和 Plan 模式，并分别选择 Model 与 Reasoning Effort。
 - **在写代码的地方审阅改动。** Changed Files 按 Turn 分组并显示 `+/-` 行数，可使用 VS Code 原生 Diff Editor 查看，再对单个文件或全部改动执行 Keep 或安全 Revert。
@@ -35,12 +36,15 @@ npm install -g @deepseek-ai/dsh
 
 需要 VS Code 1.100 或更新版本，以及 Node.js `^22.19` 或 `>=24`。
 
+安装社区 runtime 插件还需要确保 `pnpm` 已加入 PATH。
+
 ## 使用
 
 1. 在 VS Code 中打开一个受信任的项目文件夹。
 2. 在右侧选择 **DeepSeek Harness**。如果没有显示，可以在 **其他视图** 中找到它。
 3. 点击钥匙按钮配置 `DEEPSEEK_API_KEY`。
 4. 选择 Permission 模式、Model 和 Reasoning Effort，然后开始工作。Shield 菜单用于切换 Permission 和 Plan 模式，输入 `/` 使用 DSH 官方命令，输入 `@` 添加文件或文件夹。
+5. 点击侧边栏标题栏中的插件按钮，搜索、安装、查看或移除社区 runtime 插件。
 
 ## License
 

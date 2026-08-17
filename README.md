@@ -18,6 +18,7 @@ Ask DeepSeek to inspect, change, and verify code without switching between your 
 ## Features
 
 - **Work with the real DSH runtime.** Sessions, streaming, tool calls, approvals, follow-up questions, and official `/` commands stay inside the VS Code sidebar.
+- **Extend DSH from VS Code.** Search and install community Tools, Skills, MCP integrations, Memory, and Agent Hooks. Plugins are added to the official `web` profile and loaded by DSH after restart.
 - **Start with the right context.** DeepSeek receives the current workspace, active file, and selected code. Add specific files or folders with `@`, or pin a selection with **Add Selection to Chat**.
 - **Control every session.** Switch official Permission and Plan modes from the composer, then choose Model and Reasoning Effort independently.
 - **Review edits where you code.** Changed files are grouped by turn with `+/-` line counts. Open them in VS Code's native Diff Editor, then Keep or safely Revert individual files or the full change set.
@@ -35,12 +36,15 @@ Then open **Extensions** in VS Code, search for **DSH Sidebar**, and select **In
 
 Requires VS Code 1.100 or newer and Node.js `^22.19` or `>=24`.
 
+Installing community runtime plugins also requires `pnpm` on your PATH.
+
 ## Use
 
 1. Open a trusted project folder in VS Code.
 2. Select **DeepSeek Harness** in the right sidebar. If it is hidden, find it under **Other Views**.
 3. Use the key button to configure `DEEPSEEK_API_KEY`.
 4. Choose the Permission mode, Model, and Reasoning Effort, then start working. Use the Shield menu for Permission and Plan modes, `/` for official DSH commands, and `@` to add files or folders.
+5. Use the plugins button in the sidebar title to search, install, inspect, or remove community runtime plugins.
 
 ## License
 

@@ -2,6 +2,11 @@ import { spawn } from 'node:child_process'
 import * as vscode from 'vscode'
 import { resolveLaunch } from './launch.js'
 import {
+  COMMUNITY_REGISTRY_URL,
+  parseCommunityRuntimePlugins,
+  type CommunityRuntimePlugin,
+} from './plugin-catalog.js'
+import {
   findAddedPlugin,
   installedPluginStatus,
   normalizePluginSpec,
@@ -12,7 +17,13 @@ import {
   type PluginInventorySnapshot,
 } from './plugin-profile.js'
 
-const COMMUNITY_PLUGINS = vscode.Uri.parse('https://github.com/awesome-dsh-plugin/awesome-dsh-plugin')
+const CATALOG_CACHE_KEY = 'deepseekHarness.communityRuntimePlugins'
+const MAX_REGISTRY_BYTES = 5 * 1024 * 1024
+
+interface CatalogCache {
+  fetchedAt: number
+  plugins: CommunityRuntimePlugin[]
+}
 
 interface PluginController {
   readonly cwd: string
@@ -71,7 +82,7 @@ export class DshPluginManager {
       })
       if (selected === undefined || selected.action === 'empty') return
       if (selected.action === 'browse') {
-        await vscode.env.openExternal(COMMUNITY_PLUGINS)
+        await this.browseCatalog()
         return
       }
       if (selected.action === 'refresh') continue
@@ -95,8 +106,8 @@ export class DshPluginManager {
       },
       {
         action: 'browse',
-        label: '$(globe) Browse community plugins',
-        detail: 'Open the community catalog; choose runtime plugins rather than Web UI themes or panels',
+        label: '$(search) Find community runtime plugins…',
+        detail: 'Search tools, skills, MCP integrations, memory, and agent hooks; install with one click',
       },
       {
         action: 'refresh',
@@ -166,8 +177,15 @@ export class DshPluginManager {
       'Install',
     )
     if (confirmed !== 'Install') return
+    await this.installConfirmed(spec, spec, before)
+  }
 
-    await this.runOfficialPluginCommand(['add', spec], `Installing ${spec}`)
+  private async installConfirmed(
+    spec: string,
+    displayName: string,
+    before: readonly InstalledPlugin[] = readInstalledPlugins(resolveDshHome()),
+  ): Promise<void> {
+    await this.runOfficialPluginCommand(['add', spec], `Installing ${displayName}`)
     const installed = readInstalledPlugins(resolveDshHome())
     const added = findAddedPlugin(before, installed)
     if (added !== undefined && !added.bundle) {
@@ -176,6 +194,88 @@ export class DshPluginManager {
       )
     }
     await this.restartAfterChange(`Installed ${added?.name ?? spec}`)
+  }
+
+  private async browseCatalog(): Promise<void> {
+    const plugins = await vscode.window.withProgress({
+      location: vscode.ProgressLocation.Notification,
+      title: 'Loading DSH community runtime plugins…',
+    }, async () => this.loadCatalog())
+    const installed = new Set(readInstalledPlugins(resolveDshHome()).map(plugin => plugin.name))
+    const selected = await vscode.window.showQuickPick(plugins.map(plugin => {
+      const alreadyInstalled = installed.has(plugin.npm ?? plugin.name)
+      const stars = plugin.stars === undefined ? '' : ` · ★ ${String(plugin.stars)}`
+      return {
+        label: `${alreadyInstalled ? '$(pass-filled) ' : ''}${plugin.name}`,
+        description: `${plugin.categoryLabel}${stars}`,
+        detail: `${plugin.description} · ${plugin.owner}`,
+        plugin,
+        alreadyInstalled,
+      }
+    }), {
+      title: 'Community Runtime Plugins',
+      placeHolder: 'Search tools, skills, MCP, memory, integrations, and agent hooks',
+      matchOnDescription: true,
+      matchOnDetail: true,
+    })
+    if (selected === undefined) return
+    const actions = selected.alreadyInstalled
+      ? [{ label: '$(github) Open on GitHub', action: 'open' as const }]
+      : [
+          { label: '$(cloud-download) Install', action: 'install' as const },
+          { label: '$(github) Open on GitHub', action: 'open' as const },
+        ]
+    const action = await vscode.window.showQuickPick(actions, {
+      title: `${selected.plugin.owner}/${selected.plugin.name}`,
+      placeHolder: selected.alreadyInstalled ? 'Already installed in the DSH web profile' : selected.plugin.description,
+    })
+    if (action?.action === 'open') {
+      await vscode.env.openExternal(vscode.Uri.parse(selected.plugin.url))
+      return
+    }
+    if (action?.action !== 'install' || !await this.requireIdle()) return
+    const confirmed = await vscode.window.showWarningMessage(
+      `Install ${selected.plugin.name}?`,
+      {
+        modal: true,
+        detail: `${selected.plugin.description}\n\nSource: ${selected.plugin.url}\nInstall: ${selected.plugin.installSpec}\n\nThird-party DSH plugins run with your user permissions and may access files, credentials, and the network. The community catalog is not a security review.`,
+      },
+      'Install',
+    )
+    if (confirmed !== 'Install') return
+    await this.installConfirmed(selected.plugin.installSpec, selected.plugin.name)
+  }
+
+  private async loadCatalog(): Promise<CommunityRuntimePlugin[]> {
+    try {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 15_000)
+      let response: Response
+      try {
+        response = await fetch(COMMUNITY_REGISTRY_URL, {
+          headers: { accept: 'application/json' },
+          signal: controller.signal,
+        })
+      } finally {
+        clearTimeout(timeout)
+      }
+      if (!response.ok) throw new Error(`Community registry returned HTTP ${String(response.status)}.`)
+      const source = await response.text()
+      if (Buffer.byteLength(source, 'utf8') > MAX_REGISTRY_BYTES) {
+        throw new Error('Community registry response is unexpectedly large.')
+      }
+      const plugins = parseCommunityRuntimePlugins(JSON.parse(source) as unknown, { locale: vscode.env.language })
+      if (plugins.length === 0) throw new Error('Community registry contains no compatible runtime plugins.')
+      await this.context.globalState.update(CATALOG_CACHE_KEY, { fetchedAt: Date.now(), plugins } satisfies CatalogCache)
+      return plugins
+    } catch (error) {
+      const cached = this.context.globalState.get<CatalogCache>(CATALOG_CACHE_KEY)
+      if (cached !== undefined && Array.isArray(cached.plugins) && cached.plugins.length > 0) {
+        this.output.appendLine(`[plugins] Community registry unavailable; using cache from ${new Date(cached.fetchedAt).toISOString()}: ${this.message(error)}`)
+        return cached.plugins
+      }
+      throw new Error(`Could not load community runtime plugins: ${this.message(error)}`)
+    }
   }
 
   private async pluginActions(plugin: InstalledPlugin): Promise<void> {
