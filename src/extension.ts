@@ -3,6 +3,7 @@ import * as path from 'node:path'
 import * as vscode from 'vscode'
 import { ConversationProjector, type ConversationMessage, type DshEvent } from './conversation.js'
 import { DEEPSEEK_API_KEY_SECRET, normalizeDeepSeekApiKey } from './credentials.js'
+import { DiffReviewManager, type ChangedFileItem } from './diff-review.js'
 import { DirtyFileGuard } from './dirty-file-guard.js'
 import { EditorContextBridge } from './editor-context-bridge.js'
 import {
@@ -101,6 +102,7 @@ interface ChatViewState {
   question: QuestionRequest | null
   commands: CommandDescriptor[]
   permissions: PermissionPresetItem[]
+  changedFiles: ChangedFileItem[]
 }
 
 function initialState(cwd: string): ChatViewState {
@@ -119,6 +121,7 @@ function initialState(cwd: string): ChatViewState {
     question: null,
     commands: [],
     permissions: [],
+    changedFiles: [],
   }
 }
 
@@ -161,6 +164,7 @@ class DshChatController implements vscode.Disposable {
     private readonly runtime: DshRuntime,
     private readonly output: vscode.OutputChannel,
     private readonly dirtyFiles: DirtyFileGuard,
+    private readonly diffReviews: DiffReviewManager,
     private _cwd: string,
   ) {
     this._state = initialState(_cwd)
@@ -191,6 +195,7 @@ class DshChatController implements vscode.Disposable {
     const generation = ++this.generation
     this.disconnectClient()
     this.projector.reset([])
+    this.diffReviews.clear()
     this.guardedDirtyCalls.clear()
     this.publish({
       phase: 'loading',
@@ -204,6 +209,7 @@ class DshChatController implements vscode.Disposable {
       question: null,
       commands: [],
       permissions: [],
+      changedFiles: [],
     })
     try {
       const uri = await this.runtime.start(this.cwd === '' ? undefined : vscode.Uri.file(this.cwd))
@@ -390,6 +396,7 @@ class DshChatController implements vscode.Disposable {
       question: null,
       commands: [],
       permissions: permissionPresetsOf(summary?.projections?.values?.permissions),
+      changedFiles: this.diffReviews.rebuild(sessionId, this.cwd, events),
       ...this.modelPatch(models),
     })
     void this.loadCommands(client, sessionId)
@@ -452,6 +459,7 @@ class DshChatController implements vscode.Disposable {
         const conflict = this.dirtyConflict(dshEvent, payload.view)
         if (conflict !== undefined) void this.cancelForDirtyConflict(conflict)
         this.projector.apply(dshEvent, payload.view)
+        const changed = this.diffReviews.accept(sessionId, this.cwd, dshEvent, payload.view)
         if (conflict !== undefined) {
           const label = conflict.paths.length === 1
             ? `\`${conflict.paths[0] ?? 'file'}\``
@@ -462,7 +470,10 @@ class DshChatController implements vscode.Disposable {
             true,
           )
         }
-        this.publish({ messages: this.projector.messages() })
+        this.publish({
+          messages: this.projector.messages(),
+          ...(changed ? { changedFiles: this.diffReviews.changedFiles(sessionId) } : {}),
+        })
       }
       return
     }
@@ -589,6 +600,20 @@ class DshChatController implements vscode.Disposable {
         detail: `${conflict.paths.join('\n')}\n\nSave or discard the changes in VS Code, then retry the task.`,
       },
     )
+  }
+
+  async openFile(filePath: string, line?: number): Promise<void> {
+    await this.diffReviews.openFile(this.cwd, filePath, line)
+  }
+
+  async reviewFile(filePath: string): Promise<void> {
+    if (this._state.sessionId === '') return
+    await this.diffReviews.reviewFile(this._state.sessionId, this.cwd, filePath)
+  }
+
+  async reviewAll(): Promise<void> {
+    if (this._state.sessionId === '') return
+    await this.diffReviews.reviewAll(this._state.sessionId)
   }
 }
 
@@ -778,6 +803,18 @@ class DshSurface implements vscode.Disposable {
             if (uri.scheme === 'http' || uri.scheme === 'https') await vscode.env.openExternal(uri)
           }
           return
+        case 'open-file':
+          if (typeof value.path === 'string') {
+            await this.controller.openFile(
+              value.path,
+              typeof value.line === 'number' && Number.isInteger(value.line) ? value.line : undefined,
+            )
+          }
+          return
+        case 'review-file':
+          if (typeof value.path === 'string') await this.controller.reviewFile(value.path)
+          return
+        case 'review-all': await this.controller.reviewAll(); return
         case 'select-model':
           if (typeof value.selection === 'object' && value.selection !== null) {
             const selection = value.selection as Record<string, unknown>
@@ -847,12 +884,14 @@ export function activate(context: vscode.ExtensionContext): void {
     output.appendLine('[chat] Open a folder or workspace before using DeepSeek Harness.')
   }
   const cwd = workspace?.uri.fsPath ?? ''
-  const controller = new DshChatController(runtime, output, new DirtyFileGuard(), cwd)
+  const diffReviews = new DiffReviewManager()
+  const controller = new DshChatController(runtime, output, new DirtyFileGuard(), diffReviews, cwd)
   const editorContext = new EditorContextBridge(() => controller.cwd)
   const provider = new DshViewProvider(controller, output, editorContext, context.extensionUri)
   const panels = new Set<{ panel: vscode.WebviewPanel; surface: DshSurface }>()
 
-  context.subscriptions.push(output, runtime, controller, editorContext, provider)
+  context.subscriptions.push(output, runtime, controller, diffReviews, editorContext, provider)
+  context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider('dsh-diff', diffReviews))
   context.subscriptions.push(runtime.onDidChangeState(state => { controller.observeRuntime(state) }))
   context.subscriptions.push(vscode.window.registerWebviewViewProvider(
     'deepseekHarness.chat',

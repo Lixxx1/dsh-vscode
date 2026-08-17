@@ -63,6 +63,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     pre code { padding: 0; background: transparent; }
     a { color: var(--vscode-textLink-foreground); text-decoration: none; cursor: pointer; }
     a:hover { text-decoration: underline; }
+    .file-link { min-width: 0; padding: 0; border: 0; color: var(--vscode-textLink-foreground); background: transparent; text-align: left; font-family: var(--vscode-editor-font-family); cursor: pointer; overflow-wrap: anywhere; }
+    .file-link:hover { text-decoration: underline; }
+    .code-link { padding: 1px 4px; border-radius: 4px; color: var(--vscode-textPreformat-foreground); background: var(--vscode-textCodeBlock-background); }
     .tool { margin: 7px 0 10px; border: 1px solid var(--vscode-widget-border); border-radius: 8px; overflow: hidden; background: color-mix(in srgb, var(--vscode-editor-background) 72%, transparent); }
     .tool.failed { border-color: var(--vscode-errorForeground); }
     .tool summary { min-height: 35px; padding: 7px 9px; display: flex; align-items: center; gap: 7px; cursor: pointer; list-style: none; }
@@ -81,6 +84,15 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     .diff-old { border-left: 2px solid var(--vscode-gitDecoration-deletedResourceForeground); }
     .diff-new { border-left: 2px solid var(--vscode-gitDecoration-addedResourceForeground); }
     .source { display: block; margin: 4px 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .tool-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 2px; }
+    .tool-action { min-height: 24px; padding: 2px 7px; border: 1px solid var(--vscode-widget-border); border-radius: 5px; color: var(--vscode-foreground); background: transparent; font-size: 11px; }
+    .tool-action:hover { background: var(--vscode-toolbar-hoverBackground); }
+    .changed-files { margin: 14px 0 4px; padding: 10px; border: 1px solid var(--vscode-widget-border); border-radius: 8px; background: color-mix(in srgb, var(--vscode-editor-background) 72%, transparent); }
+    .changed-files-head, .changed-file { min-width: 0; display: flex; align-items: center; gap: 8px; }
+    .changed-files-head { margin-bottom: 6px; font-weight: 600; }
+    .changed-files-title { min-width: 0; flex: 1; }
+    .changed-file { min-height: 28px; padding: 3px 0; border-top: 1px solid color-mix(in srgb, var(--vscode-widget-border) 55%, transparent); }
+    .changed-file .file-link { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
     .failed, .error-text { color: var(--vscode-errorForeground); }
     .streaming::after { content: ''; display: inline-block; width: 6px; height: 13px; margin-left: 2px; vertical-align: -2px; background: var(--vscode-foreground); animation: blink 1s steps(2) infinite; }
     @keyframes blink { 50% { opacity: 0; } }
@@ -210,23 +222,51 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       return anchor;
     }
 
+    function fileReference(value) {
+      const match = /^((?:[A-Za-z]:[\\\\/]|\\/)?(?:[A-Za-z0-9_@.+~-]+[\\\\/])*[A-Za-z0-9_@.+~-]+\\.[A-Za-z][A-Za-z0-9]{0,9})(?::(\\d+))?(?::\\d+)?$/.exec(value);
+      if (!match) return undefined;
+      return { path: match[1], ...(match[2] ? { line: Number(match[2]) } : {}) };
+    }
+    function fileButton(path, line, label, className) {
+      const button = node('button', 'file-link' + (className ? ' ' + className : ''), label || path);
+      button.type = 'button'; button.title = 'Open ' + path + (line ? ':' + String(line) : '');
+      button.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); vscode.postMessage({ type: 'open-file', path, ...(line ? { line } : {}) }); });
+      return button;
+    }
+    function appendFileText(parent, text) {
+      const pattern = /(?:[A-Za-z]:[\\\\/]|\\/)?(?:[A-Za-z0-9_@.+~-]+[\\\\/])*[A-Za-z0-9_@.+~-]+\\.[A-Za-z][A-Za-z0-9]{0,9}(?::\\d+)?(?::\\d+)?/g;
+      let last = 0;
+      for (const match of text.matchAll(pattern)) {
+        const index = match.index || 0;
+        const reference = fileReference(match[0]);
+        if (!reference) continue;
+        if (index > last) parent.append(document.createTextNode(text.slice(last, index)));
+        parent.append(fileButton(reference.path, reference.line, match[0]));
+        last = index + match[0].length;
+      }
+      if (last < text.length) parent.append(document.createTextNode(text.slice(last)));
+    }
+
     function appendInline(parent, text) {
       const pattern = /(\\*\\*[^*]+\\*\\*|\\*[^*]+\\*|\\[[^\\]]+\\]\\(https?:\\/\\/[^)\\s]+\\)|\\x60[^\\x60]+\\x60)/g;
       let last = 0;
       for (const match of text.matchAll(pattern)) {
         const index = match.index || 0;
-        if (index > last) parent.append(document.createTextNode(text.slice(last, index)));
+        if (index > last) appendFileText(parent, text.slice(last, index));
         const token = match[0];
-        if (token.startsWith('**')) parent.append(node('strong', '', token.slice(2, -2)));
-        else if (token.startsWith('*')) parent.append(node('em', '', token.slice(1, -1)));
-        else if (token.charCodeAt(0) === 96) parent.append(node('code', '', token.slice(1, -1)));
+        if (token.startsWith('**')) { const strong = node('strong'); appendFileText(strong, token.slice(2, -2)); parent.append(strong); }
+        else if (token.startsWith('*')) { const em = node('em'); appendFileText(em, token.slice(1, -1)); parent.append(em); }
+        else if (token.charCodeAt(0) === 96) {
+          const value = token.slice(1, -1); const reference = fileReference(value);
+          parent.append(reference ? fileButton(reference.path, reference.line, value, 'code-link') : node('code', '', value));
+        }
         else {
           const split = token.indexOf('](');
           parent.append(link(token.slice(split + 2, -1), token.slice(1, split)));
         }
         last = index + token.length;
       }
-      if (last < text.length) parent.append(document.createTextNode(text.slice(last)));
+      if (last < text.length) appendFileText(parent, text.slice(last));
     }
 
     function renderMarkdown(text) {
@@ -280,22 +320,43 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
         appendPre(body, string(resultView && resultView.output) || message.rawResult || string(callView && callView.title));
         if (resultView && (typeof resultView.exitCode === 'number' || resultView.signal)) body.append(node('div', '', resultView.signal ? 'Signal ' + resultView.signal : 'Exit ' + resultView.exitCode));
       } else if (card === 'diff') {
+        const paths = [];
         for (const diffValue of array(view.diffs)) {
           const diff = record(diffValue); if (!diff) continue;
-          body.append(node('div', 'diff-path', string(diff.path, 'File change')));
+          const filePath = string(diff.path, 'File change');
+          if (filePath !== 'File change' && !paths.includes(filePath)) paths.push(filePath);
+          const pathRow = node('div', 'diff-path');
+          pathRow.append(filePath === 'File change' ? document.createTextNode(filePath) : fileButton(filePath, undefined, filePath));
+          body.append(pathRow);
           if (typeof diff.oldText === 'string') appendPre(body, '- ' + diff.oldText.replace(/\\n/g, '\\n- '), 'diff-old');
           appendPre(body, '+ ' + string(diff.newText).replace(/\\n/g, '\\n+ '), 'diff-new');
         }
+        for (const filePath of paths) {
+          const actions = node('div', 'tool-actions');
+          const open = node('button', 'tool-action', paths.length === 1 ? 'Open File' : 'Open ' + filePath);
+          open.type = 'button'; open.addEventListener('click', () => vscode.postMessage({ type: 'open-file', path: filePath })); actions.append(open);
+          if (!message.streaming && !message.failed) {
+            const review = node('button', 'tool-action', paths.length === 1 ? 'Review Changes' : 'Review ' + filePath);
+            review.type = 'button'; review.addEventListener('click', () => vscode.postMessage({ type: 'review-file', path: filePath })); actions.append(review);
+          }
+          body.append(actions);
+        }
       } else if (card === 'read') {
-        body.append(node('div', 'result-title', string(view.path, 'File')));
+        const filePath = string(view.path, 'File'); const title = node('div', 'result-title');
+        title.append(filePath === 'File' ? document.createTextNode(filePath) : fileButton(filePath, Number(view.offset) || undefined, filePath)); body.append(title);
         const lines = array(view.lines).map(value => { const line = record(value); return line ? String(line.number).padStart(4, ' ') + '  ' + string(line.text) : ''; }).filter(Boolean);
         appendPre(body, lines.join('\\n') || message.rawResult);
       } else if (card === 'search') {
-        if (view.shape === 'paths') for (const pathValue of array(view.paths)) body.append(node('div', 'source', string(pathValue)));
+        if (view.shape === 'paths') for (const pathValue of array(view.paths)) {
+          const filePath = string(pathValue); const row = node('div', 'source'); if (filePath) row.append(fileButton(filePath, undefined, filePath)); body.append(row);
+        }
         if (view.shape === 'matches') for (const fileValue of array(view.files)) {
           const file = record(fileValue); if (!file) continue;
-          body.append(node('div', 'result-title', string(file.path)));
-          for (const matchValue of array(file.matches)) { const match = record(matchValue); if (match) body.append(node('div', 'source', String(match.lineNumber) + ': ' + string(match.line))); }
+          const filePath = string(file.path); const title = node('div', 'result-title'); if (filePath) title.append(fileButton(filePath, undefined, filePath)); body.append(title);
+          for (const matchValue of array(file.matches)) {
+            const match = record(matchValue); if (!match) continue; const line = Number(match.lineNumber) || undefined; const row = node('div', 'source');
+            if (filePath) row.append(fileButton(filePath, line, String(match.lineNumber) + ': ' + string(match.line))); body.append(row);
+          }
         }
         if (view.truncated === true) body.append(node('div', '', 'Showing a limited result set (' + String(view.total || '') + ' total).'));
       } else if (card === 'web') {
@@ -306,7 +367,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
         const presented = contentText(view && view.content);
         const raw = presented || message.rawResult || (view && view.rawInput !== undefined ? pretty(view.rawInput) : '') || message.rawInput || '';
         if (raw) appendPre(body, pretty(raw));
-        for (const locationValue of array(callView && callView.locations)) { const location = record(locationValue); if (location) body.append(node('div', 'source', string(location.path) + (location.line ? ':' + String(location.line) : ''))); }
+        for (const locationValue of array(callView && callView.locations)) {
+          const location = record(locationValue); if (!location) continue; const filePath = string(location.path); const line = Number(location.line) || undefined; const row = node('div', 'source');
+          if (filePath) row.append(fileButton(filePath, line, filePath + (line ? ':' + String(line) : ''))); body.append(row);
+        }
       }
       return body;
     }
@@ -332,6 +396,16 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       item.append(head);
       if (message.rawResult) item.append(node('div', 'command-result', message.rawResult));
       return item;
+    }
+    function renderChangedFiles(files) {
+      const box = node('section', 'changed-files'); const head = node('div', 'changed-files-head');
+      head.append(node('span', 'changed-files-title', 'Changed Files'));
+      const reviewAll = node('button', 'tool-action', 'Review All'); reviewAll.type = 'button'; reviewAll.addEventListener('click', () => vscode.postMessage({ type: 'review-all' })); head.append(reviewAll); box.append(head);
+      for (const file of files) {
+        const row = node('div', 'changed-file'); row.append(fileButton(file.path, undefined, file.path));
+        const review = node('button', 'tool-action', 'Review'); review.type = 'button'; review.addEventListener('click', () => vscode.postMessage({ type: 'review-file', path: file.path })); row.append(review); box.append(row);
+      }
+      return box;
     }
     function renderMessage(message) {
       if (message.role === 'tool') return renderTool(message);
@@ -564,6 +638,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       else {
         if (!current.messages || current.messages.length === 0) elements.conversation.append(renderEmpty(current));
         else for (const message of current.messages) elements.conversation.append(renderMessage(message));
+        if (current.changedFiles && current.changedFiles.length) elements.conversation.append(renderChangedFiles(current.changedFiles));
         if (current.approval) elements.conversation.append(renderApproval(current.approval));
         if (current.question) elements.conversation.append(renderQuestions(current.question));
       }
