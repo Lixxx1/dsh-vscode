@@ -1,8 +1,8 @@
 # DeepSeek Harness for VS Code
 
-Use DeepSeek Harness as a coding assistant in the VS Code sidebar.
+Bring DeepSeek Harness into the same place you write code. dsh-vscode gives DSH a Claude Code/Codex-style right sidebar that already understands your project, active file, and selected code.
 
-The goal is the same kind of workflow offered by Claude Code and Codex in VS Code: keep an assistant beside your editor while you work, with the current project, file, and selection already in context.
+Ask DeepSeek to inspect, change, and verify code without switching between your editor, terminal, and a separate chat window.
 
 **English** | [简体中文](README.zh.md)
 
@@ -16,13 +16,11 @@ The goal is the same kind of workflow offered by Claude Code and Codex in VS Cod
 
 ## Features
 
-- A Claude Code/Codex-style coding assistant powered by the official DeepSeek Harness runtime, always available in the VS Code right sidebar.
-- Project and editor context built in: DeepSeek sees the current workspace, active file, and selected code. Use `@file`, `@folder`, or **Add Selection to Chat** for explicit context.
-- Native code review: open file references and tool results in the editor, then inspect individual changes or all changed files with VS Code's Diff Editor.
-- Safe collaboration with unsaved code: if DeepSeek is about to modify a dirty editor buffer, the task stops before overwriting it.
-- A complete task loop inside VS Code, including streaming, tool calls, approvals, follow-up questions, project sessions, and official `/` commands.
-- Queue follow-up messages while a task runs, edit or remove them, or steer the current task immediately with `Cmd/Ctrl+Enter`.
-- Choose Model and Reasoning Effort separately from the composer.
+- **Work with the real DSH runtime.** Sessions, streaming, tool calls, approvals, follow-up questions, and official `/` commands stay inside the VS Code sidebar.
+- **Start with the right context.** DeepSeek receives the current workspace, active file, and selected code. Add specific files or folders with `@`, or pin a selection with **Add Selection to Chat**.
+- **Control every session.** Switch official Permission and Plan modes from the composer, then choose Model and Reasoning Effort independently.
+- **Review edits where you code.** Changed files are grouped by turn with `+/-` line counts. Open them in VS Code's native Diff Editor, then Keep or safely Revert individual files or the full change set.
+- **Stay in control while DeepSeek works.** Queue, edit, remove, or steer follow-up messages. If DeepSeek reaches a dirty editor buffer, the task stops before overwriting your unsaved work.
 
 ## Install
 
@@ -50,7 +48,7 @@ Requires VS Code 1.100 or newer and Node.js `^22.19` or `>=24`.
 1. Open a trusted project folder in VS Code.
 2. Select **DeepSeek Harness** in the right sidebar. If it is hidden, find it under **Other Views**.
 3. Use the key button to configure `DEEPSEEK_API_KEY`.
-4. Choose a project, conversation, Model, and Reasoning Effort, then start working. Type `/` for official DSH commands, or `@` to add files and folders.
+4. Choose the Permission mode, Model, and Reasoning Effort, then start working. Use the Shield menu for Permission and Plan modes, `/` for official DSH commands, and `@` to add files or folders.
 
 ## License
 
