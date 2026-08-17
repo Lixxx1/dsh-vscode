@@ -7,6 +7,7 @@ Ask DeepSeek to inspect, change, and verify code without switching between your 
 **English** | [简体中文](README.zh.md)
 
 [![CI](https://github.com/Lixxx1/dsh-vscode/actions/workflows/ci.yml/badge.svg)](https://github.com/Lixxx1/dsh-vscode/actions/workflows/ci.yml)
+[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/lixxx1.dsh-sidebar?style=flat-square&label=VS%20Code%20Marketplace&color=4d6bfe)](https://marketplace.visualstudio.com/items?itemName=lixxx1.dsh-sidebar)
 [![MIT License](https://img.shields.io/badge/license-MIT-263146?style=flat-square)](LICENSE)
 ![Status](https://img.shields.io/badge/status-alpha-7da1de?style=flat-square)
 
@@ -24,22 +25,13 @@ Ask DeepSeek to inspect, change, and verify code without switching between your 
 
 ## Install
 
-Install the official DeepSeek Harness CLI first:
+Install the official DeepSeek Harness CLI:
 
 ```sh
 npm install -g @deepseek-ai/dsh
 ```
 
-Then build and install the extension:
-
-```sh
-git clone https://github.com/Lixxx1/dsh-vscode.git
-cd dsh-vscode
-corepack pnpm install --frozen-lockfile
-corepack pnpm run check
-corepack pnpm run package
-code --install-extension dsh-vscode.vsix
-```
+Then open **Extensions** in VS Code, search for **DSH Sidebar**, and select **Install**. You can also install it from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=lixxx1.dsh-sidebar).
 
 Requires VS Code 1.100 or newer and Node.js `^22.19` or `>=24`.
 

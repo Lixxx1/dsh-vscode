@@ -7,6 +7,7 @@
 [English](README.md) | **简体中文**
 
 [![CI](https://github.com/Lixxx1/dsh-vscode/actions/workflows/ci.yml/badge.svg)](https://github.com/Lixxx1/dsh-vscode/actions/workflows/ci.yml)
+[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/lixxx1.dsh-sidebar?style=flat-square&label=VS%20Code%20Marketplace&color=4d6bfe)](https://marketplace.visualstudio.com/items?itemName=lixxx1.dsh-sidebar)
 [![MIT License](https://img.shields.io/badge/license-MIT-263146?style=flat-square)](LICENSE)
 ![Status](https://img.shields.io/badge/status-alpha-7da1de?style=flat-square)
 
@@ -30,16 +31,7 @@
 npm install -g @deepseek-ai/dsh
 ```
 
-然后构建并安装扩展：
-
-```sh
-git clone https://github.com/Lixxx1/dsh-vscode.git
-cd dsh-vscode
-corepack pnpm install --frozen-lockfile
-corepack pnpm run check
-corepack pnpm run package
-code --install-extension dsh-vscode.vsix
-```
+然后在 VS Code 中打开**扩展**，搜索 **DSH Sidebar** 并点击**安装**；也可以直接从 [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=lixxx1.dsh-sidebar) 安装。
 
 需要 VS Code 1.100 或更新版本，以及 Node.js `^22.19` 或 `>=24`。
 
