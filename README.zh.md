@@ -16,14 +16,10 @@
 
 ## 功能
 
-- 围绕 VS Code 当前打开的项目与 DeepSeek 对话。
-- 编码时让助手常驻右侧侧边栏。
-- 创建新对话，或继续已有的项目会话。
-- 分别选择 Model 和 Reasoning Effort。
-- 直接在编辑器中查看流式 Markdown 回复和可展开的工具卡片。
-- 在会话中处理工具审批，并回答 DeepSeek 的后续问题。
-- 为提示词添加图片附件，并直接停止正在运行的任务。
-- 需要更大空间时，在编辑器 Tab 中打开同一个对话。
+- 在 VS Code 右侧边栏中提供 Claude Code、Codex 风格的 DeepSeek Harness 编码体验，让助手始终常驻代码旁边。
+- 默认围绕项目工作：DeepSeek 直接在选中的 VS Code 工作区中运行，也可以从输入框快速切换项目。
+- 无需离开编辑器即可完成完整的编码流程，包括流式回复、工具调用、操作审批和后续问题。
+- 在侧边栏中管理项目会话，分别选择 Model 与 Reasoning Effort，并使用 DSH 官方 `/` 命令。
 
 ## 安装
 
@@ -51,7 +47,7 @@ code --install-extension dsh-vscode.vsix
 1. 在 VS Code 中打开一个受信任的项目文件夹。
 2. 在右侧选择 **DeepSeek Harness**。如果没有显示，可以在 **其他视图** 中找到它。
 3. 点击钥匙按钮配置 `DEEPSEEK_API_KEY`。
-4. 选择会话、Model 和 Reasoning Effort，然后开始工作。
+4. 选择项目、会话、Model 和 Reasoning Effort，然后开始工作。输入 `/` 可以打开 DeepSeek Harness 命令菜单。
 
 实现细节见[架构文档](docs/architecture.md)。参与开发前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
