@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { DshEvent } from './conversation.js'
 import type { PluginInventorySnapshot } from './plugin-profile.js'
+import type { SettingsDescription, SettingsMutation, SettingsNamespace } from './runtime-settings.js'
 
 export interface SessionSummary {
   sessionId: string
@@ -149,6 +150,14 @@ export class DshClient {
 
   pluginInventory(): Promise<PluginInventorySnapshot> {
     return this.call('pluginInventory/list', { args: {} })
+  }
+
+  settings(): Promise<SettingsDescription> {
+    return this.call('settings.describe', {})
+  }
+
+  mutateSettings(ns: string, ops: SettingsMutation[], expectedRevision: number): Promise<SettingsNamespace> {
+    return this.call('settings.mutate', { ns, ops, expectedRevision })
   }
 
   prompt(

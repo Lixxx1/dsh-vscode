@@ -16,6 +16,16 @@ import {
   type InstalledPluginStatus,
   type PluginInventorySnapshot,
 } from './plugin-profile.js'
+import {
+  hasSettingsOverrides,
+  parseRuntimeSetting,
+  runtimeSettingFields,
+  settingConstantOptions,
+  type RuntimeSettingField,
+  type SettingsDescription,
+  type SettingsMutation,
+  type SettingsNamespace,
+} from './runtime-settings.js'
 
 const CATALOG_CACHE_KEY = 'deepseekHarness.communityRuntimePlugins'
 const MAX_REGISTRY_BYTES = 5 * 1024 * 1024
@@ -33,12 +43,15 @@ interface PluginController {
     running: boolean
   }
   pluginInventory(): Promise<PluginInventorySnapshot>
+  settings(): Promise<SettingsDescription>
+  mutateSettings(ns: string, ops: SettingsMutation[], expectedRevision: number): Promise<SettingsNamespace>
   restart(): Promise<void>
 }
 
 type PluginPick = vscode.QuickPickItem & (
   | { action: 'install' }
   | { action: 'browse' }
+  | { action: 'configure' }
   | { action: 'refresh' }
   | { action: 'plugin'; plugin: InstalledPlugin }
   | { action: 'empty' }
@@ -85,6 +98,10 @@ export class DshPluginManager {
         await this.browseCatalog()
         return
       }
+      if (selected.action === 'configure') {
+        await this.configureSettings()
+        continue
+      }
       if (selected.action === 'refresh') continue
       if (selected.action === 'install') {
         await this.install()
@@ -108,6 +125,11 @@ export class DshPluginManager {
         action: 'browse',
         label: '$(search) Find community runtime plugins…',
         detail: 'Search tools, skills, MCP integrations, memory, and agent hooks; install with one click',
+      },
+      {
+        action: 'configure',
+        label: '$(settings-gear) Configure runtime settings…',
+        detail: 'Edit settings namespaces registered by built-in and community DSH plugins',
       },
       {
         action: 'refresh',
@@ -299,6 +321,174 @@ export class DshPluginManager {
     if (confirmed !== 'Remove') return
     await this.runOfficialPluginCommand(['remove', plugin.name], `Removing ${plugin.name}`)
     await this.restartAfterChange(`Removed ${plugin.name}`)
+  }
+
+  private async configureSettings(): Promise<void> {
+    if (this.controller.state.phase !== 'ready') {
+      await vscode.window.showWarningMessage('Start DeepSeek Harness before configuring runtime settings.')
+      return
+    }
+    let description = await this.controller.settings()
+    if (!description.writable) {
+      await vscode.window.showWarningMessage('The active DSH profile does not expose writable runtime settings.')
+      return
+    }
+    while (true) {
+      const selected = await vscode.window.showQuickPick(description.namespaces.map(namespace => ({
+        label: `$(settings-gear) ${namespace.ns}`,
+        description: hasSettingsOverrides(namespace) ? 'Customized' : 'Default',
+        detail: `${namespace.applies === 'restart' ? 'Requires a runtime restart' : 'Applies immediately'} · ${String(runtimeSettingFields(namespace).length)} settings`,
+        namespace,
+      })), {
+        title: 'DeepSeek Harness Runtime Settings',
+        placeHolder: 'Choose a settings namespace registered by DSH or a runtime plugin',
+        matchOnDescription: true,
+        matchOnDetail: true,
+      })
+      if (selected === undefined) return
+      const changed = await this.configureNamespace(selected.namespace)
+      if (!changed) continue
+      if (selected.namespace.applies === 'restart') {
+        await this.controller.restart()
+        if ((this.controller.state.phase as string) === 'error') {
+          throw new Error(`Settings saved, but DSH could not restart: ${this.controller.state.statusText}`)
+        }
+        await vscode.window.showInformationMessage(`${selected.namespace.ns} updated. DeepSeek Harness restarted.`)
+        return
+      }
+      await vscode.window.showInformationMessage(`${selected.namespace.ns} updated.`)
+      description = await this.controller.settings()
+    }
+  }
+
+  private async configureNamespace(namespace: SettingsNamespace): Promise<boolean> {
+    if (namespace.applies === 'restart' && !await this.requireIdle()) return false
+    const fields = runtimeSettingFields(namespace)
+    type FieldPick = vscode.QuickPickItem & (
+      | { action: 'field'; field: RuntimeSettingField }
+      | { action: 'reset-all' }
+    )
+    const items: FieldPick[] = fields.map(field => ({
+      action: 'field',
+      field,
+      label: field.path.join('.'),
+      description: this.settingSummary(field),
+      detail: `${field.overridden ? 'Customized' : 'Inherited'}${field.node.meta?.description === undefined ? '' : ` · ${field.node.meta.description}`}`,
+    }))
+    if (hasSettingsOverrides(namespace)) {
+      items.unshift({
+        action: 'reset-all',
+        label: '$(discard) Reset all overrides',
+        description: namespace.ns,
+        detail: 'Use the values supplied by DSH and its plugins',
+      })
+    }
+    const selected = await vscode.window.showQuickPick(items, {
+      title: namespace.ns,
+      placeHolder: namespace.applies === 'restart' ? 'Changes restart the DSH runtime' : 'Changes apply immediately',
+      matchOnDescription: true,
+      matchOnDetail: true,
+    })
+    if (selected === undefined) return false
+    if (selected.action === 'reset-all') {
+      const resets: SettingsMutation[] = fields
+        .filter(field => field.overridden)
+        .map(field => ({ op: 'unset', path: field.path }))
+      if (resets.length === 0) return false
+      await this.controller.mutateSettings(namespace.ns, resets, namespace.revision)
+      return true
+    }
+    const mutation = await this.editSetting(namespace, selected.field)
+    if (mutation === undefined) return false
+    await this.controller.mutateSettings(namespace.ns, [mutation], namespace.revision)
+    return true
+  }
+
+  private async editSetting(
+    namespace: SettingsNamespace,
+    field: RuntimeSettingField,
+  ): Promise<SettingsMutation | undefined> {
+    if (field.secretSet !== undefined) return this.editSecret(field)
+    const options = settingConstantOptions(field, namespace.schema)
+    if (options !== undefined) {
+      type ValuePick = vscode.QuickPickItem & ({ value: unknown } | { reset: true })
+      const choices: ValuePick[] = options.map(value => ({
+        label: this.settingValue(value),
+        ...(Object.is(value, field.value) ? { description: 'Current' } : {}),
+        value,
+      }))
+      const choiceItems: ValuePick[] = [
+        ...choices,
+        ...(field.overridden ? [{
+          label: '$(discard) Use inherited value',
+          description: this.settingValue(field.inherited),
+          reset: true as const,
+        }] : []),
+      ]
+      const selected = await vscode.window.showQuickPick(choiceItems, {
+        title: field.path.join('.'), placeHolder: 'Choose a value',
+      })
+      if (selected === undefined) return undefined
+      if ('reset' in selected) return { op: 'unset', path: field.path }
+      return { op: 'set', path: field.path, value: selected.value }
+    }
+    const action = await vscode.window.showQuickPick([
+      { label: '$(edit) Change value', action: 'edit' as const },
+      ...(field.overridden ? [{
+        label: '$(discard) Use inherited value',
+        description: this.settingValue(field.inherited),
+        action: 'reset' as const,
+      }] : []),
+    ], { title: field.path.join('.'), placeHolder: this.settingSummary(field) })
+    if (action === undefined) return undefined
+    if (action.action === 'reset') return { op: 'unset', path: field.path }
+    const input = await vscode.window.showInputBox({
+      title: field.path.join('.'),
+      prompt: field.node.type === 'string' ? 'Enter a string value.' : 'Enter the new value as JSON.',
+      value: field.value === undefined ? '' : field.node.type === 'string' ? String(field.value) : JSON.stringify(field.value),
+      ignoreFocusOut: true,
+      validateInput: source => {
+        try {
+          parseRuntimeSetting(field, source)
+          return undefined
+        } catch (error) {
+          return this.message(error)
+        }
+      },
+    })
+    if (input === undefined) return undefined
+    return { op: 'set', path: field.path, value: parseRuntimeSetting(field, input) }
+  }
+
+  private async editSecret(field: RuntimeSettingField): Promise<SettingsMutation | undefined> {
+    if (field.secretSet) {
+      const action = await vscode.window.showQuickPick([
+        { label: '$(key) Replace secret', action: 'replace' as const },
+        { label: '$(trash) Clear secret', action: 'clear' as const },
+      ], { title: field.path.join('.'), placeHolder: 'The current secret value is never exposed by DSH' })
+      if (action === undefined) return undefined
+      if (action.action === 'clear') return { op: 'unset', path: field.path }
+    }
+    const value = await vscode.window.showInputBox({
+      title: field.path.join('.'),
+      prompt: 'Enter the secret. DSH stores it without returning the value to this extension.',
+      password: true,
+      ignoreFocusOut: true,
+      validateInput: source => source.length === 0 ? 'Secret cannot be empty.' : undefined,
+    })
+    return value === undefined ? undefined : { op: 'set', path: field.path, value }
+  }
+
+  private settingSummary(field: RuntimeSettingField): string {
+    if (field.secretSet !== undefined) return field.secretSet ? 'Configured secret' : 'Secret not set'
+    return this.settingValue(field.value)
+  }
+
+  private settingValue(value: unknown): string {
+    if (value === undefined) return 'Not set'
+    if (typeof value === 'string') return value === '' ? 'Empty string' : value
+    const rendered = JSON.stringify(value)
+    return rendered === undefined ? String(value) : rendered.length > 80 ? `${rendered.slice(0, 77)}…` : rendered
   }
 
   private async requireIdle(): Promise<boolean> {

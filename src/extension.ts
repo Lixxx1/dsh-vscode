@@ -33,6 +33,7 @@ import { toolWriteIntents } from './tool-write-guard.js'
 import { chatHtml } from './webview.js'
 import { DshPluginManager } from './plugin-manager.js'
 import type { PluginInventorySnapshot } from './plugin-profile.js'
+import type { SettingsDescription, SettingsMutation, SettingsNamespace } from './runtime-settings.js'
 
 let activeRuntime: DshRuntime | undefined
 
@@ -337,6 +338,14 @@ class DshChatController implements vscode.Disposable {
 
   pluginInventory(): Promise<PluginInventorySnapshot> {
     return this.requireClient().pluginInventory()
+  }
+
+  settings(): Promise<SettingsDescription> {
+    return this.requireClient().settings()
+  }
+
+  mutateSettings(ns: string, ops: SettingsMutation[], expectedRevision: number): Promise<SettingsNamespace> {
+    return this.requireClient().mutateSettings(ns, ops, expectedRevision)
   }
 
   async answerApproval(rpcId: string, approvalId: string, outcome: 'allowed-once' | 'rejected'): Promise<void> {
