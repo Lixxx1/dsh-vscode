@@ -90,11 +90,20 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     .tool-action { min-height: 24px; padding: 2px 7px; border: 1px solid var(--vscode-widget-border); border-radius: 5px; color: var(--vscode-foreground); background: transparent; font-size: 11px; }
     .tool-action:hover { background: var(--vscode-toolbar-hoverBackground); }
     .changed-files { margin: 14px 0 4px; padding: 10px; border: 1px solid var(--vscode-widget-border); border-radius: 8px; background: color-mix(in srgb, var(--vscode-editor-background) 72%, transparent); }
-    .changed-files-head, .changed-file { min-width: 0; display: flex; align-items: center; gap: 8px; }
-    .changed-files-head { margin-bottom: 6px; font-weight: 600; }
+    .changed-files-head { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 7px; font-weight: 600; }
     .changed-files-title { min-width: 0; flex: 1; }
-    .changed-file { min-height: 28px; padding: 3px 0; border-top: 1px solid color-mix(in srgb, var(--vscode-widget-border) 55%, transparent); }
+    .changed-files-actions, .changed-file-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; }
+    .changed-turn + .changed-turn { margin-top: 9px; }
+    .changed-turn-title { padding: 4px 0; color: var(--vscode-descriptionForeground); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+    .changed-file { min-width: 0; padding: 6px 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 5px 8px; border-top: 1px solid color-mix(in srgb, var(--vscode-widget-border) 55%, transparent); }
     .changed-file .file-link { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .changed-file-stats { display: flex; gap: 5px; font-family: var(--vscode-editor-font-family); font-size: 10px; }
+    .change-additions { color: var(--vscode-gitDecoration-addedResourceForeground); }
+    .change-deletions { color: var(--vscode-gitDecoration-deletedResourceForeground); }
+    .changed-file-actions { grid-column: 1 / -1; }
+    .changed-action { min-height: 21px; padding: 1px 5px; border: 0; border-radius: 4px; color: var(--vscode-descriptionForeground); background: transparent; font-size: 10px; }
+    .changed-action:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
+    .changed-action.danger { color: var(--vscode-errorForeground); }
     .failed, .error-text { color: var(--vscode-errorForeground); }
     .streaming::after { content: ''; display: inline-block; width: 6px; height: 13px; margin-left: 2px; vertical-align: -2px; background: var(--vscode-foreground); animation: blink 1s steps(2) infinite; }
     @keyframes blink { 50% { opacity: 0; } }
@@ -431,13 +440,25 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       if (message.rawResult) item.append(node('div', 'command-result', message.rawResult));
       return item;
     }
-    function renderChangedFiles(files) {
+    function renderChangedFiles(groups) {
       const box = node('section', 'changed-files'); const head = node('div', 'changed-files-head');
       head.append(node('span', 'changed-files-title', 'Changed Files'));
-      const reviewAll = node('button', 'tool-action', 'Review All'); reviewAll.type = 'button'; reviewAll.addEventListener('click', () => vscode.postMessage({ type: 'review-all' })); head.append(reviewAll); box.append(head);
-      for (const file of files) {
-        const row = node('div', 'changed-file'); row.append(fileButton(file.path, undefined, file.path));
-        const review = node('button', 'tool-action', 'Review'); review.type = 'button'; review.addEventListener('click', () => vscode.postMessage({ type: 'review-file', path: file.path })); row.append(review); box.append(row);
+      const allFiles = groups.flatMap(group => group.files || []); const allRevertible = allFiles.length > 0 && allFiles.every(file => file.canRevert === true);
+      const actions = node('div', 'changed-files-actions');
+      const reviewAll = node('button', 'changed-action', 'Open All'); reviewAll.type = 'button'; reviewAll.addEventListener('click', () => vscode.postMessage({ type: 'review-all' })); actions.append(reviewAll);
+      const keepAll = node('button', 'changed-action', 'Keep All'); keepAll.type = 'button'; keepAll.addEventListener('click', () => vscode.postMessage({ type: 'keep-all' })); actions.append(keepAll);
+      const revertAll = node('button', 'changed-action danger', 'Revert All'); revertAll.type = 'button'; revertAll.disabled = !allRevertible; if (!allRevertible) revertAll.title = 'Full snapshots are unavailable for one or more files'; revertAll.addEventListener('click', () => vscode.postMessage({ type: 'revert-all' })); actions.append(revertAll); head.append(actions); box.append(head);
+      for (const group of groups) {
+        const section = node('div', 'changed-turn'); section.append(node('div', 'changed-turn-title', group.turn > 0 ? 'Turn ' + String(group.turn) : 'Earlier changes'));
+        for (const file of group.files || []) {
+          const row = node('div', 'changed-file'); row.append(fileButton(file.path, undefined, file.path));
+          const stats = node('span', 'changed-file-stats'); stats.append(node('span', 'change-additions', '+' + String(file.additions || 0)), node('span', 'change-deletions', '−' + String(file.deletions || 0))); row.append(stats);
+          const fileActions = node('div', 'changed-file-actions');
+          const review = node('button', 'changed-action', 'Open Diff'); review.type = 'button'; review.addEventListener('click', () => vscode.postMessage({ type: 'review-file', path: file.path, turn: group.turn })); fileActions.append(review);
+          const keep = node('button', 'changed-action', 'Keep'); keep.type = 'button'; keep.addEventListener('click', () => vscode.postMessage({ type: 'keep-file', path: file.path, turn: group.turn })); fileActions.append(keep);
+          const revert = node('button', 'changed-action danger', 'Revert'); revert.type = 'button'; revert.disabled = file.canRevert !== true; if (revert.disabled) revert.title = 'Full snapshot unavailable after reloading this session'; revert.addEventListener('click', () => vscode.postMessage({ type: 'revert-file', path: file.path, turn: group.turn })); fileActions.append(revert); row.append(fileActions); section.append(row);
+        }
+        box.append(section);
       }
       return box;
     }

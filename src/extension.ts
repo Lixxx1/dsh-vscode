@@ -10,7 +10,7 @@ import {
   type PlanModeState,
 } from './collaboration-state.js'
 import { DEEPSEEK_API_KEY_SECRET, normalizeDeepSeekApiKey } from './credentials.js'
-import { DiffReviewManager, type ChangedFileItem } from './diff-review.js'
+import { DiffReviewManager, type ChangedFileGroup } from './diff-review.js'
 import { DirtyFileGuard } from './dirty-file-guard.js'
 import { EditorContextBridge } from './editor-context-bridge.js'
 import {
@@ -106,7 +106,7 @@ interface ChatViewState {
   commands: CommandDescriptor[]
   permissions: PermissionPresetItem[]
   plan: PlanModeState
-  changedFiles: ChangedFileItem[]
+  changedFiles: ChangedFileGroup[]
   queue: QueueItemState[]
 }
 
@@ -644,14 +644,60 @@ class DshChatController implements vscode.Disposable {
     await this.diffReviews.openFile(this.cwd, filePath, line)
   }
 
-  async reviewFile(filePath: string): Promise<void> {
+  async reviewFile(filePath: string, turn?: number): Promise<void> {
     if (this._state.sessionId === '') return
-    await this.diffReviews.reviewFile(this._state.sessionId, this.cwd, filePath)
+    await this.diffReviews.reviewFile(this._state.sessionId, this.cwd, filePath, turn)
   }
 
   async reviewAll(): Promise<void> {
     if (this._state.sessionId === '') return
     await this.diffReviews.reviewAll(this._state.sessionId)
+  }
+
+  keepFile(filePath: string, turn: number): void {
+    if (this._state.sessionId === '') return
+    this.publish({ changedFiles: this.diffReviews.keepFile(this._state.sessionId, this.cwd, filePath, turn) })
+  }
+
+  keepAll(): void {
+    if (this._state.sessionId === '') return
+    this.publish({ changedFiles: this.diffReviews.keepAll(this._state.sessionId) })
+  }
+
+  async revertFile(filePath: string, turn: number): Promise<void> {
+    if (this._state.sessionId === '') return
+    const confirmed = await vscode.window.showWarningMessage(
+      `Revert DeepSeek changes to ${filePath}?`,
+      { modal: true, detail: 'This restores the file to its content before this turn. The revert is blocked if the file has changed since.' },
+      'Revert',
+    )
+    if (confirmed !== 'Revert') return
+    try {
+      this.publish({ changedFiles: this.diffReviews.revertFile(this._state.sessionId, this.cwd, filePath, turn) })
+      await vscode.commands.executeCommand('workbench.files.action.refreshFilesExplorer')
+      await vscode.window.showInformationMessage(`Reverted ${filePath}.`)
+    } catch (error) {
+      await vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  async revertAll(): Promise<void> {
+    if (this._state.sessionId === '') return
+    const count = this._state.changedFiles.reduce((total, group) => total + group.files.length, 0)
+    if (count === 0) return
+    const confirmed = await vscode.window.showWarningMessage(
+      `Revert all ${String(count)} reviewed file changes?`,
+      { modal: true, detail: 'Every file is checked first. If any file has changed since DeepSeek edited it, nothing is reverted.' },
+      'Revert All',
+    )
+    if (confirmed !== 'Revert All') return
+    try {
+      this.publish({ changedFiles: this.diffReviews.revertAll(this._state.sessionId) })
+      await vscode.commands.executeCommand('workbench.files.action.refreshFilesExplorer')
+      await vscode.window.showInformationMessage(`Reverted changes in ${String(count)} files.`)
+    } catch (error) {
+      await vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error))
+    }
   }
 }
 
@@ -888,9 +934,26 @@ class DshSurface implements vscode.Disposable {
           }
           return
         case 'review-file':
-          if (typeof value.path === 'string') await this.controller.reviewFile(value.path)
+          if (typeof value.path === 'string') {
+            await this.controller.reviewFile(
+              value.path,
+              typeof value.turn === 'number' && Number.isSafeInteger(value.turn) ? value.turn : undefined,
+            )
+          }
           return
         case 'review-all': await this.controller.reviewAll(); return
+        case 'keep-file':
+          if (typeof value.path === 'string' && typeof value.turn === 'number' && Number.isSafeInteger(value.turn)) {
+            this.controller.keepFile(value.path, value.turn)
+          }
+          return
+        case 'keep-all': this.controller.keepAll(); return
+        case 'revert-file':
+          if (typeof value.path === 'string' && typeof value.turn === 'number' && Number.isSafeInteger(value.turn)) {
+            await this.controller.revertFile(value.path, value.turn)
+          }
+          return
+        case 'revert-all': await this.controller.revertAll(); return
         case 'select-model':
           if (typeof value.selection === 'object' && value.selection !== null) {
             const selection = value.selection as Record<string, unknown>

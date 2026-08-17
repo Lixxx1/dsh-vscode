@@ -7,6 +7,14 @@ import type { HistoryEntry } from './dsh-client.js'
 
 export interface ChangedFileItem {
   path: string
+  additions: number
+  deletions: number
+  canRevert: boolean
+}
+
+export interface ChangedFileGroup {
+  turn: number
+  files: ChangedFileItem[]
 }
 
 interface FileDiff {
@@ -18,20 +26,28 @@ interface FileDiff {
 interface PendingFile {
   absolutePath: string
   displayPath: string
-  before?: string
+  before?: FileImage
   diffs: FileDiff[]
+  turn: number
 }
 
 interface ReviewSnapshot {
-  before: string
-  after: string
+  before: string | null
+  after: string | null
   fullFile: boolean
+  additions: number
+  deletions: number
 }
 
 interface ReviewFile {
   absolutePath: string
   displayPath: string
+  turn: number
   snapshots: ReviewSnapshot[]
+}
+
+interface FileImage {
+  text: string | null
 }
 
 interface UnknownRecord {
@@ -62,6 +78,11 @@ function failedResult(event: DshEvent): boolean {
   return Array.isArray(message?.content) && message.content.some(value => record(value)?.isError === true)
 }
 
+function turnOf(event: DshEvent): number {
+  const turn = record(event.data)?.turn
+  return typeof turn === 'number' && Number.isSafeInteger(turn) && turn > 0 ? turn : 0
+}
+
 function diffsOf(value: unknown, expected: 'call' | 'result'): FileDiff[] {
   const wrapper = record(value)
   const view = wrapper?.for === expected ? record(wrapper.view) : undefined
@@ -87,17 +108,18 @@ function projectPath(cwd: string, value: string): string | undefined {
   return inside(cwd, resolved) ? resolved : undefined
 }
 
-function readText(filePath: string): string | undefined {
+function readImage(filePath: string): FileImage | undefined {
   try {
     const stat = fs.statSync(filePath)
     if (!stat.isFile() || stat.size > MAX_SNAPSHOT_BYTES) return undefined
-    return fs.readFileSync(filePath, 'utf8')
-  } catch {
+    return { text: fs.readFileSync(filePath, 'utf8') }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { text: null }
     return undefined
   }
 }
 
-function groupedDiffs(cwd: string, diffs: readonly FileDiff[]): Map<string, PendingFile> {
+function groupedDiffs(cwd: string, diffs: readonly FileDiff[], turn: number): Map<string, PendingFile> {
   const grouped = new Map<string, PendingFile>()
   for (const diff of diffs) {
     const absolutePath = projectPath(cwd, diff.path)
@@ -108,12 +130,26 @@ function groupedDiffs(cwd: string, diffs: readonly FileDiff[]): Map<string, Pend
         absolutePath,
         displayPath: path.relative(cwd, absolutePath) || path.basename(absolutePath),
         diffs: [diff],
+        turn,
       })
     } else {
       existing.diffs.push(diff)
     }
   }
   return grouped
+}
+
+function changedLineCount(value: string | null): number {
+  if (value === null || value === '') return 0
+  const lines = value.split(/\r?\n/)
+  return lines.length - (lines.at(-1) === '' ? 1 : 0)
+}
+
+function lineStats(diffs: readonly FileDiff[]): { additions: number; deletions: number } {
+  return diffs.reduce((total, diff) => ({
+    additions: total.additions + changedLineCount(diff.newText),
+    deletions: total.deletions + changedLineCount(diff.oldText),
+  }), { additions: 0, deletions: 0 })
 }
 
 function fragmentSnapshot(diffs: readonly FileDiff[]): ReviewSnapshot | undefined {
@@ -124,6 +160,7 @@ function fragmentSnapshot(diffs: readonly FileDiff[]): ReviewSnapshot | undefine
     before: changed.map(diff => diff.oldText ?? '').join(separator),
     after: changed.map(diff => diff.newText).join(separator),
     fullFile: false,
+    ...lineStats(changed),
   }
 }
 
@@ -132,7 +169,8 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
   private readonly changed = new vscode.EventEmitter<vscode.Uri>()
   private readonly content = new Map<string, string>()
   private readonly pending = new Map<string, Map<string, PendingFile>>()
-  private readonly reviews = new Map<string, Map<string, ReviewFile>>()
+  private readonly reviews = new Map<string, Map<number, Map<string, ReviewFile>>>()
+  private readonly dismissed = new Map<string, Set<string>>()
 
   readonly onDidChange = this.changed.event
 
@@ -145,6 +183,7 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
     this.content.clear()
     this.pending.clear()
     this.reviews.clear()
+    this.dismissed.clear()
   }
 
   clear(): void {
@@ -153,7 +192,7 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
     this.reviews.clear()
   }
 
-  rebuild(sessionId: string, cwd: string, entries: readonly HistoryEntry[]): ChangedFileItem[] {
+  rebuild(sessionId: string, cwd: string, entries: readonly HistoryEntry[]): ChangedFileGroup[] {
     this.clearSession(sessionId)
     for (const entry of entries) this.accept(sessionId, cwd, entry.event, entry.view, true)
     return this.changedFiles(sessionId)
@@ -163,12 +202,13 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
     const callId = callIdOf(event)
     if (callId === undefined) return false
     const key = `${sessionId}:${callId}`
+    const turn = turnOf(event)
 
     if (event.type === 'tool/call') {
-      const files = groupedDiffs(cwd, diffsOf(view, 'call'))
+      const files = groupedDiffs(cwd, diffsOf(view, 'call'), turn)
       if (!replay) {
         for (const file of files.values()) {
-          const before = readText(file.absolutePath)
+          const before = readImage(file.absolutePath)
           if (before !== undefined) file.before = before
         }
       }
@@ -181,26 +221,47 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
     this.pending.delete(key)
     if (failedResult(event)) return false
 
-    const results = groupedDiffs(cwd, diffsOf(view, 'result'))
+    const results = groupedDiffs(cwd, diffsOf(view, 'result'), turn)
     const absolutePaths = new Set([...(pending?.keys() ?? []), ...results.keys()])
     let updated = false
     for (const absolutePath of absolutePaths) {
       const callFile = pending?.get(absolutePath)
       const resultFile = results.get(absolutePath)
       const displayPath = resultFile?.displayPath ?? callFile?.displayPath ?? path.relative(cwd, absolutePath)
-      const after = replay ? undefined : readText(absolutePath)
-      const snapshot = callFile?.before !== undefined && after !== undefined && callFile.before !== after
-        ? { before: callFile.before, after, fullFile: true }
-        : fragmentSnapshot(resultFile?.diffs ?? callFile?.diffs ?? [])
+      const fileTurn = resultFile?.turn ?? callFile?.turn ?? turn
+      const diffs = resultFile?.diffs ?? callFile?.diffs ?? []
+      const after = replay ? undefined : readImage(absolutePath)
+      const stats = lineStats(diffs)
+      const snapshot = callFile?.before !== undefined && after !== undefined && callFile.before.text !== after.text
+        ? { before: callFile.before.text, after: after.text, fullFile: true, ...stats }
+        : fragmentSnapshot(diffs)
       if (snapshot === undefined) continue
-      this.record(sessionId, { absolutePath, displayPath, snapshots: [snapshot] })
+      this.record(sessionId, { absolutePath, displayPath, turn: fileTurn, snapshots: [snapshot] })
       updated = true
     }
     return updated
   }
 
-  changedFiles(sessionId: string): ChangedFileItem[] {
-    return [...(this.reviews.get(sessionId)?.values() ?? [])].map(file => ({ path: file.displayPath }))
+  changedFiles(sessionId: string): ChangedFileGroup[] {
+    const turns = this.reviews.get(sessionId)
+    if (turns === undefined) return []
+    return [...turns.entries()]
+      .sort(([left], [right]) => right - left)
+      .map(([turn, files]) => ({
+        turn,
+        files: [...files.values()].map(file => {
+          const stats = file.snapshots.reduce((total, snapshot) => ({
+            additions: total.additions + snapshot.additions,
+            deletions: total.deletions + snapshot.deletions,
+          }), { additions: 0, deletions: 0 })
+          return {
+            path: file.displayPath,
+            ...stats,
+            canRevert: this.reviewContent(file).fullFile,
+          }
+        }),
+      }))
+      .filter(group => group.files.length > 0)
   }
 
   async openFile(cwd: string, value: string, line?: number): Promise<void> {
@@ -221,18 +282,55 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
     })
   }
 
-  async reviewFile(sessionId: string, cwd: string, value: string): Promise<void> {
-    const absolutePath = projectPath(cwd, value)
-    const review = absolutePath === undefined ? undefined : this.reviews.get(sessionId)?.get(absolutePath)
+  async reviewFile(sessionId: string, cwd: string, value: string, turn?: number): Promise<void> {
+    const review = this.findReview(sessionId, cwd, value, turn)
     if (review === undefined) throw new Error(`No completed DeepSeek change is available for ${value}.`)
     await this.openReview(review, true)
   }
 
   async reviewAll(sessionId: string): Promise<void> {
-    const reviews = [...(this.reviews.get(sessionId)?.values() ?? [])]
+    const reviews = this.allReviews(sessionId)
     if (reviews.length === 0) throw new Error('No completed DeepSeek changes are available to review.')
     for (const review of reviews.slice(0, 20)) await this.openReview(review, false)
     if (reviews.length > 20) void vscode.window.showInformationMessage('Opened the first 20 changed files.')
+  }
+
+  keepFile(sessionId: string, cwd: string, value: string, turn: number): ChangedFileGroup[] {
+    const review = this.findReview(sessionId, cwd, value, turn)
+    if (review === undefined) throw new Error(`No completed DeepSeek change is available for ${value}.`)
+    this.dismiss(sessionId, review)
+    return this.changedFiles(sessionId)
+  }
+
+  keepAll(sessionId: string): ChangedFileGroup[] {
+    for (const review of this.allReviews(sessionId)) this.markDismissed(sessionId, review)
+    this.reviews.delete(sessionId)
+    return []
+  }
+
+  revertFile(sessionId: string, cwd: string, value: string, turn: number): ChangedFileGroup[] {
+    const review = this.findReview(sessionId, cwd, value, turn)
+    if (review === undefined) throw new Error(`No completed DeepSeek change is available for ${value}.`)
+    const content = this.validateRevert(review)
+    this.applyRevert(review, content.before)
+    this.dismiss(sessionId, review)
+    return this.changedFiles(sessionId)
+  }
+
+  revertAll(sessionId: string): ChangedFileGroup[] {
+    const reviews = this.allReviews(sessionId)
+    if (reviews.length === 0) throw new Error('No completed DeepSeek changes are available to revert.')
+    const byFile = new Map<string, ReviewFile[]>()
+    for (const review of reviews) {
+      const existing = byFile.get(review.absolutePath)
+      if (existing === undefined) byFile.set(review.absolutePath, [review])
+      else existing.push(review)
+    }
+    const validated = [...byFile.values()].map(series => this.validateRevertSeries(series))
+    for (const item of validated) this.applyRevert(item.review, item.before)
+    for (const review of reviews) this.markDismissed(sessionId, review)
+    this.reviews.delete(sessionId)
+    return []
   }
 
   private clearSession(sessionId: string): void {
@@ -241,24 +339,114 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
   }
 
   private record(sessionId: string, incoming: ReviewFile): void {
-    let session = this.reviews.get(sessionId)
-    if (session === undefined) this.reviews.set(sessionId, session = new Map())
-    const existing = session.get(incoming.absolutePath)
-    if (existing === undefined) session.set(incoming.absolutePath, incoming)
+    if (this.dismissed.get(sessionId)?.has(this.reviewKey(incoming))) return
+    let turns = this.reviews.get(sessionId)
+    if (turns === undefined) this.reviews.set(sessionId, turns = new Map())
+    let files = turns.get(incoming.turn)
+    if (files === undefined) turns.set(incoming.turn, files = new Map())
+    const existing = files.get(incoming.absolutePath)
+    if (existing === undefined) files.set(incoming.absolutePath, incoming)
     else existing.snapshots.push(...incoming.snapshots)
   }
 
-  private reviewContent(review: ReviewFile): { before: string; after: string } {
+  private reviewContent(review: ReviewFile): { before: string | null; after: string | null; fullFile: boolean } {
     const first = review.snapshots[0]
-    if (first?.fullFile === true) {
-      const latest = review.snapshots.findLast(snapshot => snapshot.fullFile)?.after ?? first.after
-      return { before: first.before, after: latest }
+    const continuous = review.snapshots.slice(1).every((snapshot, index) => review.snapshots[index]?.after === snapshot.before)
+    if (first?.fullFile === true && review.snapshots.every(snapshot => snapshot.fullFile) && continuous) {
+      const latest = review.snapshots.at(-1)?.after ?? first.after
+      return { before: first.before, after: latest, fullFile: true }
     }
     const separator = '\n\n================ next DeepSeek change ================\n\n'
     return {
-      before: review.snapshots.map(snapshot => snapshot.before).join(separator),
-      after: review.snapshots.map(snapshot => snapshot.after).join(separator),
+      before: review.snapshots.map(snapshot => snapshot.before ?? '').join(separator),
+      after: review.snapshots.map(snapshot => snapshot.after ?? '').join(separator),
+      fullFile: false,
     }
+  }
+
+  private findReview(sessionId: string, cwd: string, value: string, turn?: number): ReviewFile | undefined {
+    const absolutePath = projectPath(cwd, value)
+    if (absolutePath === undefined) return undefined
+    const turns = this.reviews.get(sessionId)
+    if (turn !== undefined) return turns?.get(turn)?.get(absolutePath)
+    return [...(turns?.entries() ?? [])]
+      .sort(([left], [right]) => right - left)
+      .map(([, files]) => files.get(absolutePath))
+      .find((review): review is ReviewFile => review !== undefined)
+  }
+
+  private allReviews(sessionId: string): ReviewFile[] {
+    return [...(this.reviews.get(sessionId)?.values() ?? [])].flatMap(files => [...files.values()])
+  }
+
+  private reviewKey(review: ReviewFile): string {
+    return `${String(review.turn)}:${review.absolutePath}`
+  }
+
+  private markDismissed(sessionId: string, review: ReviewFile): void {
+    let dismissed = this.dismissed.get(sessionId)
+    if (dismissed === undefined) this.dismissed.set(sessionId, dismissed = new Set())
+    dismissed.add(this.reviewKey(review))
+  }
+
+  private dismiss(sessionId: string, review: ReviewFile): void {
+    this.markDismissed(sessionId, review)
+    const turns = this.reviews.get(sessionId)
+    const files = turns?.get(review.turn)
+    files?.delete(review.absolutePath)
+    if (files?.size === 0) turns?.delete(review.turn)
+    if (turns?.size === 0) this.reviews.delete(sessionId)
+  }
+
+  private validateRevert(review: ReviewFile): { before: string | null; after: string | null } {
+    const content = this.reviewContent(review)
+    if (!content.fullFile) {
+      throw new Error(`Cannot safely revert ${review.displayPath}: its full snapshot is no longer available.`)
+    }
+    this.validateCurrentFile(review, content.after)
+    return content
+  }
+
+  private validateRevertSeries(series: ReviewFile[]): { review: ReviewFile; before: string | null } {
+    const ordered = [...series].sort((left, right) => left.turn - right.turn)
+    const contents = ordered.map(review => ({ review, content: this.reviewContent(review) }))
+    const unavailable = contents.find(item => !item.content.fullFile)
+    if (unavailable !== undefined) {
+      throw new Error(`Cannot safely revert ${unavailable.review.displayPath}: its full snapshot is no longer available.`)
+    }
+    for (let index = 1; index < contents.length; index += 1) {
+      if (contents[index - 1]?.content.after !== contents[index]?.content.before) {
+        throw new Error(`Cannot safely revert ${contents[index]?.review.displayPath}: it changed between DeepSeek turns.`)
+      }
+    }
+    const latest = contents.at(-1)
+    const earliest = contents[0]
+    if (latest === undefined || earliest === undefined) throw new Error('No completed DeepSeek changes are available to revert.')
+    this.validateCurrentFile(latest.review, latest.content.after)
+    return { review: latest.review, before: earliest.content.before }
+  }
+
+  private validateCurrentFile(review: ReviewFile, expected: string | null): void {
+    const dirty = vscode.workspace.textDocuments.some(document => document.isDirty && path.resolve(document.uri.fsPath) === review.absolutePath)
+    if (dirty) throw new Error(`Cannot revert ${review.displayPath}: it has unsaved VS Code changes.`)
+    const current = readImage(review.absolutePath)
+    if (current === undefined) throw new Error(`Cannot safely read ${review.displayPath} before reverting.`)
+    if (current.text !== expected) {
+      throw new Error(`Cannot revert ${review.displayPath}: the file changed after DeepSeek edited it.`)
+    }
+  }
+
+  private applyRevert(review: ReviewFile, before: string | null): void {
+    if (before === null) {
+      try {
+        fs.unlinkSync(review.absolutePath)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      }
+      return
+    }
+    fs.mkdirSync(path.dirname(review.absolutePath), { recursive: true })
+    fs.writeFileSync(review.absolutePath, before, 'utf8')
   }
 
   private async openReview(review: ReviewFile, preview: boolean): Promise<void> {
@@ -267,13 +455,13 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
     const beforeUri = vscode.Uri.from({ scheme: 'dsh-diff', authority: 'before', path: `/${id}/${name}` })
     const afterUri = vscode.Uri.from({ scheme: 'dsh-diff', authority: 'after', path: `/${id}/${name}` })
     const content = this.reviewContent(review)
-    this.content.set(beforeUri.toString(), content.before)
-    this.content.set(afterUri.toString(), content.after)
+    this.content.set(beforeUri.toString(), content.before ?? '')
+    this.content.set(afterUri.toString(), content.after ?? '')
     await vscode.commands.executeCommand(
       'vscode.diff',
       beforeUri,
       afterUri,
-      `${review.displayPath} — DeepSeek changes`,
+      `${review.displayPath} — DeepSeek changes (Turn ${String(review.turn)})`,
       { preview },
     )
   }
