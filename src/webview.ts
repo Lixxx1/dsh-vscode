@@ -19,7 +19,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${token}';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data:; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${token}';">
   <style>
     :root { color-scheme: light dark; }
     * { box-sizing: border-box; }
@@ -32,10 +32,26 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     .session-select { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; font-weight: 600; text-overflow: ellipsis; }
     .icon-button { width: 28px; height: 28px; min-width: 28px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--vscode-icon-foreground); }
     .icon-button:hover { background: var(--vscode-toolbar-hoverBackground); }
+    .jobs-control { position: relative; flex: 0 0 auto; }
+    .jobs-trigger { width: auto; min-width: 28px; padding: 0 7px; display: flex; gap: 5px; font-size: 11px; }
+    .jobs-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--vscode-descriptionForeground); }
+    .jobs-trigger.live .jobs-dot { background: var(--vscode-charts-blue, #4d6bfe); box-shadow: 0 0 0 2px color-mix(in srgb, var(--vscode-charts-blue, #4d6bfe) 20%, transparent); }
+    .jobs-menu { position: absolute; z-index: 20; top: calc(100% + 5px); right: 0; width: min(340px, calc(100vw - 20px)); max-height: min(420px, 70vh); padding: 6px; overflow: auto; border: 1px solid var(--vscode-widget-border); border-radius: 8px; background: var(--vscode-menu-background, var(--vscode-editor-background)); box-shadow: 0 5px 18px var(--vscode-widget-shadow); }
+    .jobs-title { padding: 5px 7px 7px; font-size: 11px; font-weight: 600; }
+    .job-row { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 2px 7px; padding: 7px; border-radius: 5px; }
+    .job-row + .job-row { border-top: 1px solid color-mix(in srgb, var(--vscode-widget-border) 50%, transparent); }
+    .job-kind { grid-row: 1 / 3; align-self: start; padding: 1px 5px; border-radius: 999px; color: var(--vscode-badge-foreground); background: var(--vscode-badge-background); font-size: 9px; text-transform: uppercase; }
+    .job-label { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; font-weight: 600; }
+    .job-status { color: var(--vscode-descriptionForeground); font-size: 10px; }
+    .job-detail { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--vscode-descriptionForeground); font-size: 10px; }
+    .job-duration { grid-column: 3; grid-row: 1 / 3; align-self: center; color: var(--vscode-descriptionForeground); font: 10px var(--vscode-editor-font-family); }
     .icon-button:focus-visible, select:focus-visible, textarea:focus-visible, input:focus-visible, button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
     svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
     .scroll { min-width: 0; min-height: 0; overflow-x: hidden; overflow-y: auto; scrollbar-color: var(--vscode-scrollbarSlider-background) transparent; }
     .conversation { width: 100%; min-width: 0; max-width: 760px; margin: 0 auto; padding: 12px 14px 30px; overflow: hidden; }
+    .history-loader { display: flex; justify-content: center; padding: 1px 0 9px; }
+    .history-button { padding: 3px 9px; border: 0; border-radius: 5px; color: var(--vscode-textLink-foreground); background: transparent; font-size: 11px; }
+    .history-button:hover { background: var(--vscode-toolbar-hoverBackground); }
     .empty { min-height: 55vh; display: grid; place-content: center; justify-items: center; text-align: center; padding: 28px 10px; }
     .deepseek-mark { background-color: #4d6bfe; -webkit-mask: url("${mark}") center / contain no-repeat; mask: url("${mark}") center / contain no-repeat; }
     .empty-logo { width: 38px; height: 38px; margin-bottom: 13px; }
@@ -51,6 +67,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     .message.user { display: flex; flex-direction: column; align-items: flex-end; padding-top: 6px; }
     .user .message-head { display: none; }
     .user .message-body { width: fit-content; max-width: 82%; margin-left: auto; padding: 8px 12px; white-space: pre-wrap; border-radius: 16px; background: color-mix(in srgb, var(--vscode-foreground) 8%, var(--vscode-editor-background)); }
+    .message-images { width: 100%; display: grid; gap: 7px; margin-top: 8px; }
+    .message-image { display: block; max-width: 100%; max-height: 380px; border: 1px solid var(--vscode-widget-border); border-radius: 8px; object-fit: contain; background: var(--vscode-editor-background); }
+    .message-image-status { padding: 8px 10px; border: 1px dashed var(--vscode-widget-border); border-radius: 7px; color: var(--vscode-descriptionForeground); font-size: 11px; }
+    .message-image-status.failed { color: var(--vscode-errorForeground); }
     .pending-steering { opacity: .82; }
     .pending-steering .message-body::after { content: 'Steering…'; display: block; margin-top: 3px; color: var(--vscode-descriptionForeground); font-size: 10px; }
     .markdown > :first-child { margin-top: 0; }
@@ -181,6 +201,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
   <div id="app">
     <header class="toolbar">
       <select id="sessions" class="session-select" aria-label="Project conversations"></select>
+      <div id="jobsControl" class="jobs-control hidden">
+        <button id="jobsTrigger" class="icon-button jobs-trigger" title="Background jobs" aria-label="Background jobs" aria-haspopup="menu" aria-expanded="false"><span class="jobs-dot"></span><span id="jobsCount">0</span></button>
+        <div id="jobsMenu" class="jobs-menu hidden" role="menu" aria-label="Background jobs"></div>
+      </div>
       <button id="newSession" class="icon-button" title="New conversation" aria-label="New conversation"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
     </header>
     <main id="scroll" class="scroll"><div id="conversation" class="conversation"></div></main>
@@ -212,7 +236,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     const vscode = acquireVsCodeApi();
     const elements = {
       conversation: document.getElementById('conversation'), scroll: document.getElementById('scroll'),
-      sessions: document.getElementById('sessions'), newSession: document.getElementById('newSession'),
+      sessions: document.getElementById('sessions'), newSession: document.getElementById('newSession'), jobsControl: document.getElementById('jobsControl'), jobsTrigger: document.getElementById('jobsTrigger'), jobsCount: document.getElementById('jobsCount'), jobsMenu: document.getElementById('jobsMenu'),
       prompt: document.getElementById('prompt'), project: document.getElementById('project'), workspace: document.getElementById('workspace'),
       models: document.getElementById('models'), efforts: document.getElementById('efforts'),
       policyTrigger: document.getElementById('policyTrigger'), policyMenu: document.getElementById('policyMenu'),
@@ -231,6 +255,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     let queueEditing = null;
     let queueRenderSignature = '';
     let policyMenuOpen = false;
+    let jobsOpen = false;
+    let jobsTimer;
+    let historyAnchor;
 
     function node(tag, className, text) {
       const value = document.createElement(tag);
@@ -352,6 +379,22 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     function toolTitle(message, callView, resultView) {
       return string(resultView && resultView.title) || string(callView && callView.title) || message.text || 'Tool';
     }
+    function appendImages(parent, images) {
+      if (!Array.isArray(images) || !images.length) return;
+      const gallery = node('div', 'message-images');
+      for (const value of images) {
+        const image = record(value); if (!image) continue;
+        if (typeof image.data === 'string' && typeof image.mediaType === 'string') {
+          const element = document.createElement('img');
+          element.className = 'message-image'; element.alt = string(image.name, 'DeepSeek image');
+          element.width = Number(image.width) || 0; element.height = Number(image.height) || 0;
+          element.src = 'data:' + image.mediaType + ';base64,' + image.data; gallery.append(element);
+        } else {
+          gallery.append(node('div', 'message-image-status' + (image.error ? ' failed' : ''), image.error || 'Loading image…'));
+        }
+      }
+      if (gallery.childNodes.length) parent.append(gallery);
+    }
     function appendPre(parent, text, className) { if (text) parent.append(node('pre', className || '', text)); }
     function renderToolBody(message, callView, resultView) {
       const body = node('div', 'tool-body');
@@ -415,6 +458,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
           if (filePath) row.append(fileButton(filePath, line, filePath + (line ? ':' + String(line) : ''))); body.append(row);
         }
       }
+      appendImages(body, message.images);
       return body;
     }
     function renderTool(message) {
@@ -478,6 +522,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       const body = message.role === 'assistant' ? renderMarkdown(message.text) : node('div', '', message.text);
       body.classList.add('message-body');
       if (message.streaming) body.classList.add('streaming');
+      appendImages(body, message.images);
       item.append(head, body); return item;
     }
     function renderStatus(current) {
@@ -780,8 +825,37 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
         elements.queueDock.append(row);
       }
     }
+    function liveJob(job) { return job.status === 'running' || job.status === 'stopping'; }
+    function jobDuration(job) {
+      const end = liveJob(job) ? Date.now() : (Number(job.finishedAt) || Number(job.startedAt));
+      const seconds = Math.max(0, Math.floor((end - Number(job.startedAt)) / 1000));
+      if (seconds < 60) return seconds + 's';
+      const minutes = Math.floor(seconds / 60); if (minutes < 60) return minutes + 'm ' + (seconds % 60) + 's';
+      return Math.floor(minutes / 60) + 'h ' + (minutes % 60) + 'm';
+    }
+    function renderJobs() {
+      const jobs = array(state && state.jobs);
+      const live = jobs.filter(liveJob).length;
+      elements.jobsControl.classList.toggle('hidden', jobs.length === 0);
+      elements.jobsTrigger.classList.toggle('live', live > 0);
+      elements.jobsCount.textContent = String(live || jobs.length);
+      elements.jobsTrigger.title = live > 0 ? live + ' background ' + (live === 1 ? 'job' : 'jobs') + ' running' : jobs.length + ' background ' + (jobs.length === 1 ? 'job' : 'jobs');
+      if (!jobs.length) { jobsOpen = false; elements.jobsMenu.classList.add('hidden'); elements.jobsTrigger.setAttribute('aria-expanded', 'false'); }
+      elements.jobsMenu.replaceChildren();
+      if (jobs.length) {
+        elements.jobsMenu.append(node('div', 'jobs-title', live > 0 ? 'Background jobs · ' + live + ' running' : 'Background jobs'));
+        const ordered = [...jobs].sort((a, b) => liveJob(a) !== liveJob(b) ? (liveJob(a) ? -1 : 1) : (liveJob(a) ? Number(a.startedAt) - Number(b.startedAt) : Number(b.finishedAt || b.startedAt) - Number(a.finishedAt || a.startedAt)));
+        for (const job of ordered) {
+          const row = node('div', 'job-row'); const status = string(job.detail) || string(job.status);
+          row.title = status; row.append(node('span', 'job-kind', string(job.kind, 'job')), node('span', 'job-label', string(job.label, 'Background job')), node('span', 'job-detail', status), node('span', 'job-duration', jobDuration(job))); elements.jobsMenu.append(row);
+        }
+      }
+      if (jobsTimer) { clearInterval(jobsTimer); jobsTimer = undefined; }
+      if (jobsOpen && live > 0) jobsTimer = setInterval(renderJobs, 1000);
+    }
     function render(current) {
       const nearBottom = elements.scroll.scrollHeight - elements.scroll.scrollTop - elements.scroll.clientHeight < 80;
+      const preservingHistory = historyAnchor && historyAnchor.sessionId === current.sessionId;
       state = current; elements.workspace.textContent = current.workspaceName || 'Workspace'; elements.project.title = current.cwd ? 'DeepSeek project: ' + current.cwd : 'Choose DeepSeek project';
       elements.sessions.replaceChildren();
       for (const session of current.sessions || []) { const option = new Option(session.title, session.id, false, session.id === current.sessionId); elements.sessions.append(option); }
@@ -791,9 +865,14 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       if (!elements.models.childElementCount) elements.models.append(new Option('Default model', ''));
       renderEfforts((current.models || []).find(model => model.selected) || (current.models || [])[0]);
       renderPolicyState(current);
+      renderJobs();
       elements.conversation.replaceChildren();
       if (current.phase !== 'ready') elements.conversation.append(renderStatus(current));
       else {
+        if (current.hasMoreHistory || current.loadingHistory) {
+          const loader = node('div', 'history-loader'); const button = node('button', 'history-button', current.loadingHistory ? 'Loading earlier messages…' : 'Load earlier messages'); button.type = 'button'; button.disabled = current.loadingHistory === true;
+          button.addEventListener('click', () => { historyAnchor = { sessionId: current.sessionId, height: elements.scroll.scrollHeight, top: elements.scroll.scrollTop }; button.disabled = true; button.textContent = 'Loading earlier messages…'; vscode.postMessage({ type: 'load-history' }); }); loader.append(button); elements.conversation.append(loader);
+        }
         if (!current.messages || current.messages.length === 0) elements.conversation.append(renderEmpty(current));
         else for (const message of current.messages) elements.conversation.append(renderMessage(message));
         for (const item of current.queue || []) if (item.placement === 'steering') elements.conversation.append(renderPendingSteering(item));
@@ -806,7 +885,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       elements.models.disabled = !enabled || !(current.models || []).length; elements.efforts.disabled = !enabled || !elements.efforts.options.length || elements.efforts.value === '';
       elements.cancel.classList.toggle('hidden', current.running !== true); elements.send.title = current.running ? 'Queue message (Enter) · Steer now (Cmd/Ctrl+Enter)' : 'Send (Enter)'; updateSend(); renderQueue();
       renderCommandMenu();
-      if (nearBottom || current.approval || current.question) requestAnimationFrame(() => { elements.scroll.scrollTop = elements.scroll.scrollHeight; });
+      if (preservingHistory && current.loadingHistory !== true) {
+        const anchor = historyAnchor; historyAnchor = undefined;
+        requestAnimationFrame(() => { elements.scroll.scrollTop = anchor.top + elements.scroll.scrollHeight - anchor.height; });
+      } else if (!preservingHistory && (nearBottom || current.approval || current.question)) requestAnimationFrame(() => { elements.scroll.scrollTop = elements.scroll.scrollHeight; });
     }
     function updateSend() { elements.send.disabled = !state || state.phase !== 'ready' || (elements.prompt.value.trim() === '' && draftImages.length === 0); }
     function resizePrompt() { elements.prompt.style.height = 'auto'; elements.prompt.style.height = Math.min(elements.prompt.scrollHeight, 220) + 'px'; updateSend(); }
@@ -837,6 +919,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     elements.policyTrigger.addEventListener('click', event => {
       event.stopPropagation(); policyMenuOpen = !policyMenuOpen; elements.commandMenu.classList.add('hidden'); elements.mentionMenu.classList.add('hidden'); if (state) renderPolicyState(state);
     });
+    elements.jobsTrigger.addEventListener('click', event => {
+      event.stopPropagation(); jobsOpen = !jobsOpen; elements.jobsMenu.classList.toggle('hidden', !jobsOpen); elements.jobsTrigger.setAttribute('aria-expanded', String(jobsOpen)); renderJobs();
+    });
     elements.project.addEventListener('click', () => vscode.postMessage({ type: 'choose-workspace' }));
     elements.newSession.addEventListener('click', () => vscode.postMessage({ type: 'new-session' })); elements.sessions.addEventListener('change', () => vscode.postMessage({ type: 'select-session', sessionId: elements.sessions.value }));
     elements.models.addEventListener('change', () => {
@@ -846,8 +931,12 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     });
     elements.efforts.addEventListener('change', () => { if (!elements.models.value) return; const selected = JSON.parse(elements.models.value); const model = (state.models || []).find(item => item.provider === selected.provider && item.model === selected.model); if (model) vscode.postMessage({ type: 'select-model', selection: selectionFor(model, elements.efforts.value) }); });
     document.addEventListener('click', event => {
-      if (!policyMenuOpen || elements.policyMenu.contains(event.target) || elements.policyTrigger.contains(event.target)) return;
-      policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false');
+      if (policyMenuOpen && !elements.policyMenu.contains(event.target) && !elements.policyTrigger.contains(event.target)) {
+        policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false');
+      }
+      if (jobsOpen && !elements.jobsMenu.contains(event.target) && !elements.jobsTrigger.contains(event.target)) {
+        jobsOpen = false; elements.jobsMenu.classList.add('hidden'); elements.jobsTrigger.setAttribute('aria-expanded', 'false'); renderJobs();
+      }
     });
     window.addEventListener('message', event => {
       if (!event.data) return;

@@ -1,4 +1,5 @@
 import { withoutIdeContext } from './ide-context.js'
+import type { ImageMediaType } from './dsh-client.js'
 
 export type ConversationRole = 'user' | 'assistant' | 'tool' | 'command' | 'notice'
 
@@ -13,6 +14,17 @@ export interface ConversationMessage {
   resultView?: unknown
   rawInput?: string
   rawResult?: string
+  images?: ConversationImage[]
+}
+
+export interface ConversationImage {
+  attachmentId: string
+  mediaType: ImageMediaType
+  width: number
+  height: number
+  name?: string
+  data?: string
+  error?: string
 }
 
 export interface DshEvent {
@@ -36,6 +48,45 @@ function textContent(value: unknown): string {
     const item = record(part)
     return item?.type === 'text' && typeof item.text === 'string' ? [item.text] : []
   }).join('\n')
+}
+
+function imageMediaType(value: unknown): ImageMediaType | undefined {
+  return value === 'image/png' || value === 'image/jpeg' || value === 'image/webp' || value === 'image/gif'
+    ? value
+    : undefined
+}
+
+/** Finds durable DSH image references, including images nested inside tool results. */
+function imageContent(value: unknown): ConversationImage[] {
+  const found = new Map<string, ConversationImage>()
+  const visit = (candidate: unknown): void => {
+    if (Array.isArray(candidate)) {
+      for (const item of candidate) visit(item)
+      return
+    }
+    const item = record(candidate)
+    if (item === undefined) return
+    if (item.type === 'image') {
+      const attachment = record(item.attachment)
+      const mediaType = imageMediaType(attachment?.mediaType)
+      if (attachment !== undefined
+        && typeof attachment.attachmentId === 'string'
+        && mediaType !== undefined
+        && typeof attachment.width === 'number'
+        && typeof attachment.height === 'number') {
+        found.set(attachment.attachmentId, {
+          attachmentId: attachment.attachmentId,
+          mediaType,
+          width: attachment.width,
+          height: attachment.height,
+          ...(typeof attachment.name === 'string' ? { name: attachment.name } : {}),
+        })
+      }
+    }
+    if (Array.isArray(item.content)) visit(item.content)
+  }
+  visit(value)
+  return [...found.values()]
 }
 
 function resultContent(value: unknown): string {
@@ -75,15 +126,28 @@ export class ConversationProjector {
       if (source?.kind !== 'user') return
       const id = typeof data.id === 'string' ? data.id : `user:${String(event.seq)}`
       const text = withoutIdeContext(textContent(data.content))
-      if (text !== '') this.set(id, { id, role: 'user', text })
+      const images = imageContent(data.content)
+      if (text !== '' || images.length > 0) this.set(id, { id, role: 'user', text, ...(images.length > 0 ? { images } : {}) })
       return
     }
 
     if (event.type === 'assistant/chunk') {
       const chunk = record(data.chunk)
-      if (chunk?.type !== 'text-delta' || typeof chunk.text !== 'string') return
       const id = `assistant:${String(data.turn)}:${String(data.step)}`
       const current = this.byId.get(id)
+      if (chunk?.type === 'block-end') {
+        const images = imageContent(chunk.block)
+        if (images.length === 0) return
+        this.set(id, {
+          id,
+          role: 'assistant',
+          text: current?.text ?? '',
+          images: mergeImages(current?.images, images),
+          streaming: true,
+        })
+        return
+      }
+      if (chunk?.type !== 'text-delta' || typeof chunk.text !== 'string') return
       this.set(id, {
         id,
         role: 'assistant',
@@ -97,7 +161,8 @@ export class ConversationProjector {
       const message = record(data.message)
       const id = `assistant:${String(data.turn)}:${String(data.step)}`
       const text = textContent(message?.content)
-      if (text !== '') this.set(id, { id, role: 'assistant', text })
+      const images = imageContent(message?.content)
+      if (text !== '' || images.length > 0) this.set(id, { id, role: 'assistant', text, ...(images.length > 0 ? { images } : {}) })
       return
     }
 
@@ -129,6 +194,7 @@ export class ConversationProjector {
       const current = this.byId.get(id)
       const failed = data.error !== undefined || firstBlock?.isError === true
       const rawResult = resultContent(firstBlock)
+      const images = imageContent(message?.content)
       this.set(id, {
         id,
         role: 'tool',
@@ -139,6 +205,7 @@ export class ConversationProjector {
         ...(current?.rawInput === undefined ? {} : { rawInput: current.rawInput }),
         resultView: toolView(view, 'result'),
         ...(rawResult === '' ? {} : { rawResult }),
+        ...(images.length > 0 ? { images } : {}),
       })
       return
     }
@@ -187,4 +254,10 @@ export class ConversationProjector {
     if (!this.byId.has(id)) this.orderedIds.push(id)
     this.byId.set(id, message)
   }
+}
+
+function mergeImages(current: readonly ConversationImage[] | undefined, next: readonly ConversationImage[]): ConversationImage[] {
+  const images = new Map((current ?? []).map(image => [image.attachmentId, image]))
+  for (const image of next) images.set(image.attachmentId, image)
+  return [...images.values()]
 }

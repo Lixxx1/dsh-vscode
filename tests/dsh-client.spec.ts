@@ -79,6 +79,92 @@ describe('DshClient queue protocol', () => {
         fiberPhase: 'active',
       }],
     })
-    expect(requests).toEqual([{ method: 'pluginInventory/list', payload: {} }])
+    expect(requests).toEqual([{ method: 'pluginInventory/list', payload: { args: {} } }])
+  })
+
+  it('reads a durable image through its authorizing session', async () => {
+    const requests: Array<{ method: string; payload: unknown }> = []
+    vi.stubGlobal('fetch', vi.fn(async (_url: URL, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body)) as { rpcId: string; method: string; payload: unknown }
+      requests.push({ method: request.method, payload: request.payload })
+      return new Response(JSON.stringify({
+        type: 'server-response',
+        rpcId: request.rpcId,
+        result: {
+          ok: true,
+          value: {
+            attachment: {
+              attachmentId: 'sha256:image',
+              mediaType: 'image/png',
+              bytes: 3,
+              width: 1,
+              height: 1,
+            },
+            data: 'YWJj',
+          },
+        },
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }))
+    const client = new DshClient(new URL('http://127.0.0.1:31415'))
+
+    await expect(client.attachment('session-1', 'sha256:image')).resolves.toMatchObject({ data: 'YWJj' })
+    expect(requests).toEqual([{
+      method: 'session.attachment',
+      payload: { sessionId: 'session-1', attachmentId: 'sha256:image' },
+    }])
+  })
+
+  it('describes and mutates official runtime settings with revision protection', async () => {
+    const requests: Array<{ method: string; payload: unknown }> = []
+    vi.stubGlobal('fetch', vi.fn(async (_url: URL, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body)) as { rpcId: string; method: string; payload: unknown }
+      requests.push({ method: request.method, payload: request.payload })
+      return new Response(JSON.stringify({
+        type: 'server-response',
+        rpcId: request.rpcId,
+        result: { ok: true, value: request.method === 'settings.describe'
+          ? { writable: true, hasDocument: true, namespaces: [] }
+          : { ns: 'agent-loop', revision: 4 } },
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }))
+    const client = new DshClient(new URL('http://127.0.0.1:31415'))
+
+    await client.settings()
+    await client.mutateSettings('agent-loop', [{
+      op: 'set', path: ['maxParallelToolCalls'], value: 4,
+    }], 3)
+
+    expect(requests).toEqual([
+      { method: 'settings.describe', payload: {} },
+      {
+        method: 'settings.mutate',
+        payload: {
+          ns: 'agent-loop',
+          ops: [{ op: 'set', path: ['maxParallelToolCalls'], value: 4 }],
+          expectedRevision: 3,
+        },
+      },
+    ])
+  })
+
+  it('requests older history using the official beforeSeq cursor', async () => {
+    const requests: Array<{ method: string; payload: unknown }> = []
+    vi.stubGlobal('fetch', vi.fn(async (_url: URL, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body)) as { rpcId: string; method: string; payload: unknown }
+      requests.push({ method: request.method, payload: request.payload })
+      return new Response(JSON.stringify({
+        type: 'server-response', rpcId: request.rpcId,
+        result: { ok: true, value: { events: [], hasMore: false } },
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }))
+    const client = new DshClient(new URL('http://127.0.0.1:31415'))
+
+    await client.history('session-1')
+    await client.history('session-1', 42)
+
+    expect(requests).toEqual([
+      { method: 'session.history', payload: { sessionId: 'session-1', maxMessages: 100 } },
+      { method: 'session.history', payload: { sessionId: 'session-1', beforeSeq: 42, maxMessages: 100 } },
+    ])
   })
 })

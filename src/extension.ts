@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import * as path from 'node:path'
 import * as vscode from 'vscode'
-import { ConversationProjector, type ConversationMessage, type DshEvent } from './conversation.js'
+import { ConversationProjector, type ConversationImage, type ConversationMessage, type DshEvent } from './conversation.js'
 import {
   permissionPresetsOf,
   planModeStateOf,
@@ -17,6 +17,7 @@ import {
   DshClient,
   type CommandDescriptor,
   type DshFrame,
+  type HistoryEntry,
   type ImageMediaType,
   type ModelSelection,
   type PromptMode,
@@ -26,12 +27,15 @@ import {
   type SessionSummary,
 } from './dsh-client.js'
 import { replaceTextPreservingIdeContext, withIdeContext, type IdeContextSnapshot } from './ide-context.js'
+import { jobsSnapshotOf, type JobItem } from './jobs.js'
 import { queueSnapshotOf, type QueueItemState } from './queue.js'
 import { DshRuntime, type RuntimeState } from './runtime.js'
 import { toolWriteIntents } from './tool-write-guard.js'
 import { chatHtml } from './webview.js'
 import { DshPluginManager } from './plugin-manager.js'
 import type { PluginInventorySnapshot } from './plugin-profile.js'
+import type { SettingsDescription, SettingsMutation, SettingsNamespace } from './runtime-settings.js'
+import { earliestHistorySequence, mergeHistoryEntries, unseenHistoryEntries } from './history.js'
 
 let activeRuntime: DshRuntime | undefined
 
@@ -110,6 +114,9 @@ interface ChatViewState {
   plan: PlanModeState
   changedFiles: ChangedFileGroup[]
   queue: QueueItemState[]
+  jobs: JobItem[]
+  hasMoreHistory: boolean
+  loadingHistory: boolean
 }
 
 function initialState(cwd: string): ChatViewState {
@@ -131,6 +138,9 @@ function initialState(cwd: string): ChatViewState {
     plan: planModeStateOf(undefined),
     changedFiles: [],
     queue: [],
+    jobs: [],
+    hasMoreHistory: false,
+    loadingHistory: false,
   }
 }
 
@@ -149,6 +159,10 @@ class DshChatController implements vscode.Disposable {
   private generation = 0
   private readonly guardedDirtyCalls = new Set<string>()
   private queueRawText = new Map<string, string>()
+  private readonly attachmentResults = new Map<string, Pick<ConversationImage, 'data' | 'error'>>()
+  private readonly attachmentLoads = new Map<string, Promise<void>>()
+  private readonly jobsBySession = new Map<string, JobItem[]>()
+  private historyEntries: HistoryEntry[] = []
 
   readonly onDidChangeState = this.changes.event
 
@@ -190,6 +204,10 @@ class DshChatController implements vscode.Disposable {
     this.diffReviews.clear()
     this.guardedDirtyCalls.clear()
     this.queueRawText.clear()
+    this.attachmentResults.clear()
+    this.attachmentLoads.clear()
+    this.jobsBySession.clear()
+    this.historyEntries = []
     this.publish({
       phase: 'loading',
       statusText: 'Starting the official DeepSeek Harness runtime…',
@@ -205,6 +223,9 @@ class DshChatController implements vscode.Disposable {
       plan: planModeStateOf(undefined),
       changedFiles: [],
       queue: [],
+      jobs: [],
+      hasMoreHistory: false,
+      loadingHistory: false,
     })
     try {
       const uri = await this.runtime.start(this.cwd === '' ? undefined : vscode.Uri.file(this.cwd))
@@ -248,6 +269,7 @@ class DshChatController implements vscode.Disposable {
     this._cwd = cwd
     this.summaries = []
     this.projector.reset([])
+    this.historyEntries = []
     this.guardedDirtyCalls.clear()
     this.publish({
       ...initialState(cwd),
@@ -265,6 +287,36 @@ class DshChatController implements vscode.Disposable {
   async selectSession(sessionId: string): Promise<void> {
     if (!this.summaries.some(summary => summary.sessionId === sessionId && summary.cwd === this.cwd)) return
     await this.loadSession(sessionId)
+  }
+
+  async loadOlderHistory(): Promise<void> {
+    if (this._state.sessionId === '' || !this._state.hasMoreHistory || this._state.loadingHistory) return
+    const sessionId = this._state.sessionId
+    const client = this.requireClient()
+    const beforeSeq = earliestHistorySequence(this.historyEntries)
+    if (beforeSeq === undefined) {
+      this.publish({ hasMoreHistory: false })
+      return
+    }
+    this.publish({ loadingHistory: true })
+    try {
+      const page = await client.history(sessionId, beforeSeq)
+      if (this.client !== client || this._state.sessionId !== sessionId) return
+      const unseenEntries = unseenHistoryEntries(this.historyEntries, page.events)
+      this.historyEntries = mergeHistoryEntries(this.historyEntries, unseenEntries)
+      this.projector.reset(this.historyEntries)
+      this.publish({
+        messages: this.projectedMessages(),
+        changedFiles: this.diffReviews.prependHistory(sessionId, this.cwd, unseenEntries),
+        hasMoreHistory: page.hasMore,
+        loadingHistory: false,
+      })
+      this.hydrateImages(client, sessionId)
+    } finally {
+      if (this.client === client && this._state.sessionId === sessionId && this._state.loadingHistory) {
+        this.publish({ loadingHistory: false })
+      }
+    }
   }
 
   async send(
@@ -329,6 +381,14 @@ class DshChatController implements vscode.Disposable {
     return this.requireClient().pluginInventory()
   }
 
+  settings(): Promise<SettingsDescription> {
+    return this.requireClient().settings()
+  }
+
+  mutateSettings(ns: string, ops: SettingsMutation[], expectedRevision: number): Promise<SettingsNamespace> {
+    return this.requireClient().mutateSettings(ns, ops, expectedRevision)
+  }
+
   async answerApproval(rpcId: string, approvalId: string, outcome: 'allowed-once' | 'rejected'): Promise<void> {
     if (this._state.sessionId === '') return
     await this.requireClient().respond(rpcId, {
@@ -358,7 +418,7 @@ class DshChatController implements vscode.Disposable {
     const message = error instanceof Error ? error.message : String(error)
     this.output.appendLine(`[chat] ${message}`)
     this.projector.notice(`error:${String(Date.now())}`, message, true)
-    this.publish({ messages: this.projector.messages() })
+    this.publish({ messages: this.projectedMessages() })
   }
 
   dispose(): void {
@@ -402,13 +462,21 @@ class DshChatController implements vscode.Disposable {
 
   private async loadSession(sessionId: string): Promise<void> {
     const client = this.requireClient()
-    this.publish({ phase: 'loading', statusText: 'Loading project conversation…', sessionId })
-    const [{ events }, models] = await Promise.all([
+    this.historyEntries = []
+    this.publish({
+      phase: 'loading',
+      statusText: 'Loading project conversation…',
+      sessionId,
+      hasMoreHistory: false,
+      loadingHistory: false,
+    })
+    const [{ events, hasMore }, models] = await Promise.all([
       client.history(sessionId),
       client.models(sessionId),
     ])
     if (this.client !== client || this._state.sessionId !== sessionId) return
     this.projector.reset(events)
+    this.historyEntries = events
     this.guardedDirtyCalls.clear()
     this.queueRawText.clear()
     const summary = this.summaries.find(item => item.sessionId === sessionId)
@@ -416,7 +484,7 @@ class DshChatController implements vscode.Disposable {
       phase: 'ready',
       statusText: '',
       sessionId,
-      messages: this.projector.messages(),
+      messages: this.projectedMessages(),
       running: summary?.running ?? false,
       approval: null,
       question: null,
@@ -425,8 +493,12 @@ class DshChatController implements vscode.Disposable {
       plan: planModeStateOf(summary?.projections?.values?.plan),
       changedFiles: this.diffReviews.rebuild(sessionId, this.cwd, events),
       queue: [],
+      jobs: this.jobsBySession.get(sessionId) ?? [],
+      hasMoreHistory: hasMore,
+      loadingHistory: false,
       ...this.modelPatch(models),
     })
+    this.hydrateImages(client, sessionId)
     void this.loadCommands(client, sessionId)
   }
 
@@ -484,6 +556,7 @@ class DshChatController implements vscode.Disposable {
       const event = payload.event
       if (typeof event === 'object' && event !== null) {
         const dshEvent = event as DshEvent
+        this.historyEntries = mergeHistoryEntries(this.historyEntries, [{ event: dshEvent, view: payload.view }])
         const conflict = this.dirtyConflict(dshEvent, payload.view)
         if (conflict !== undefined) void this.cancelForDirtyConflict(conflict)
         this.projector.apply(dshEvent, payload.view)
@@ -499,16 +572,30 @@ class DshChatController implements vscode.Disposable {
           )
         }
         this.publish({
-          messages: this.projector.messages(),
+          messages: this.projectedMessages(),
           ...(changed ? { changedFiles: this.diffReviews.changedFiles(sessionId) } : {}),
         })
+        this.hydrateImages(this.requireClient(), sessionId)
       }
       return
     }
 
     if (frame.channel === 'mux' && type === 'session/subscribed' && sessionId === this._state.sessionId) {
       this.queueRawText.clear()
-      this.publish({ queue: [] })
+      this.jobsBySession.set(sessionId, [])
+      this.publish({ queue: [], jobs: [] })
+      return
+    }
+
+    if (frame.channel === 'mux' && type === 'session/subscribed') {
+      this.jobsBySession.set(sessionId, [])
+      return
+    }
+
+    if (frame.channel === 'mux' && type === 'session/jobs') {
+      const jobs = jobsSnapshotOf(payload.jobs)
+      this.jobsBySession.set(sessionId, jobs)
+      if (sessionId === this._state.sessionId) this.publish({ jobs })
       return
     }
 
@@ -602,12 +689,52 @@ class DshChatController implements vscode.Disposable {
     if (frame.channel === 'host' && type === 'host/agent-error' && sessionId === this._state.sessionId) {
       const message = typeof payload.message === 'string' ? payload.message : 'DeepSeek Harness reported an agent error.'
       this.projector.notice(`agent-error:${frame.rpcId}`, message, true)
-      this.publish({ messages: this.projector.messages(), running: false })
+      this.publish({ messages: this.projectedMessages(), running: false })
       return
     }
 
     if (frame.channel === 'host' && type === 'host/session-added' && payload.cwd === this.cwd) {
       void this.loadSessions(sessionId).catch(error => { this.report(error) })
+    }
+  }
+
+  private projectedMessages(): ConversationMessage[] {
+    const sessionId = this._state.sessionId
+    return this.projector.messages().map(message => message.images === undefined
+      ? message
+      : {
+          ...message,
+          images: message.images.map(image => ({
+            ...image,
+            ...this.attachmentResults.get(`${sessionId}\u0000${image.attachmentId}`),
+          })),
+        })
+  }
+
+  private hydrateImages(client: DshClient, sessionId: string): void {
+    const images = this.projector.messages().flatMap(message => message.images ?? [])
+    for (const image of images) {
+      const key = `${sessionId}\u0000${image.attachmentId}`
+      if (this.attachmentResults.has(key) || this.attachmentLoads.has(key)) continue
+      const load = client.attachment(sessionId, image.attachmentId)
+        .then((result) => {
+          if (result.attachment.attachmentId !== image.attachmentId || result.attachment.mediaType !== image.mediaType) {
+            throw new Error('DeepSeek Harness returned mismatched image metadata.')
+          }
+          this.attachmentResults.set(key, { data: result.data })
+        })
+        .catch((error: unknown) => {
+          const detail = error instanceof Error ? error.message : String(error)
+          this.output.appendLine(`[attachment] ${image.attachmentId}: ${detail}`)
+          this.attachmentResults.set(key, { error: 'Image unavailable.' })
+        })
+        .finally(() => {
+          this.attachmentLoads.delete(key)
+          if (this.client === client && this._state.sessionId === sessionId) {
+            this.publish({ messages: this.projectedMessages() })
+          }
+        })
+      this.attachmentLoads.set(key, load)
     }
   }
 
@@ -820,6 +947,7 @@ class DshSurface implements vscode.Disposable {
         case 'select-session':
           if (typeof value.sessionId === 'string') await this.controller.selectSession(value.sessionId)
           return
+        case 'load-history': await this.controller.loadOlderHistory(); return
         case 'send':
           if (typeof value.text === 'string') {
             if (value.text.trim() === '/permission danger-full-access') {
