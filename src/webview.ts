@@ -19,7 +19,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${token}';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data:; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${token}';">
   <style>
     :root { color-scheme: light dark; }
     * { box-sizing: border-box; }
@@ -51,6 +51,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     .message.user { display: flex; flex-direction: column; align-items: flex-end; padding-top: 6px; }
     .user .message-head { display: none; }
     .user .message-body { width: fit-content; max-width: 82%; margin-left: auto; padding: 8px 12px; white-space: pre-wrap; border-radius: 16px; background: color-mix(in srgb, var(--vscode-foreground) 8%, var(--vscode-editor-background)); }
+    .message-images { width: 100%; display: grid; gap: 7px; margin-top: 8px; }
+    .message-image { display: block; max-width: 100%; max-height: 380px; border: 1px solid var(--vscode-widget-border); border-radius: 8px; object-fit: contain; background: var(--vscode-editor-background); }
+    .message-image-status { padding: 8px 10px; border: 1px dashed var(--vscode-widget-border); border-radius: 7px; color: var(--vscode-descriptionForeground); font-size: 11px; }
+    .message-image-status.failed { color: var(--vscode-errorForeground); }
     .pending-steering { opacity: .82; }
     .pending-steering .message-body::after { content: 'Steering…'; display: block; margin-top: 3px; color: var(--vscode-descriptionForeground); font-size: 10px; }
     .markdown > :first-child { margin-top: 0; }
@@ -352,6 +356,22 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     function toolTitle(message, callView, resultView) {
       return string(resultView && resultView.title) || string(callView && callView.title) || message.text || 'Tool';
     }
+    function appendImages(parent, images) {
+      if (!Array.isArray(images) || !images.length) return;
+      const gallery = node('div', 'message-images');
+      for (const value of images) {
+        const image = record(value); if (!image) continue;
+        if (typeof image.data === 'string' && typeof image.mediaType === 'string') {
+          const element = document.createElement('img');
+          element.className = 'message-image'; element.alt = string(image.name, 'DeepSeek image');
+          element.width = Number(image.width) || 0; element.height = Number(image.height) || 0;
+          element.src = 'data:' + image.mediaType + ';base64,' + image.data; gallery.append(element);
+        } else {
+          gallery.append(node('div', 'message-image-status' + (image.error ? ' failed' : ''), image.error || 'Loading image…'));
+        }
+      }
+      if (gallery.childNodes.length) parent.append(gallery);
+    }
     function appendPre(parent, text, className) { if (text) parent.append(node('pre', className || '', text)); }
     function renderToolBody(message, callView, resultView) {
       const body = node('div', 'tool-body');
@@ -415,6 +435,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
           if (filePath) row.append(fileButton(filePath, line, filePath + (line ? ':' + String(line) : ''))); body.append(row);
         }
       }
+      appendImages(body, message.images);
       return body;
     }
     function renderTool(message) {
@@ -478,6 +499,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       const body = message.role === 'assistant' ? renderMarkdown(message.text) : node('div', '', message.text);
       body.classList.add('message-body');
       if (message.streaming) body.classList.add('streaming');
+      appendImages(body, message.images);
       item.append(head, body); return item;
     }
     function renderStatus(current) {

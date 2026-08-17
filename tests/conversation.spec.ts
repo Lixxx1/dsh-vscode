@@ -92,6 +92,74 @@ describe('ConversationProjector', () => {
     })])
   })
 
+  it('keeps durable assistant and nested tool-result images for client-side loading', () => {
+    const projector = new ConversationProjector()
+    projector.apply(event('assistant/message', 1, {
+      turn: 1,
+      step: 1,
+      message: {
+        content: [{
+          type: 'image',
+          attachment: {
+            attachmentId: 'assistant-image',
+            mediaType: 'image/png',
+            bytes: 100,
+            width: 20,
+            height: 10,
+            name: 'chart.png',
+          },
+        }],
+      },
+    }))
+    projector.apply(event('tool/call', 2, { callId: 'image-call', name: 'mcp_image' }))
+    projector.apply(event('tool/result', 3, {
+      message: {
+        source: { kind: 'tool', callId: 'image-call' },
+        content: [{
+          type: 'tool-result',
+          toolCallId: 'image-call',
+          content: [{
+            type: 'tool-result',
+            toolCallId: 'nested',
+            content: [{
+              type: 'image',
+              attachment: {
+                attachmentId: 'tool-image',
+                mediaType: 'image/webp',
+                bytes: 200,
+                width: 40,
+                height: 30,
+              },
+            }],
+          }],
+        }],
+      },
+    }))
+
+    expect(projector.messages()).toEqual([
+      expect.objectContaining({
+        id: 'assistant:1:1',
+        text: '',
+        images: [{
+          attachmentId: 'assistant-image',
+          mediaType: 'image/png',
+          width: 20,
+          height: 10,
+          name: 'chart.png',
+        }],
+      }),
+      expect.objectContaining({
+        id: 'tool:image-call',
+        images: [{
+          attachmentId: 'tool-image',
+          mediaType: 'image/webp',
+          width: 40,
+          height: 30,
+        }],
+      }),
+    ])
+  })
+
   it('folds official command lifecycle events into one card', () => {
     const projector = new ConversationProjector()
     projector.apply(event('command/run', 1, { commandId: 'command-1', name: 'plan', args: ' off' }))

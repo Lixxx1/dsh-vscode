@@ -81,4 +81,36 @@ describe('DshClient queue protocol', () => {
     })
     expect(requests).toEqual([{ method: 'pluginInventory/list', payload: { args: {} } }])
   })
+
+  it('reads a durable image through its authorizing session', async () => {
+    const requests: Array<{ method: string; payload: unknown }> = []
+    vi.stubGlobal('fetch', vi.fn(async (_url: URL, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body)) as { rpcId: string; method: string; payload: unknown }
+      requests.push({ method: request.method, payload: request.payload })
+      return new Response(JSON.stringify({
+        type: 'server-response',
+        rpcId: request.rpcId,
+        result: {
+          ok: true,
+          value: {
+            attachment: {
+              attachmentId: 'sha256:image',
+              mediaType: 'image/png',
+              bytes: 3,
+              width: 1,
+              height: 1,
+            },
+            data: 'YWJj',
+          },
+        },
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }))
+    const client = new DshClient(new URL('http://127.0.0.1:31415'))
+
+    await expect(client.attachment('session-1', 'sha256:image')).resolves.toMatchObject({ data: 'YWJj' })
+    expect(requests).toEqual([{
+      method: 'session.attachment',
+      payload: { sessionId: 'session-1', attachmentId: 'sha256:image' },
+    }])
+  })
 })

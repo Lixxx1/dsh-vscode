@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import * as path from 'node:path'
 import * as vscode from 'vscode'
-import { ConversationProjector, type ConversationMessage, type DshEvent } from './conversation.js'
+import { ConversationProjector, type ConversationImage, type ConversationMessage, type DshEvent } from './conversation.js'
 import {
   permissionPresetsOf,
   planModeStateOf,
@@ -149,6 +149,8 @@ class DshChatController implements vscode.Disposable {
   private generation = 0
   private readonly guardedDirtyCalls = new Set<string>()
   private queueRawText = new Map<string, string>()
+  private readonly attachmentResults = new Map<string, Pick<ConversationImage, 'data' | 'error'>>()
+  private readonly attachmentLoads = new Map<string, Promise<void>>()
 
   readonly onDidChangeState = this.changes.event
 
@@ -190,6 +192,8 @@ class DshChatController implements vscode.Disposable {
     this.diffReviews.clear()
     this.guardedDirtyCalls.clear()
     this.queueRawText.clear()
+    this.attachmentResults.clear()
+    this.attachmentLoads.clear()
     this.publish({
       phase: 'loading',
       statusText: 'Starting the official DeepSeek Harness runtime…',
@@ -358,7 +362,7 @@ class DshChatController implements vscode.Disposable {
     const message = error instanceof Error ? error.message : String(error)
     this.output.appendLine(`[chat] ${message}`)
     this.projector.notice(`error:${String(Date.now())}`, message, true)
-    this.publish({ messages: this.projector.messages() })
+    this.publish({ messages: this.projectedMessages() })
   }
 
   dispose(): void {
@@ -416,7 +420,7 @@ class DshChatController implements vscode.Disposable {
       phase: 'ready',
       statusText: '',
       sessionId,
-      messages: this.projector.messages(),
+      messages: this.projectedMessages(),
       running: summary?.running ?? false,
       approval: null,
       question: null,
@@ -427,6 +431,7 @@ class DshChatController implements vscode.Disposable {
       queue: [],
       ...this.modelPatch(models),
     })
+    this.hydrateImages(client, sessionId)
     void this.loadCommands(client, sessionId)
   }
 
@@ -499,9 +504,10 @@ class DshChatController implements vscode.Disposable {
           )
         }
         this.publish({
-          messages: this.projector.messages(),
+          messages: this.projectedMessages(),
           ...(changed ? { changedFiles: this.diffReviews.changedFiles(sessionId) } : {}),
         })
+        this.hydrateImages(this.requireClient(), sessionId)
       }
       return
     }
@@ -602,12 +608,52 @@ class DshChatController implements vscode.Disposable {
     if (frame.channel === 'host' && type === 'host/agent-error' && sessionId === this._state.sessionId) {
       const message = typeof payload.message === 'string' ? payload.message : 'DeepSeek Harness reported an agent error.'
       this.projector.notice(`agent-error:${frame.rpcId}`, message, true)
-      this.publish({ messages: this.projector.messages(), running: false })
+      this.publish({ messages: this.projectedMessages(), running: false })
       return
     }
 
     if (frame.channel === 'host' && type === 'host/session-added' && payload.cwd === this.cwd) {
       void this.loadSessions(sessionId).catch(error => { this.report(error) })
+    }
+  }
+
+  private projectedMessages(): ConversationMessage[] {
+    const sessionId = this._state.sessionId
+    return this.projector.messages().map(message => message.images === undefined
+      ? message
+      : {
+          ...message,
+          images: message.images.map(image => ({
+            ...image,
+            ...this.attachmentResults.get(`${sessionId}\u0000${image.attachmentId}`),
+          })),
+        })
+  }
+
+  private hydrateImages(client: DshClient, sessionId: string): void {
+    const images = this.projector.messages().flatMap(message => message.images ?? [])
+    for (const image of images) {
+      const key = `${sessionId}\u0000${image.attachmentId}`
+      if (this.attachmentResults.has(key) || this.attachmentLoads.has(key)) continue
+      const load = client.attachment(sessionId, image.attachmentId)
+        .then((result) => {
+          if (result.attachment.attachmentId !== image.attachmentId || result.attachment.mediaType !== image.mediaType) {
+            throw new Error('DeepSeek Harness returned mismatched image metadata.')
+          }
+          this.attachmentResults.set(key, { data: result.data })
+        })
+        .catch((error: unknown) => {
+          const detail = error instanceof Error ? error.message : String(error)
+          this.output.appendLine(`[attachment] ${image.attachmentId}: ${detail}`)
+          this.attachmentResults.set(key, { error: 'Image unavailable.' })
+        })
+        .finally(() => {
+          this.attachmentLoads.delete(key)
+          if (this.client === client && this._state.sessionId === sessionId) {
+            this.publish({ messages: this.projectedMessages() })
+          }
+        })
+      this.attachmentLoads.set(key, load)
     }
   }
 
