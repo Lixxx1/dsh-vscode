@@ -2,7 +2,7 @@
 
 在 VS Code 侧边栏中使用 DeepSeek Harness 编码助手。
 
-目标是提供和 Claude Code、Codex 的 VS Code 版本相同类型的使用体验：编码时让助手常驻编辑器旁边，并自动围绕当前项目工作。
+目标是提供和 Claude Code、Codex 的 VS Code 版本相同类型的使用体验：编码时让助手常驻编辑器旁边，并自动理解当前项目、文件和选区。
 
 [English](README.md) | **简体中文**
 
@@ -16,10 +16,13 @@
 
 ## 功能
 
-- 在 VS Code 右侧边栏中提供 Claude Code、Codex 风格的 DeepSeek Harness 编码体验，让助手始终常驻代码旁边。
-- 默认围绕项目工作：DeepSeek 直接在选中的 VS Code 工作区中运行，也可以从输入框快速切换项目。
-- 无需离开编辑器即可完成完整的编码流程，包括流式回复、工具调用、操作审批和后续问题。
-- 在侧边栏中管理项目会话，分别选择 Model 与 Reasoning Effort，并使用 DSH 官方 `/` 命令。
+- 在 VS Code 右侧边栏中提供 Claude Code、Codex 风格的编码助手，并由官方 DeepSeek Harness runtime 驱动。
+- 内置项目与编辑器上下文：DeepSeek 可以获取当前工作区、正在查看的文件和选中代码，也支持通过 `@file`、`@folder` 或 **Add Selection to Chat** 主动添加上下文。
+- 原生代码审阅：点击文件引用和工具结果即可跳转到编辑器，并使用 VS Code Diff Editor 检查单个文件或全部改动。
+- 安全处理未保存代码：如果 DeepSeek 即将修改一个包含未保存内容的文件，任务会在覆盖前停止并提示冲突。
+- 无需离开编辑器即可完成流式回复、工具调用、操作审批、后续问题、项目会话和 DSH 官方 `/` 命令等完整流程。
+- 任务运行时可以继续排队消息，编辑或删除队列内容，也可以按 `Cmd/Ctrl+Enter` 立即调整当前任务。
+- 在输入框中分别选择 Model 和 Reasoning Effort。
 
 ## 安装
 
@@ -47,7 +50,7 @@ code --install-extension dsh-vscode.vsix
 1. 在 VS Code 中打开一个受信任的项目文件夹。
 2. 在右侧选择 **DeepSeek Harness**。如果没有显示，可以在 **其他视图** 中找到它。
 3. 点击钥匙按钮配置 `DEEPSEEK_API_KEY`。
-4. 选择项目、会话、Model 和 Reasoning Effort，然后开始工作。输入 `/` 可以打开 DeepSeek Harness 命令菜单。
+4. 选择项目、会话、Model 和 Reasoning Effort，然后开始工作。输入 `/` 使用 DSH 官方命令，输入 `@` 添加文件或文件夹。
 
 实现细节见[架构文档](docs/architecture.md)。参与开发前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
