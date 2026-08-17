@@ -3,6 +3,7 @@ import * as path from 'node:path'
 import * as vscode from 'vscode'
 import { ConversationProjector, type ConversationMessage, type DshEvent } from './conversation.js'
 import { DEEPSEEK_API_KEY_SECRET, normalizeDeepSeekApiKey } from './credentials.js'
+import { DirtyFileGuard } from './dirty-file-guard.js'
 import { EditorContextBridge } from './editor-context-bridge.js'
 import {
   DshClient,
@@ -16,6 +17,7 @@ import {
 } from './dsh-client.js'
 import { withIdeContext, type IdeContextSnapshot } from './ide-context.js'
 import { DshRuntime, type RuntimeState } from './runtime.js'
+import { toolWriteIntents } from './tool-write-guard.js'
 import { chatHtml } from './webview.js'
 
 let activeRuntime: DshRuntime | undefined
@@ -151,12 +153,14 @@ class DshChatController implements vscode.Disposable {
   private summaries: SessionSummary[] = []
   private _state: ChatViewState
   private generation = 0
+  private readonly guardedDirtyCalls = new Set<string>()
 
   readonly onDidChangeState = this.changes.event
 
   constructor(
     private readonly runtime: DshRuntime,
     private readonly output: vscode.OutputChannel,
+    private readonly dirtyFiles: DirtyFileGuard,
     private _cwd: string,
   ) {
     this._state = initialState(_cwd)
@@ -187,6 +191,7 @@ class DshChatController implements vscode.Disposable {
     const generation = ++this.generation
     this.disconnectClient()
     this.projector.reset([])
+    this.guardedDirtyCalls.clear()
     this.publish({
       phase: 'loading',
       statusText: 'Starting the official DeepSeek Harness runtime…',
@@ -242,6 +247,7 @@ class DshChatController implements vscode.Disposable {
     this._cwd = cwd
     this.summaries = []
     this.projector.reset([])
+    this.guardedDirtyCalls.clear()
     this.publish({
       ...initialState(cwd),
       statusText: 'Switching DeepSeek Harness to this project…',
@@ -373,6 +379,7 @@ class DshChatController implements vscode.Disposable {
     ])
     if (this.client !== client || this._state.sessionId !== sessionId) return
     this.projector.reset(events)
+    this.guardedDirtyCalls.clear()
     const summary = this.summaries.find(item => item.sessionId === sessionId)
     this.publish({
       phase: 'ready',
@@ -442,7 +449,20 @@ class DshChatController implements vscode.Disposable {
     if (frame.channel === 'mux' && type === 'session/event' && sessionId === this._state.sessionId) {
       const event = payload.event
       if (typeof event === 'object' && event !== null) {
-        this.projector.apply(event as DshEvent, payload.view)
+        const dshEvent = event as DshEvent
+        const conflict = this.dirtyConflict(dshEvent, payload.view)
+        if (conflict !== undefined) void this.cancelForDirtyConflict(conflict)
+        this.projector.apply(dshEvent, payload.view)
+        if (conflict !== undefined) {
+          const label = conflict.paths.length === 1
+            ? `\`${conflict.paths[0] ?? 'file'}\``
+            : `${String(conflict.paths.length)} files`
+          this.projector.notice(
+            `dirty-file:${conflict.callId}`,
+            `DeepSeek stopped because ${label} has unsaved VS Code changes. Save or discard them, then retry.`,
+            true,
+          )
+        }
         this.publish({ messages: this.projector.messages() })
       }
       return
@@ -535,6 +555,41 @@ class DshChatController implements vscode.Disposable {
     if (frame.channel === 'host' && type === 'host/session-added' && payload.cwd === this.cwd) {
       void this.loadSessions(sessionId).catch(error => { this.report(error) })
     }
+  }
+
+  private dirtyConflict(event: DshEvent, view?: unknown): { callId: string; paths: string[] } | undefined {
+    const callIds: string[] = []
+    const documents = new Map<string, vscode.TextDocument>()
+    for (const intent of toolWriteIntents(event, view)) {
+      if (this.guardedDirtyCalls.has(intent.callId)) continue
+      const conflicts = this.dirtyFiles.conflicts(this.cwd, intent.paths)
+      if (conflicts.length === 0) continue
+      this.guardedDirtyCalls.add(intent.callId)
+      callIds.push(intent.callId)
+      for (const document of conflicts) documents.set(document.uri.fsPath, document)
+    }
+    if (callIds.length === 0) return undefined
+    const paths = [...documents.values()]
+      .map(document => path.relative(this.cwd, document.uri.fsPath) || path.basename(document.uri.fsPath))
+    return { callId: callIds[0] ?? String(event.seq), paths }
+  }
+
+  private async cancelForDirtyConflict(conflict: { paths: string[] }): Promise<void> {
+    try {
+      await this.cancel()
+    } catch (error) {
+      this.output.appendLine(`[dirty-files] Could not cancel cleanly: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    const label = conflict.paths.length === 1
+      ? conflict.paths[0] ?? 'A file'
+      : `${String(conflict.paths.length)} files`
+    await vscode.window.showWarningMessage(
+      `DeepSeek stopped: ${label} has unsaved changes.`,
+      {
+        modal: true,
+        detail: `${conflict.paths.join('\n')}\n\nSave or discard the changes in VS Code, then retry the task.`,
+      },
+    )
   }
 }
 
@@ -793,7 +848,7 @@ export function activate(context: vscode.ExtensionContext): void {
     output.appendLine('[chat] Open a folder or workspace before using DeepSeek Harness.')
   }
   const cwd = workspace?.uri.fsPath ?? ''
-  const controller = new DshChatController(runtime, output, cwd)
+  const controller = new DshChatController(runtime, output, new DirtyFileGuard(), cwd)
   const editorContext = new EditorContextBridge(() => controller.cwd)
   const provider = new DshViewProvider(controller, output, editorContext, context.extensionUri)
   const panels = new Set<{ panel: vscode.WebviewPanel; surface: DshSurface }>()
