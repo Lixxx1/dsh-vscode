@@ -47,6 +47,13 @@ export interface PromptImage {
   name?: string
 }
 
+export type PromptMode = 'queue' | 'steer'
+
+export type QueueAction =
+  | { kind: 'edit'; content: Array<{ type: 'text'; text: string }> }
+  | { kind: 'remove' }
+  | { kind: 'steer' }
+
 export interface RpcReceipt {
   accepted: boolean
   reason?: 'not-pending' | 'bad-response'
@@ -126,7 +133,12 @@ export class DshClient {
     return this.call('session.models', { sessionId })
   }
 
-  prompt(sessionId: string, text: string, images: readonly PromptImage[] = []): Promise<{ accepted: true }> {
+  prompt(
+    sessionId: string,
+    text: string,
+    images: readonly PromptImage[] = [],
+    mode: PromptMode = 'queue',
+  ): Promise<{ accepted: true }> {
     const content: Array<{ type: 'text'; text: string } | PromptImage> = images.map(image => ({
       type: 'image',
       mediaType: image.mediaType,
@@ -136,7 +148,7 @@ export class DshClient {
     if (text !== '') content.push({ type: 'text', text })
     return this.call('session.prompt', {
       sessionId,
-      mode: 'queue',
+      mode,
       content,
       clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     })
@@ -165,6 +177,10 @@ export class DshClient {
 
   cancel(sessionId: string): Promise<{ accepted: true }> {
     return this.call('session.cancel', { sessionId })
+  }
+
+  updateQueue(sessionId: string, itemId: string, action: QueueAction): Promise<{ accepted: true }> {
+    return this.call('session.updateQueue', { sessionId, itemId, action })
   }
 
   selectModel(sessionId: string, selection: ModelSelection): Promise<{ selected: ModelSelection }> {

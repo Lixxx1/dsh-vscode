@@ -12,11 +12,14 @@ import {
   type DshFrame,
   type ImageMediaType,
   type ModelSelection,
+  type PromptMode,
   type PromptImage,
+  type QueueAction,
   type SessionModels,
   type SessionSummary,
 } from './dsh-client.js'
-import { withIdeContext, type IdeContextSnapshot } from './ide-context.js'
+import { replaceTextPreservingIdeContext, withIdeContext, type IdeContextSnapshot } from './ide-context.js'
+import { queueSnapshotOf, type QueueItemState } from './queue.js'
 import { DshRuntime, type RuntimeState } from './runtime.js'
 import { toolWriteIntents } from './tool-write-guard.js'
 import { chatHtml } from './webview.js'
@@ -103,6 +106,7 @@ interface ChatViewState {
   commands: CommandDescriptor[]
   permissions: PermissionPresetItem[]
   changedFiles: ChangedFileItem[]
+  queue: QueueItemState[]
 }
 
 function initialState(cwd: string): ChatViewState {
@@ -122,6 +126,7 @@ function initialState(cwd: string): ChatViewState {
     commands: [],
     permissions: [],
     changedFiles: [],
+    queue: [],
   }
 }
 
@@ -157,6 +162,7 @@ class DshChatController implements vscode.Disposable {
   private _state: ChatViewState
   private generation = 0
   private readonly guardedDirtyCalls = new Set<string>()
+  private queueRawText = new Map<string, string>()
 
   readonly onDidChangeState = this.changes.event
 
@@ -197,6 +203,7 @@ class DshChatController implements vscode.Disposable {
     this.projector.reset([])
     this.diffReviews.clear()
     this.guardedDirtyCalls.clear()
+    this.queueRawText.clear()
     this.publish({
       phase: 'loading',
       statusText: 'Starting the official DeepSeek Harness runtime…',
@@ -210,6 +217,7 @@ class DshChatController implements vscode.Disposable {
       commands: [],
       permissions: [],
       changedFiles: [],
+      queue: [],
     })
     try {
       const uri = await this.runtime.start(this.cwd === '' ? undefined : vscode.Uri.file(this.cwd))
@@ -272,7 +280,12 @@ class DshChatController implements vscode.Disposable {
     await this.loadSession(sessionId)
   }
 
-  async send(text: string, images: readonly PromptImage[] = [], ideContext?: IdeContextSnapshot): Promise<void> {
+  async send(
+    text: string,
+    images: readonly PromptImage[] = [],
+    ideContext?: IdeContextSnapshot,
+    mode: PromptMode = 'queue',
+  ): Promise<void> {
     const normalized = text.trim()
     if ((normalized === '' && images.length === 0) || this._state.sessionId === '') return
     if (normalized.startsWith('/')) {
@@ -290,12 +303,33 @@ class DshChatController implements vscode.Disposable {
       this._state.sessionId,
       ideContext === undefined ? normalized : withIdeContext(normalized, ideContext),
       images,
+      mode,
     )
   }
 
   async cancel(): Promise<void> {
     if (this._state.sessionId === '') return
     await this.requireClient().cancel(this._state.sessionId)
+  }
+
+  async updateQueue(itemId: string, action: 'edit' | 'remove' | 'steer', text?: string): Promise<void> {
+    if (this._state.sessionId === '') return
+    let request: QueueAction
+    if (action === 'edit') {
+      const replacement = text?.trim()
+      if (replacement === undefined || replacement === '') throw new Error('Queued messages cannot be empty.')
+      const original = this.queueRawText.get(itemId)
+      request = {
+        kind: 'edit',
+        content: [{
+          type: 'text',
+          text: original === undefined ? replacement : replaceTextPreservingIdeContext(original, replacement),
+        }],
+      }
+    } else {
+      request = { kind: action }
+    }
+    await this.requireClient().updateQueue(this._state.sessionId, itemId, request)
   }
 
   async selectModel(selection: ModelSelection): Promise<void> {
@@ -385,6 +419,7 @@ class DshChatController implements vscode.Disposable {
     if (this.client !== client || this._state.sessionId !== sessionId) return
     this.projector.reset(events)
     this.guardedDirtyCalls.clear()
+    this.queueRawText.clear()
     const summary = this.summaries.find(item => item.sessionId === sessionId)
     this.publish({
       phase: 'ready',
@@ -397,6 +432,7 @@ class DshChatController implements vscode.Disposable {
       commands: [],
       permissions: permissionPresetsOf(summary?.projections?.values?.permissions),
       changedFiles: this.diffReviews.rebuild(sessionId, this.cwd, events),
+      queue: [],
       ...this.modelPatch(models),
     })
     void this.loadCommands(client, sessionId)
@@ -475,6 +511,19 @@ class DshChatController implements vscode.Disposable {
           ...(changed ? { changedFiles: this.diffReviews.changedFiles(sessionId) } : {}),
         })
       }
+      return
+    }
+
+    if (frame.channel === 'mux' && type === 'session/subscribed' && sessionId === this._state.sessionId) {
+      this.queueRawText.clear()
+      this.publish({ queue: [] })
+      return
+    }
+
+    if (frame.channel === 'mux' && type === 'session/queue' && sessionId === this._state.sessionId) {
+      const snapshot = queueSnapshotOf(payload.items)
+      this.queueRawText = snapshot.rawText
+      this.publish({ queue: snapshot.items })
       return
     }
 
@@ -745,7 +794,8 @@ class DshSurface implements vscode.Disposable {
             }
             const isCommand = value.text.trim().startsWith('/')
             const ideContext = isCommand ? undefined : await this.editorContext.snapshotForPrompt(value.text)
-            await this.controller.send(value.text, this.draftImages, ideContext)
+            const mode: PromptMode = value.mode === 'steer' ? 'steer' : 'queue'
+            await this.controller.send(value.text, this.draftImages, ideContext, mode)
             this.draftImages.length = 0
             if (!isCommand) this.editorContext.clearPinned()
             await this.publishDraftImages()
@@ -775,6 +825,18 @@ class DshSurface implements vscode.Disposable {
           }
           return
         case 'cancel': await this.controller.cancel(); return
+        case 'queue-action':
+          if (
+            typeof value.itemId === 'string'
+            && (value.action === 'edit' || value.action === 'remove' || value.action === 'steer')
+          ) {
+            await this.controller.updateQueue(
+              value.itemId,
+              value.action,
+              typeof value.text === 'string' ? value.text : undefined,
+            )
+          }
+          return
         case 'approval':
           if (
             typeof value.rpcId === 'string'

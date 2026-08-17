@@ -73,6 +73,12 @@ export function withoutIdeContext(text: string): string {
   return text.slice(end + CONTEXT_END.length + 2).replace(/^\n/, '')
 }
 
+/** Replaces only the human-authored tail of a queued prompt, retaining its captured IDE context. */
+export function replaceTextPreservingIdeContext(text: string, replacement: string): string {
+  const visible = withoutIdeContext(text)
+  return visible === text ? replacement : `${text.slice(0, text.length - visible.length)}${replacement}`
+}
+
 export function mentionQueryAt(text: string, cursor: number): { start: number; query: string } | undefined {
   const prefix = text.slice(0, cursor)
   const match = /(?:^|[\s(])@(?:\{([^}]*)|([^\s@{}]*))$/.exec(prefix)

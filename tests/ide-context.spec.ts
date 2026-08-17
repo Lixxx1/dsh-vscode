@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   mentionedPaths,
   mentionQueryAt,
+  replaceTextPreservingIdeContext,
   searchMentionCandidates,
   withIdeContext,
   withoutIdeContext,
@@ -34,6 +35,15 @@ describe('IDE context', () => {
 
   it('leaves ordinary prompts untouched', () => {
     expect(withoutIdeContext('hello')).toBe('hello')
+  })
+
+  it('edits queued prompt text without dropping its captured context', () => {
+    const enriched = withIdeContext('Original request', snapshot)
+    const edited = replaceTextPreservingIdeContext(enriched, 'Updated request')
+
+    expect(edited).toContain('"path": "src/extension.ts"')
+    expect(withoutIdeContext(edited)).toBe('Updated request')
+    expect(replaceTextPreservingIdeContext('Original request', 'Updated request')).toBe('Updated request')
   })
 
   it('recognizes inline and braced file mentions', () => {

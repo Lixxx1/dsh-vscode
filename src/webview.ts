@@ -51,6 +51,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     .message.user { display: flex; flex-direction: column; align-items: flex-end; padding-top: 6px; }
     .user .message-head { display: none; }
     .user .message-body { width: fit-content; max-width: 82%; margin-left: auto; padding: 8px 12px; white-space: pre-wrap; border-radius: 16px; background: color-mix(in srgb, var(--vscode-foreground) 8%, var(--vscode-editor-background)); }
+    .pending-steering { opacity: .82; }
+    .pending-steering .message-body::after { content: 'Steering…'; display: block; margin-top: 3px; color: var(--vscode-descriptionForeground); font-size: 10px; }
     .markdown > :first-child { margin-top: 0; }
     .markdown > :last-child { margin-bottom: 0; }
     .markdown p { margin: 0 0 9px; }
@@ -113,6 +115,16 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     .option-description { display: block; color: var(--vscode-descriptionForeground); font-size: 11px; }
     .custom-answer { width: 100%; margin-top: 7px; padding: 6px 8px; border: 1px solid var(--vscode-input-border, var(--vscode-widget-border)); outline: 0; border-radius: 4px; background: var(--vscode-input-background); }
     .composer-wrap { width: 100%; min-width: 0; padding: 0 10px 10px; overflow: hidden; background: linear-gradient(transparent, var(--vscode-sideBar-background) 18px); }
+    .queue-dock { width: 100%; min-width: 0; max-width: 760px; margin: 0 auto 6px; padding: 7px 8px; border: 1px solid var(--vscode-widget-border); border-radius: 9px; background: var(--vscode-editor-background); }
+    .queue-head { min-width: 0; display: flex; align-items: center; gap: 6px; margin-bottom: 4px; color: var(--vscode-descriptionForeground); font-size: 11px; }
+    .queue-title { min-width: 0; flex: 1; font-weight: 600; }
+    .queue-row { min-width: 0; min-height: 30px; display: flex; align-items: center; gap: 6px; }
+    .queue-row + .queue-row { border-top: 1px solid color-mix(in srgb, var(--vscode-widget-border) 55%, transparent); }
+    .queue-preview { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .queue-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 3px; }
+    .queue-action { min-height: 23px; padding: 1px 5px; border: 0; border-radius: 4px; color: var(--vscode-descriptionForeground); background: transparent; font-size: 10px; }
+    .queue-action:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
+    .queue-editor { width: 100%; min-width: 0; min-height: 30px; height: 30px; padding: 4px 6px; resize: none; border: 1px solid var(--vscode-input-border, var(--vscode-widget-border)); border-radius: 4px; background: var(--vscode-input-background); }
     .composer { width: 100%; min-width: 0; max-width: 760px; margin: 0 auto; overflow: hidden; border: 1px solid var(--vscode-input-border, var(--vscode-widget-border)); border-radius: 14px; background: var(--vscode-input-background); box-shadow: 0 2px 10px color-mix(in srgb, var(--vscode-widget-shadow) 75%, transparent); }
     .command-menu { max-height: 210px; padding: 5px; overflow-y: auto; border-bottom: 1px solid var(--vscode-widget-border); }
     .command-option { width: 100%; min-width: 0; padding: 7px 8px; display: block; border: 0; border-radius: 6px; text-align: left; background: transparent; }
@@ -132,7 +144,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     .context-remove:hover, .attachment-remove:hover { background: var(--vscode-toolbar-hoverBackground); }
     textarea { width: 100%; min-height: 72px; max-height: 220px; resize: none; display: block; padding: 11px 12px 4px; border: 0; outline: 0; background: transparent; color: var(--vscode-input-foreground); }
     textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
-    .composer-row { width: 100%; min-width: 0; min-height: 39px; padding: 4px 6px 6px; display: grid; grid-template-columns: 28px minmax(38px, .65fr) minmax(0, 1.25fr) minmax(50px, .65fr) 28px; align-items: center; gap: 5px; }
+    .composer-row { width: 100%; min-width: 0; min-height: 39px; padding: 4px 6px 6px; display: grid; grid-template-columns: 28px minmax(38px, .65fr) minmax(0, 1.25fr) minmax(50px, .65fr) auto; align-items: center; gap: 5px; }
+    .run-actions { display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
     .project { width: 100%; min-width: 0; height: 28px; padding: 0 4px; overflow: hidden; display: flex; align-items: center; gap: 5px; border: 0; border-radius: 6px; color: var(--vscode-descriptionForeground); background: transparent; }
     .project:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
     .project span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -140,9 +153,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     .model-select, .effort-select { width: 100%; min-width: 0; max-width: 100%; border: 0; outline: 0; color: var(--vscode-descriptionForeground); background: transparent; text-overflow: ellipsis; }
     .send { border-radius: 8px; color: white; background: #4d6bfe; }
     .send:hover { background: #405de6; }
+    .cancel { color: var(--vscode-errorForeground); }
+    .cancel:hover { background: var(--vscode-toolbar-hoverBackground); }
     .send:disabled, textarea:disabled, button:disabled { opacity: .55; cursor: default; }
     .hidden { display: none !important; }
-    @media (max-width: 330px) { .conversation { padding-inline: 10px; } .composer-row { grid-template-columns: 28px 20px minmax(0, 1fr) minmax(46px, .6fr) 28px; } .project span { display: none; } }
+    @media (max-width: 330px) { .conversation { padding-inline: 10px; } .composer-row { grid-template-columns: 28px 20px minmax(0, 1fr) minmax(46px, .6fr) auto; } .project span { display: none; } }
   </style>
 </head>
 <body>
@@ -153,6 +168,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     </header>
     <main id="scroll" class="scroll"><div id="conversation" class="conversation"></div></main>
     <footer class="composer-wrap">
+      <div id="queueDock" class="queue-dock hidden" aria-label="Queued messages"></div>
       <div class="composer">
         <div id="contextChips" class="context-chips hidden" aria-label="Editor context"></div>
         <div id="attachments" class="attachments hidden"></div>
@@ -164,8 +180,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
           <button id="project" class="project" title="Choose DeepSeek project" aria-label="Choose DeepSeek project"><svg viewBox="0 0 24 24"><path d="M3 7.5h7l2 2h9v9.5H3z"/><path d="M3 7.5V5h7l2 2h5"/></svg><span id="workspace">Workspace</span></button>
           <select id="models" class="model-select" aria-label="Model"></select>
           <select id="efforts" class="effort-select" aria-label="Reasoning effort"></select>
-          <button id="send" class="icon-button send" title="Send (Enter)" aria-label="Send"><svg viewBox="0 0 24 24"><path d="M12 19V5M6.5 10.5 12 5l5.5 5.5"/></svg></button>
-          <button id="cancel" class="icon-button send hidden" title="Stop" aria-label="Stop"><svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1"/></svg></button>
+          <div class="run-actions">
+            <button id="cancel" class="icon-button cancel hidden" title="Stop" aria-label="Stop"><svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1"/></svg></button>
+            <button id="send" class="icon-button send" title="Send (Enter)" aria-label="Send"><svg viewBox="0 0 24 24"><path d="M12 19V5M6.5 10.5 12 5l5.5 5.5"/></svg></button>
+          </div>
         </div>
       </div>
     </footer>
@@ -179,6 +197,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       models: document.getElementById('models'), efforts: document.getElementById('efforts'),
       send: document.getElementById('send'), cancel: document.getElementById('cancel'),
       attach: document.getElementById('attach'), attachments: document.getElementById('attachments'),
+      queueDock: document.getElementById('queueDock'),
       contextChips: document.getElementById('contextChips'), mentionMenu: document.getElementById('mentionMenu'), commandMenu: document.getElementById('commandMenu'),
     };
     let state;
@@ -188,6 +207,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     let mentionIndex = 0;
     let mentionRequestId = 0;
     let mentionCandidates = [];
+    let queueEditing = null;
+    let queueRenderSignature = '';
 
     function node(tag, className, text) {
       const value = document.createElement(tag);
@@ -407,6 +428,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       }
       return box;
     }
+    function renderPendingSteering(item) {
+      const bubble = node('article', 'message user pending-steering');
+      const body = node('div', 'message-body', item.preview || 'Steering message');
+      bubble.append(body); return bubble;
+    }
     function renderMessage(message) {
       if (message.role === 'tool') return renderTool(message);
       if (message.role === 'command') return renderCommand(message);
@@ -623,6 +649,47 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       elements.prompt.value = ''; commandIndex = 0; resetPrompt();
     }
     function resetPrompt() { elements.prompt.placeholder = 'Ask DeepSeek about this project'; resizePrompt(); renderCommandMenu(); renderMentionMenu(); }
+    function postQueueAction(itemId, action, text) {
+      vscode.postMessage({ type: 'queue-action', itemId, action, ...(text === undefined ? {} : { text }) });
+    }
+    function renderQueue(force) {
+      const queue = (state && state.queue || []).filter(item => item.placement === 'queued');
+      if (queueEditing && !queue.some(item => item.id === queueEditing.id)) queueEditing = null;
+      const signature = JSON.stringify({ queue, running: state && state.running, editing: queueEditing });
+      if (!force && signature === queueRenderSignature) return;
+      queueRenderSignature = signature; elements.queueDock.replaceChildren(); elements.queueDock.classList.toggle('hidden', queue.length === 0);
+      if (!queue.length) return;
+      const head = node('div', 'queue-head'); head.append(node('span', '', '≡'), node('span', 'queue-title', queue.length === 1 ? '1 queued message' : queue.length + ' queued messages')); elements.queueDock.append(head);
+      for (const item of queue) {
+        const row = node('div', 'queue-row');
+        if (queueEditing && queueEditing.id === item.id) {
+          const editor = node('textarea', 'queue-editor'); editor.value = queueEditing.text; editor.rows = 1; editor.setAttribute('aria-label', 'Edit queued message');
+          editor.addEventListener('input', () => {
+            queueEditing = { id: item.id, text: editor.value };
+            queueRenderSignature = JSON.stringify({ queue, running: state && state.running, editing: queueEditing });
+            save.disabled = editor.value.trim() === '';
+          });
+          editor.addEventListener('keydown', event => {
+            if (event.key === 'Escape') { event.preventDefault(); queueEditing = null; renderQueue(true); return; }
+            if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+              event.preventDefault(); const text = editor.value.trim(); if (!text) return; queueEditing = null; postQueueAction(item.id, 'edit', text); renderQueue(true);
+            }
+          });
+          const actions = node('div', 'queue-actions'); const save = node('button', 'queue-action', 'Save'); const cancelEdit = node('button', 'queue-action', 'Cancel');
+          save.type = cancelEdit.type = 'button'; save.disabled = queueEditing.text.trim() === ''; save.addEventListener('click', () => { const text = editor.value.trim(); if (!text) return; queueEditing = null; postQueueAction(item.id, 'edit', text); renderQueue(true); });
+          cancelEdit.addEventListener('click', () => { queueEditing = null; renderQueue(true); }); actions.append(save, cancelEdit); row.append(editor, actions);
+          requestAnimationFrame(() => { editor.focus(); editor.setSelectionRange(editor.value.length, editor.value.length); });
+        } else {
+          row.append(node('span', 'queue-preview', item.preview || 'Queued message'));
+          const actions = node('div', 'queue-actions');
+          const edit = node('button', 'queue-action', 'Edit'); edit.type = 'button'; edit.disabled = item.text === null; edit.title = item.text === null ? 'Messages with attachments cannot be edited' : 'Edit queued message'; edit.addEventListener('click', () => { if (item.text !== null) { queueEditing = { id: item.id, text: item.text }; renderQueue(true); } });
+          const remove = node('button', 'queue-action', 'Delete'); remove.type = 'button'; remove.addEventListener('click', () => postQueueAction(item.id, 'remove'));
+          const steer = node('button', 'queue-action', 'Steer'); steer.type = 'button'; steer.disabled = !state.running; steer.title = state.running ? 'Apply this message to the current task now' : 'Steering is available only while DeepSeek is running'; steer.addEventListener('click', () => postQueueAction(item.id, 'steer'));
+          actions.append(edit, remove, steer); row.append(actions);
+        }
+        elements.queueDock.append(row);
+      }
+    }
     function render(current) {
       const nearBottom = elements.scroll.scrollHeight - elements.scroll.scrollTop - elements.scroll.clientHeight < 80;
       state = current; elements.workspace.textContent = current.workspaceName || 'Workspace'; elements.project.title = current.cwd ? 'DeepSeek project: ' + current.cwd : 'Choose DeepSeek project';
@@ -638,6 +705,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       else {
         if (!current.messages || current.messages.length === 0) elements.conversation.append(renderEmpty(current));
         else for (const message of current.messages) elements.conversation.append(renderMessage(message));
+        for (const item of current.queue || []) if (item.placement === 'steering') elements.conversation.append(renderPendingSteering(item));
         if (current.changedFiles && current.changedFiles.length) elements.conversation.append(renderChangedFiles(current.changedFiles));
         if (current.approval) elements.conversation.append(renderApproval(current.approval));
         if (current.question) elements.conversation.append(renderQuestions(current.question));
@@ -645,16 +713,16 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       const enabled = current.phase === 'ready' && current.routable !== false && Boolean(current.sessionId);
       elements.prompt.disabled = !enabled; elements.attach.disabled = !enabled; elements.project.disabled = current.running === true; elements.newSession.disabled = current.phase !== 'ready'; elements.sessions.disabled = current.phase !== 'ready';
       elements.models.disabled = !enabled || !(current.models || []).length; elements.efforts.disabled = !enabled || !elements.efforts.options.length || elements.efforts.value === '';
-      elements.send.classList.toggle('hidden', current.running === true); elements.cancel.classList.toggle('hidden', current.running !== true); updateSend();
+      elements.cancel.classList.toggle('hidden', current.running !== true); elements.send.title = current.running ? 'Queue message (Enter) · Steer now (Cmd/Ctrl+Enter)' : 'Send (Enter)'; updateSend(); renderQueue();
       renderCommandMenu();
       if (nearBottom || current.approval || current.question) requestAnimationFrame(() => { elements.scroll.scrollTop = elements.scroll.scrollHeight; });
     }
     function updateSend() { elements.send.disabled = !state || state.phase !== 'ready' || (elements.prompt.value.trim() === '' && draftImages.length === 0); }
     function resizePrompt() { elements.prompt.style.height = 'auto'; elements.prompt.style.height = Math.min(elements.prompt.scrollHeight, 220) + 'px'; updateSend(); }
     function selectionFor(model, reasoningEffort) { return { provider: model.provider, model: model.model, ...(reasoningEffort ? { reasoningEffort } : {}) }; }
-    function send() {
+    function send(mode) {
       const text = elements.prompt.value.trim(); if ((!text && !draftImages.length) || !state || state.phase !== 'ready') return;
-      vscode.postMessage({ type: 'send', text }); elements.prompt.value = ''; commandIndex = 0; resetPrompt();
+      vscode.postMessage({ type: 'send', text, mode: mode || 'queue' }); elements.prompt.value = ''; commandIndex = 0; resetPrompt();
     }
     elements.prompt.addEventListener('input', () => { commandIndex = 0; mentionIndex = 0; elements.prompt.placeholder = 'Ask DeepSeek about this project'; resizePrompt(); renderCommandMenu(); requestMentions(); });
     elements.prompt.addEventListener('click', requestMentions);
@@ -671,9 +739,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       }
       if (menuOpen && event.key === 'Escape') { event.preventDefault(); elements.commandMenu.classList.add('hidden'); return; }
       if (menuOpen && (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey && !event.isComposing))) { event.preventDefault(); pickCandidate(candidates[commandIndex]); return; }
-      if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); send(); }
+      if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); send(state && state.running && (event.metaKey || event.ctrlKey) ? 'steer' : 'queue'); }
     });
-    elements.send.addEventListener('click', send); elements.cancel.addEventListener('click', () => vscode.postMessage({ type: 'cancel' })); elements.attach.addEventListener('click', () => vscode.postMessage({ type: 'attach' }));
+    elements.send.addEventListener('click', () => send('queue')); elements.cancel.addEventListener('click', () => vscode.postMessage({ type: 'cancel' })); elements.attach.addEventListener('click', () => vscode.postMessage({ type: 'attach' }));
     elements.project.addEventListener('click', () => vscode.postMessage({ type: 'choose-workspace' }));
     elements.newSession.addEventListener('click', () => vscode.postMessage({ type: 'new-session' })); elements.sessions.addEventListener('change', () => vscode.postMessage({ type: 'select-session', sessionId: elements.sessions.value }));
     elements.models.addEventListener('change', () => {
