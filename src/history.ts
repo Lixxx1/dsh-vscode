@@ -11,6 +11,19 @@ export function mergeHistoryEntries(
   return [...bySequence.values()].sort((left, right) => left.event.seq - right.event.seq)
 }
 
+/** Keep only entries whose append-log sequence has not already been loaded. */
+export function unseenHistoryEntries(
+  current: readonly HistoryEntry[],
+  incoming: readonly HistoryEntry[],
+): HistoryEntry[] {
+  const seen = new Set(current.map(entry => entry.event.seq))
+  return incoming.filter((entry) => {
+    if (seen.has(entry.event.seq)) return false
+    seen.add(entry.event.seq)
+    return true
+  })
+}
+
 export function earliestHistorySequence(entries: readonly HistoryEntry[]): number | undefined {
   let earliest: number | undefined
   for (const entry of entries) {
@@ -19,4 +32,3 @@ export function earliestHistorySequence(entries: readonly HistoryEntry[]): numbe
   }
   return earliest
 }
-

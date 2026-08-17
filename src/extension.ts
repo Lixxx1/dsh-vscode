@@ -35,7 +35,7 @@ import { chatHtml } from './webview.js'
 import { DshPluginManager } from './plugin-manager.js'
 import type { PluginInventorySnapshot } from './plugin-profile.js'
 import type { SettingsDescription, SettingsMutation, SettingsNamespace } from './runtime-settings.js'
-import { earliestHistorySequence, mergeHistoryEntries } from './history.js'
+import { earliestHistorySequence, mergeHistoryEntries, unseenHistoryEntries } from './history.js'
 
 let activeRuntime: DshRuntime | undefined
 
@@ -302,11 +302,12 @@ class DshChatController implements vscode.Disposable {
     try {
       const page = await client.history(sessionId, beforeSeq)
       if (this.client !== client || this._state.sessionId !== sessionId) return
-      this.historyEntries = mergeHistoryEntries(this.historyEntries, page.events)
+      const unseenEntries = unseenHistoryEntries(this.historyEntries, page.events)
+      this.historyEntries = mergeHistoryEntries(this.historyEntries, unseenEntries)
       this.projector.reset(this.historyEntries)
       this.publish({
         messages: this.projectedMessages(),
-        changedFiles: this.diffReviews.prependHistory(sessionId, this.cwd, page.events),
+        changedFiles: this.diffReviews.prependHistory(sessionId, this.cwd, unseenEntries),
         hasMoreHistory: page.hasMore,
         loadingHistory: false,
       })
