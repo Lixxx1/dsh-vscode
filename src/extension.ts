@@ -26,6 +26,7 @@ import {
   type SessionSummary,
 } from './dsh-client.js'
 import { replaceTextPreservingIdeContext, withIdeContext, type IdeContextSnapshot } from './ide-context.js'
+import { jobsSnapshotOf, type JobItem } from './jobs.js'
 import { queueSnapshotOf, type QueueItemState } from './queue.js'
 import { DshRuntime, type RuntimeState } from './runtime.js'
 import { toolWriteIntents } from './tool-write-guard.js'
@@ -110,6 +111,7 @@ interface ChatViewState {
   plan: PlanModeState
   changedFiles: ChangedFileGroup[]
   queue: QueueItemState[]
+  jobs: JobItem[]
 }
 
 function initialState(cwd: string): ChatViewState {
@@ -131,6 +133,7 @@ function initialState(cwd: string): ChatViewState {
     plan: planModeStateOf(undefined),
     changedFiles: [],
     queue: [],
+    jobs: [],
   }
 }
 
@@ -151,6 +154,7 @@ class DshChatController implements vscode.Disposable {
   private queueRawText = new Map<string, string>()
   private readonly attachmentResults = new Map<string, Pick<ConversationImage, 'data' | 'error'>>()
   private readonly attachmentLoads = new Map<string, Promise<void>>()
+  private readonly jobsBySession = new Map<string, JobItem[]>()
 
   readonly onDidChangeState = this.changes.event
 
@@ -194,6 +198,7 @@ class DshChatController implements vscode.Disposable {
     this.queueRawText.clear()
     this.attachmentResults.clear()
     this.attachmentLoads.clear()
+    this.jobsBySession.clear()
     this.publish({
       phase: 'loading',
       statusText: 'Starting the official DeepSeek Harness runtime…',
@@ -209,6 +214,7 @@ class DshChatController implements vscode.Disposable {
       plan: planModeStateOf(undefined),
       changedFiles: [],
       queue: [],
+      jobs: [],
     })
     try {
       const uri = await this.runtime.start(this.cwd === '' ? undefined : vscode.Uri.file(this.cwd))
@@ -429,6 +435,7 @@ class DshChatController implements vscode.Disposable {
       plan: planModeStateOf(summary?.projections?.values?.plan),
       changedFiles: this.diffReviews.rebuild(sessionId, this.cwd, events),
       queue: [],
+      jobs: this.jobsBySession.get(sessionId) ?? [],
       ...this.modelPatch(models),
     })
     this.hydrateImages(client, sessionId)
@@ -514,7 +521,20 @@ class DshChatController implements vscode.Disposable {
 
     if (frame.channel === 'mux' && type === 'session/subscribed' && sessionId === this._state.sessionId) {
       this.queueRawText.clear()
-      this.publish({ queue: [] })
+      this.jobsBySession.set(sessionId, [])
+      this.publish({ queue: [], jobs: [] })
+      return
+    }
+
+    if (frame.channel === 'mux' && type === 'session/subscribed') {
+      this.jobsBySession.set(sessionId, [])
+      return
+    }
+
+    if (frame.channel === 'mux' && type === 'session/jobs') {
+      const jobs = jobsSnapshotOf(payload.jobs)
+      this.jobsBySession.set(sessionId, jobs)
+      if (sessionId === this._state.sessionId) this.publish({ jobs })
       return
     }
 
