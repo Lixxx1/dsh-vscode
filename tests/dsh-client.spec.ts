@@ -47,4 +47,38 @@ describe('DshClient queue protocol', () => {
       },
     ])
   })
+
+  it('reads the official runtime plugin inventory without inventing a management RPC', async () => {
+    const requests: Array<{ method: string; payload: unknown }> = []
+    vi.stubGlobal('fetch', vi.fn(async (_url: URL, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body)) as { rpcId: string; method: string; payload: unknown }
+      requests.push({ method: request.method, payload: request.payload })
+      return new Response(JSON.stringify({
+        type: 'server-response',
+        rpcId: request.rpcId,
+        result: {
+          ok: true,
+          value: {
+            entries: [{
+              entryId: 'plugin-1',
+              moduleName: '@example/runtime-plugin',
+              enabled: true,
+              fiberPhase: 'active',
+            }],
+          },
+        },
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }))
+    const client = new DshClient(new URL('http://127.0.0.1:31415'))
+
+    await expect(client.pluginInventory()).resolves.toEqual({
+      entries: [{
+        entryId: 'plugin-1',
+        moduleName: '@example/runtime-plugin',
+        enabled: true,
+        fiberPhase: 'active',
+      }],
+    })
+    expect(requests).toEqual([{ method: 'pluginInventory/list', payload: {} }])
+  })
 })

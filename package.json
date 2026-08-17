@@ -41,6 +41,7 @@
     "onCommand:deepseekHarness.openInEditor",
     "onCommand:deepseekHarness.addSelection",
     "onCommand:deepseekHarness.restart",
+    "onCommand:deepseekHarness.managePlugins",
     "onCommand:deepseekHarness.configureApiKey",
     "onCommand:deepseekHarness.clearApiKey"
   ],
@@ -79,6 +80,11 @@
         "command": "deepseekHarness.restart",
         "title": "DeepSeek Harness: Restart Runtime",
         "icon": "$(debug-restart)"
+      },
+      {
+        "command": "deepseekHarness.managePlugins",
+        "title": "DeepSeek Harness: Manage Runtime Plugins",
+        "icon": "$(extensions)"
       },
       {
         "command": "deepseekHarness.addSelection",
@@ -122,9 +128,14 @@
           "group": "navigation@2"
         },
         {
-          "command": "deepseekHarness.configureApiKey",
+          "command": "deepseekHarness.managePlugins",
           "when": "view == deepseekHarness.chat",
           "group": "navigation@3"
+        },
+        {
+          "command": "deepseekHarness.configureApiKey",
+          "when": "view == deepseekHarness.chat",
+          "group": "navigation@4"
         }
       ]
     },

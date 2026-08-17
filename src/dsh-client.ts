@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { DshEvent } from './conversation.js'
+import type { PluginInventorySnapshot } from './plugin-profile.js'
 
 export interface SessionSummary {
   sessionId: string
@@ -131,6 +132,10 @@ export class DshClient {
 
   models(sessionId: string): Promise<SessionModels> {
     return this.call('session.models', { sessionId })
+  }
+
+  pluginInventory(): Promise<PluginInventorySnapshot> {
+    return this.call('pluginInventory/list', {})
   }
 
   prompt(

@@ -30,6 +30,8 @@ import { queueSnapshotOf, type QueueItemState } from './queue.js'
 import { DshRuntime, type RuntimeState } from './runtime.js'
 import { toolWriteIntents } from './tool-write-guard.js'
 import { chatHtml } from './webview.js'
+import { DshPluginManager } from './plugin-manager.js'
+import type { PluginInventorySnapshot } from './plugin-profile.js'
 
 let activeRuntime: DshRuntime | undefined
 
@@ -321,6 +323,10 @@ class DshChatController implements vscode.Disposable {
     if (this._state.sessionId === '') return
     await this.requireClient().selectModel(this._state.sessionId, selection)
     await this.loadModels(this._state.sessionId)
+  }
+
+  pluginInventory(): Promise<PluginInventorySnapshot> {
+    return this.requireClient().pluginInventory()
   }
 
   async answerApproval(rpcId: string, approvalId: string, outcome: 'allowed-once' | 'rejected'): Promise<void> {
@@ -1025,6 +1031,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const cwd = workspace?.uri.fsPath ?? ''
   const diffReviews = new DiffReviewManager()
   const controller = new DshChatController(runtime, output, new DirtyFileGuard(), diffReviews, cwd)
+  const pluginManager = new DshPluginManager(context, controller, output)
   const editorContext = new EditorContextBridge(() => controller.cwd)
   const provider = new DshViewProvider(controller, output, editorContext, context.extensionUri)
   const panels = new Set<{ panel: vscode.WebviewPanel; surface: DshSurface }>()
@@ -1056,6 +1063,15 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.restart', async () => {
     await controller.restart().catch(error => { void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error)) })
+  }))
+  context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.managePlugins', async () => {
+    await pluginManager.show().catch(error => {
+      const message = error instanceof Error ? error.message : String(error)
+      output.appendLine(`[plugins] ${message}`)
+      void vscode.window.showErrorMessage(message, 'Show Output').then(choice => {
+        if (choice === 'Show Output') output.show(true)
+      })
+    })
   }))
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.addSelection', async () => {
     if (!editorContext.pinSelection()) {
