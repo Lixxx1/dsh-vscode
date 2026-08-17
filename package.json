@@ -2,6 +2,7 @@
   "name": "dsh-vscode",
   "displayName": "DeepSeek Harness",
   "description": "A project-aware VS Code chat sidebar powered by the official DeepSeek Harness runtime.",
+  "icon": "media/deepseek.png",
   "version": "0.0.1",
   "private": true,
   "publisher": "lixxx1",
