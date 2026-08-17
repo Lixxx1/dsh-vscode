@@ -2,6 +2,13 @@ import { randomUUID } from 'node:crypto'
 import * as path from 'node:path'
 import * as vscode from 'vscode'
 import { ConversationProjector, type ConversationMessage, type DshEvent } from './conversation.js'
+import {
+  permissionPresetsOf,
+  planModeStateOf,
+  requiresFullAccessConfirmation,
+  type PermissionPresetItem,
+  type PlanModeState,
+} from './collaboration-state.js'
 import { DEEPSEEK_API_KEY_SECRET, normalizeDeepSeekApiKey } from './credentials.js'
 import { DiffReviewManager, type ChangedFileItem } from './diff-review.js'
 import { DirtyFileGuard } from './dirty-file-guard.js'
@@ -83,13 +90,6 @@ interface WorkspacePick extends vscode.QuickPickItem {
   uri?: vscode.Uri
 }
 
-interface PermissionPresetItem {
-  value: string
-  label: string
-  description?: string
-  selected: boolean
-}
-
 interface ChatViewState {
   phase: 'loading' | 'ready' | 'error'
   statusText: string
@@ -105,6 +105,7 @@ interface ChatViewState {
   question: QuestionRequest | null
   commands: CommandDescriptor[]
   permissions: PermissionPresetItem[]
+  plan: PlanModeState
   changedFiles: ChangedFileItem[]
   queue: QueueItemState[]
 }
@@ -125,6 +126,7 @@ function initialState(cwd: string): ChatViewState {
     question: null,
     commands: [],
     permissions: [],
+    plan: planModeStateOf(undefined),
     changedFiles: [],
     queue: [],
   }
@@ -133,24 +135,6 @@ function initialState(cwd: string): ChatViewState {
 function titleOf(summary: SessionSummary): string {
   const value = summary.projections?.values?.title
   return typeof value === 'string' && value.trim() !== '' ? value : 'New conversation'
-}
-
-function permissionPresetsOf(value: unknown): PermissionPresetItem[] {
-  if (typeof value !== 'object' || value === null) return []
-  const select = value as Record<string, unknown>
-  const current = typeof select.currentValue === 'string' ? select.currentValue : ''
-  if (!Array.isArray(select.options)) return []
-  return select.options.flatMap((value): PermissionPresetItem[] => {
-    if (typeof value !== 'object' || value === null) return []
-    const option = value as Record<string, unknown>
-    if (typeof option.value !== 'string' || option.value === 'custom') return []
-    return [{
-      value: option.value,
-      label: typeof option.name === 'string' ? option.name : option.value,
-      ...(typeof option.description === 'string' ? { description: option.description } : {}),
-      selected: option.value === current,
-    }]
-  })
 }
 
 class DshChatController implements vscode.Disposable {
@@ -216,6 +200,7 @@ class DshChatController implements vscode.Disposable {
       question: null,
       commands: [],
       permissions: [],
+      plan: planModeStateOf(undefined),
       changedFiles: [],
       queue: [],
     })
@@ -431,6 +416,7 @@ class DshChatController implements vscode.Disposable {
       question: null,
       commands: [],
       permissions: permissionPresetsOf(summary?.projections?.values?.permissions),
+      plan: planModeStateOf(summary?.projections?.values?.plan),
       changedFiles: this.diffReviews.rebuild(sessionId, this.cwd, events),
       queue: [],
       ...this.modelPatch(models),
@@ -592,6 +578,9 @@ class DshChatController implements vscode.Disposable {
       }
       if (payload.key === 'permissions' && sessionId === this._state.sessionId) {
         this.publish({ permissions: permissionPresetsOf(payload.value) })
+      }
+      if (payload.key === 'plan' && sessionId === this._state.sessionId) {
+        this.publish({ plan: planModeStateOf(payload.value) })
       }
       return
     }
@@ -799,6 +788,31 @@ class DshSurface implements vscode.Disposable {
             this.draftImages.length = 0
             if (!isCommand) this.editorContext.clearPinned()
             await this.publishDraftImages()
+          }
+          return
+        case 'select-permission':
+          if (typeof value.permission === 'string'
+            && this.controller.state.permissions.some(permission => permission.value === value.permission)) {
+            if (requiresFullAccessConfirmation(value.permission)) {
+              const confirmed = await vscode.window.showWarningMessage(
+                'Enable Full access?',
+                {
+                  modal: true,
+                  detail: 'Full access disables workspace confinement and approval prompts. Only use it when you trust the current task.',
+                },
+                'Enable Full Access',
+              )
+              if (confirmed !== 'Enable Full Access') {
+                await this.webview.postMessage({ type: 'state', state: this.controller.state })
+                return
+              }
+            }
+            await this.controller.send(`/permission ${value.permission}`)
+          }
+          return
+        case 'select-mode':
+          if ((value.mode === 'normal' || value.mode === 'plan') && this.controller.state.plan.available) {
+            await this.controller.send(value.mode === 'plan' ? '/plan on' : '/plan off')
           }
           return
         case 'attach': await this.chooseImages(); return

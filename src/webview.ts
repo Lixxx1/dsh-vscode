@@ -135,6 +135,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     .command-option-current { margin-left: auto; padding: 1px 5px; border-radius: 999px; color: var(--vscode-badge-foreground); background: var(--vscode-badge-background); font-family: var(--vscode-font-family); font-size: 10px; font-weight: 500; }
     .command-option-description { margin-top: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--vscode-descriptionForeground); font-size: 11px; }
     .command-option:hover .command-option-description, .command-option.selected .command-option-description { color: inherit; opacity: .82; }
+    .policy-menu { max-height: 260px; }
+    .policy-section-label { padding: 7px 8px 3px; color: var(--vscode-descriptionForeground); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
     .context-chips, .attachments { display: flex; flex-wrap: wrap; gap: 5px; padding: 8px 10px 0; }
     .context-chip, .attachment-chip { min-width: 0; max-width: 100%; display: flex; align-items: center; gap: 5px; padding: 3px 5px 3px 8px; border: 1px solid var(--vscode-widget-border); border-radius: 6px; color: var(--vscode-descriptionForeground); background: var(--vscode-editor-background); }
     .context-chip.selection { color: var(--vscode-foreground); border-color: color-mix(in srgb, #4d6bfe 55%, var(--vscode-widget-border)); }
@@ -142,22 +144,28 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     .context-name, .attachment-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
     .context-remove, .attachment-remove { width: 18px; height: 18px; padding: 0; border: 0; border-radius: 4px; background: transparent; }
     .context-remove:hover, .attachment-remove:hover { background: var(--vscode-toolbar-hoverBackground); }
+    .mode-chips { display: flex; flex-wrap: wrap; gap: 5px; padding: 8px 10px 0; }
+    .plan-chip { min-height: 25px; padding: 2px 5px 2px 8px; display: inline-flex; align-items: center; gap: 5px; border: 1px solid color-mix(in srgb, #4d6bfe 58%, var(--vscode-widget-border)); border-radius: 6px; color: var(--vscode-foreground); background: color-mix(in srgb, #4d6bfe 12%, var(--vscode-editor-background)); font-weight: 600; }
+    .plan-chip-close { width: 18px; height: 18px; padding: 0; border: 0; border-radius: 4px; background: transparent; line-height: 1; }
+    .plan-chip-close:hover { background: var(--vscode-toolbar-hoverBackground); }
     textarea { width: 100%; min-height: 72px; max-height: 220px; resize: none; display: block; padding: 11px 12px 4px; border: 0; outline: 0; background: transparent; color: var(--vscode-input-foreground); }
     textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
-    .composer-row { width: 100%; min-width: 0; min-height: 39px; padding: 4px 6px 6px; display: grid; grid-template-columns: 28px minmax(38px, .65fr) minmax(0, 1.25fr) minmax(50px, .65fr) auto; align-items: center; gap: 5px; }
+    .composer-row { width: 100%; min-width: 0; min-height: 39px; padding: 4px 6px 6px; display: grid; grid-template-columns: 28px 28px minmax(28px, .5fr) minmax(0, 1.2fr) minmax(46px, .55fr) auto; align-items: center; gap: 5px; }
     .run-actions { display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
     .project { width: 100%; min-width: 0; height: 28px; padding: 0 4px; overflow: hidden; display: flex; align-items: center; gap: 5px; border: 0; border-radius: 6px; color: var(--vscode-descriptionForeground); background: transparent; }
     .project:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
     .project span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .project svg { width: 15px; height: 15px; flex: 0 0 auto; }
     .model-select, .effort-select { width: 100%; min-width: 0; max-width: 100%; border: 0; outline: 0; color: var(--vscode-descriptionForeground); background: transparent; text-overflow: ellipsis; }
+    .policy-trigger.active { color: #4d6bfe; background: color-mix(in srgb, #4d6bfe 12%, transparent); }
+    .policy-trigger.full-access { color: var(--vscode-editorWarning-foreground); }
     .send { border-radius: 8px; color: white; background: #4d6bfe; }
     .send:hover { background: #405de6; }
     .cancel { color: var(--vscode-errorForeground); }
     .cancel:hover { background: var(--vscode-toolbar-hoverBackground); }
     .send:disabled, textarea:disabled, button:disabled { opacity: .55; cursor: default; }
     .hidden { display: none !important; }
-    @media (max-width: 330px) { .conversation { padding-inline: 10px; } .composer-row { grid-template-columns: 28px 20px minmax(0, 1fr) minmax(46px, .6fr) auto; } .project span { display: none; } }
+    @media (max-width: 330px) { .conversation { padding-inline: 10px; } .composer-row { grid-template-columns: 28px 28px 20px minmax(0, 1fr) minmax(40px, .5fr) auto; } .project span { display: none; } }
   </style>
 </head>
 <body>
@@ -170,13 +178,16 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     <footer class="composer-wrap">
       <div id="queueDock" class="queue-dock hidden" aria-label="Queued messages"></div>
       <div class="composer">
+        <div id="modeChips" class="mode-chips hidden" aria-label="Active collaboration modes"></div>
         <div id="contextChips" class="context-chips hidden" aria-label="Editor context"></div>
         <div id="attachments" class="attachments hidden"></div>
         <div id="mentionMenu" class="command-menu hidden" role="listbox" aria-label="Files and folders"></div>
         <div id="commandMenu" class="command-menu hidden" role="listbox" aria-label="DeepSeek commands"></div>
+        <div id="policyMenu" class="command-menu policy-menu hidden" role="menu" aria-label="Mode and permissions"></div>
         <textarea id="prompt" rows="3" placeholder="Ask DeepSeek about this project" aria-label="Message DeepSeek"></textarea>
         <div class="composer-row">
           <button id="attach" class="icon-button" title="Attach image" aria-label="Attach image"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+          <button id="policyTrigger" class="icon-button policy-trigger hidden" title="Mode and permissions" aria-label="Mode and permissions" aria-haspopup="menu" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.7 2.8 8 7 10 4.2-2 7-5.3 7-10V6z"/><path d="m9.5 12 1.6 1.6 3.5-3.6"/></svg></button>
           <button id="project" class="project" title="Choose DeepSeek project" aria-label="Choose DeepSeek project"><svg viewBox="0 0 24 24"><path d="M3 7.5h7l2 2h9v9.5H3z"/><path d="M3 7.5V5h7l2 2h5"/></svg><span id="workspace">Workspace</span></button>
           <select id="models" class="model-select" aria-label="Model"></select>
           <select id="efforts" class="effort-select" aria-label="Reasoning effort"></select>
@@ -195,10 +206,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       sessions: document.getElementById('sessions'), newSession: document.getElementById('newSession'),
       prompt: document.getElementById('prompt'), project: document.getElementById('project'), workspace: document.getElementById('workspace'),
       models: document.getElementById('models'), efforts: document.getElementById('efforts'),
+      policyTrigger: document.getElementById('policyTrigger'), policyMenu: document.getElementById('policyMenu'),
       send: document.getElementById('send'), cancel: document.getElementById('cancel'),
       attach: document.getElementById('attach'), attachments: document.getElementById('attachments'),
       queueDock: document.getElementById('queueDock'),
-      contextChips: document.getElementById('contextChips'), mentionMenu: document.getElementById('mentionMenu'), commandMenu: document.getElementById('commandMenu'),
+      modeChips: document.getElementById('modeChips'), contextChips: document.getElementById('contextChips'), mentionMenu: document.getElementById('mentionMenu'), commandMenu: document.getElementById('commandMenu'),
     };
     let state;
     let draftImages = [];
@@ -209,6 +221,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     let mentionCandidates = [];
     let queueEditing = null;
     let queueRenderSignature = '';
+    let policyMenuOpen = false;
 
     function node(tag, className, text) {
       const value = document.createElement(tag);
@@ -516,6 +529,62 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       }
       updateSend();
     }
+    function effectivePlanMode(plan) { return Boolean(plan && (plan.pending ? !plan.active : plan.active)); }
+    function policyMenuOption(label, description, selected, disabled, onSelect) {
+      const option = node('button', 'command-option' + (selected ? ' selected' : ''));
+      option.type = 'button'; option.setAttribute('role', 'menuitemradio'); option.setAttribute('aria-checked', String(selected)); option.disabled = disabled;
+      const line = node('span', 'command-option-line'); line.append(node('span', 'command-option-name', label));
+      if (selected) line.append(node('span', 'command-option-current', 'Current'));
+      option.append(line, node('span', 'command-option-description', description));
+      option.addEventListener('click', () => { if (selected) return; policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false'); onSelect(); });
+      return option;
+    }
+    function renderPolicyState(current) {
+      const plan = current.plan || { available: false, active: false, pending: false };
+      const planActive = effectivePlanMode(plan);
+      const permissions = current.permissions || [];
+      const selectedPermission = permissions.find(permission => permission.selected) || permissions[0];
+      const available = plan.available === true || permissions.length > 0;
+      elements.modeChips.replaceChildren();
+      if (planActive) {
+        const chip = node('span', 'plan-chip');
+        chip.append(node('span', '', plan.pending ? 'Plan…' : 'Plan'));
+        const close = node('button', 'plan-chip-close', '×'); close.type = 'button'; close.title = 'Exit Plan mode'; close.setAttribute('aria-label', 'Exit Plan mode'); close.disabled = current.running === true || plan.pending === true;
+        close.addEventListener('click', () => vscode.postMessage({ type: 'select-mode', mode: 'normal' })); chip.append(close); elements.modeChips.append(chip);
+      }
+      elements.modeChips.classList.toggle('hidden', elements.modeChips.childElementCount === 0);
+      elements.policyTrigger.classList.toggle('hidden', !available);
+      elements.policyTrigger.classList.toggle('active', planActive);
+      elements.policyTrigger.classList.toggle('full-access', selectedPermission && selectedPermission.value === 'danger-full-access');
+      elements.policyTrigger.disabled = current.phase !== 'ready';
+      const status = (plan.available === true ? (planActive ? 'Plan' : 'Normal') : '') + (selectedPermission ? (plan.available === true ? ' · ' : '') + selectedPermission.label : '');
+      elements.policyTrigger.title = status ? 'Mode and permissions: ' + status : 'Mode and permissions';
+      elements.policyTrigger.setAttribute('aria-label', elements.policyTrigger.title);
+      elements.policyTrigger.setAttribute('aria-expanded', String(policyMenuOpen && available));
+
+      elements.policyMenu.replaceChildren();
+      if (plan.available === true) {
+        elements.policyMenu.append(node('div', 'policy-section-label', 'Mode'));
+        elements.policyMenu.append(
+          policyMenuOption('Normal', 'Work normally with the selected permission.', !planActive, current.running === true || plan.pending === true, () => vscode.postMessage({ type: 'select-mode', mode: 'normal' })),
+          policyMenuOption('Plan', 'Research and plan before making changes.', planActive, current.running === true || plan.pending === true, () => vscode.postMessage({ type: 'select-mode', mode: 'plan' })),
+        );
+      }
+      if (permissions.length > 0) {
+        elements.policyMenu.append(node('div', 'policy-section-label', 'Permissions'));
+        for (const permission of permissions) {
+          elements.policyMenu.append(policyMenuOption(
+            permission.label,
+            permission.description || permission.label,
+            permission.selected === true,
+            current.running === true,
+            () => vscode.postMessage({ type: 'select-permission', permission: permission.value }),
+          ));
+        }
+      }
+      if (!available) policyMenuOpen = false;
+      elements.policyMenu.classList.toggle('hidden', !policyMenuOpen || !available);
+    }
     function sameSelection(left, right) {
       return left && right && left.path === right.path && left.startLine === right.startLine && left.endLine === right.endLine;
     }
@@ -700,6 +769,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       for (const model of current.models || []) { const option = new Option(model.label, JSON.stringify({ provider: model.provider, model: model.model }), false, model.selected === true); elements.models.append(option); }
       if (!elements.models.childElementCount) elements.models.append(new Option('Default model', ''));
       renderEfforts((current.models || []).find(model => model.selected) || (current.models || [])[0]);
+      renderPolicyState(current);
       elements.conversation.replaceChildren();
       if (current.phase !== 'ready') elements.conversation.append(renderStatus(current));
       else {
@@ -724,9 +794,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       const text = elements.prompt.value.trim(); if ((!text && !draftImages.length) || !state || state.phase !== 'ready') return;
       vscode.postMessage({ type: 'send', text, mode: mode || 'queue' }); elements.prompt.value = ''; commandIndex = 0; resetPrompt();
     }
-    elements.prompt.addEventListener('input', () => { commandIndex = 0; mentionIndex = 0; elements.prompt.placeholder = 'Ask DeepSeek about this project'; resizePrompt(); renderCommandMenu(); requestMentions(); });
-    elements.prompt.addEventListener('click', requestMentions);
+    elements.prompt.addEventListener('input', () => { policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false'); commandIndex = 0; mentionIndex = 0; elements.prompt.placeholder = 'Ask DeepSeek about this project'; resizePrompt(); renderCommandMenu(); requestMentions(); });
+    elements.prompt.addEventListener('click', () => { policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false'); requestMentions(); });
     elements.prompt.addEventListener('keydown', event => {
+      if (policyMenuOpen && event.key === 'Escape') { event.preventDefault(); policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false'); return; }
       const mentionOpen = !elements.mentionMenu.classList.contains('hidden') && mentionCandidates.length > 0;
       if (mentionOpen && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
         event.preventDefault(); mentionIndex = (mentionIndex + (event.key === 'ArrowDown' ? 1 : mentionCandidates.length - 1)) % mentionCandidates.length; renderMentionMenu(); return;
@@ -742,6 +813,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); send(state && state.running && (event.metaKey || event.ctrlKey) ? 'steer' : 'queue'); }
     });
     elements.send.addEventListener('click', () => send('queue')); elements.cancel.addEventListener('click', () => vscode.postMessage({ type: 'cancel' })); elements.attach.addEventListener('click', () => vscode.postMessage({ type: 'attach' }));
+    elements.policyTrigger.addEventListener('click', event => {
+      event.stopPropagation(); policyMenuOpen = !policyMenuOpen; elements.commandMenu.classList.add('hidden'); elements.mentionMenu.classList.add('hidden'); if (state) renderPolicyState(state);
+    });
     elements.project.addEventListener('click', () => vscode.postMessage({ type: 'choose-workspace' }));
     elements.newSession.addEventListener('click', () => vscode.postMessage({ type: 'new-session' })); elements.sessions.addEventListener('change', () => vscode.postMessage({ type: 'select-session', sessionId: elements.sessions.value }));
     elements.models.addEventListener('change', () => {
@@ -750,6 +824,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       elements.efforts.disabled = !model.reasoningEfforts || !model.reasoningEfforts.length; vscode.postMessage({ type: 'select-model', selection: selectionFor(model, effort) });
     });
     elements.efforts.addEventListener('change', () => { if (!elements.models.value) return; const selected = JSON.parse(elements.models.value); const model = (state.models || []).find(item => item.provider === selected.provider && item.model === selected.model); if (model) vscode.postMessage({ type: 'select-model', selection: selectionFor(model, elements.efforts.value) }); });
+    document.addEventListener('click', event => {
+      if (!policyMenuOpen || elements.policyMenu.contains(event.target) || elements.policyTrigger.contains(event.target)) return;
+      policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false');
+    });
     window.addEventListener('message', event => {
       if (!event.data) return;
       if (event.data.type === 'state') render(event.data.state);
