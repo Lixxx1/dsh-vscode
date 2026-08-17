@@ -3,6 +3,7 @@ import * as path from 'node:path'
 import * as vscode from 'vscode'
 import { ConversationProjector, type ConversationMessage, type DshEvent } from './conversation.js'
 import { DEEPSEEK_API_KEY_SECRET, normalizeDeepSeekApiKey } from './credentials.js'
+import { EditorContextBridge } from './editor-context-bridge.js'
 import {
   DshClient,
   type CommandDescriptor,
@@ -13,6 +14,7 @@ import {
   type SessionModels,
   type SessionSummary,
 } from './dsh-client.js'
+import { withIdeContext, type IdeContextSnapshot } from './ide-context.js'
 import { DshRuntime, type RuntimeState } from './runtime.js'
 import { chatHtml } from './webview.js'
 
@@ -259,7 +261,7 @@ class DshChatController implements vscode.Disposable {
     await this.loadSession(sessionId)
   }
 
-  async send(text: string, images: readonly PromptImage[] = []): Promise<void> {
+  async send(text: string, images: readonly PromptImage[] = [], ideContext?: IdeContextSnapshot): Promise<void> {
     const normalized = text.trim()
     if ((normalized === '' && images.length === 0) || this._state.sessionId === '') return
     if (normalized.startsWith('/')) {
@@ -273,7 +275,11 @@ class DshChatController implements vscode.Disposable {
       if (execution === undefined) throw new Error(`DeepSeek did not recognize ${token}.`)
       return
     }
-    await this.requireClient().prompt(this._state.sessionId, normalized, images)
+    await this.requireClient().prompt(
+      this._state.sessionId,
+      ideContext === undefined ? normalized : withIdeContext(normalized, ideContext),
+      images,
+    )
   }
 
   async cancel(): Promise<void> {
@@ -540,6 +546,7 @@ class DshSurface implements vscode.Disposable {
     private readonly webview: vscode.Webview,
     private readonly controller: DshChatController,
     private readonly output: vscode.OutputChannel,
+    private readonly editorContext: EditorContextBridge,
     extensionUri: vscode.Uri,
   ) {
     const mediaRoot = vscode.Uri.joinPath(extensionUri, 'media')
@@ -547,8 +554,13 @@ class DshSurface implements vscode.Disposable {
     webview.html = chatHtml(webview, webview.asWebviewUri(vscode.Uri.joinPath(mediaRoot, 'deepseek.svg')))
     this.disposables = [
       controller.onDidChangeState(state => { void webview.postMessage({ type: 'state', state }) }),
+      editorContext.onDidChange(state => { void webview.postMessage({ type: 'ide-context', state }) }),
       webview.onDidReceiveMessage(message => { this.acceptMessage(message) }),
     ]
+  }
+
+  focusPrompt(): void {
+    void this.webview.postMessage({ type: 'focus-prompt' })
   }
 
   dispose(): void {
@@ -631,6 +643,7 @@ class DshSurface implements vscode.Disposable {
       switch (value.type) {
         case 'ready':
           await this.webview.postMessage({ type: 'state', state: this.controller.state })
+          await this.webview.postMessage({ type: 'ide-context', state: this.editorContext.viewState() })
           return
         case 'restart': await this.controller.restart(); return
         case 'output': this.output.show(true); return
@@ -651,13 +664,30 @@ class DshSurface implements vscode.Disposable {
               )
               if (confirmed !== 'Enable Full Access') return
             }
-            await this.controller.send(value.text, this.draftImages)
+            const isCommand = value.text.trim().startsWith('/')
+            const ideContext = isCommand ? undefined : await this.editorContext.snapshotForPrompt(value.text)
+            await this.controller.send(value.text, this.draftImages, ideContext)
             this.draftImages.length = 0
+            if (!isCommand) this.editorContext.clearPinned()
             await this.publishDraftImages()
           }
           return
         case 'attach': await this.chooseImages(); return
         case 'choose-workspace': await this.chooseWorkspace(); return
+        case 'request-mentions':
+          if (typeof value.requestId === 'number' && typeof value.query === 'string') {
+            const candidates = await this.editorContext.search(value.query)
+            await this.webview.postMessage({
+              type: 'mention-suggestions',
+              requestId: value.requestId,
+              query: value.query,
+              candidates,
+            })
+          }
+          return
+        case 'remove-context':
+          if (typeof value.id === 'string') this.editorContext.removePinned(value.id)
+          return
         case 'remove-attachment':
           if (typeof value.id === 'string') {
             const index = this.draftImages.findIndex(image => image.id === value.id)
@@ -728,12 +758,13 @@ class DshViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   constructor(
     private readonly controller: DshChatController,
     private readonly output: vscode.OutputChannel,
+    private readonly editorContext: EditorContextBridge,
     private readonly extensionUri: vscode.Uri,
   ) {}
 
   resolveWebviewView(view: vscode.WebviewView): void {
     this.surface?.dispose()
-    const surface = new DshSurface(view.webview, this.controller, this.output, this.extensionUri)
+    const surface = new DshSurface(view.webview, this.controller, this.output, this.editorContext, this.extensionUri)
     this.surface = surface
     view.onDidDispose(() => {
       surface.dispose()
@@ -745,6 +776,10 @@ class DshViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
 
   dispose(): void {
     this.surface?.dispose()
+  }
+
+  focusPrompt(): void {
+    this.surface?.focusPrompt()
   }
 }
 
@@ -759,10 +794,11 @@ export function activate(context: vscode.ExtensionContext): void {
   }
   const cwd = workspace?.uri.fsPath ?? ''
   const controller = new DshChatController(runtime, output, cwd)
-  const provider = new DshViewProvider(controller, output, context.extensionUri)
+  const editorContext = new EditorContextBridge(() => controller.cwd)
+  const provider = new DshViewProvider(controller, output, editorContext, context.extensionUri)
   const panels = new Set<{ panel: vscode.WebviewPanel; surface: DshSurface }>()
 
-  context.subscriptions.push(output, runtime, controller, provider)
+  context.subscriptions.push(output, runtime, controller, editorContext, provider)
   context.subscriptions.push(runtime.onDidChangeState(state => { controller.observeRuntime(state) }))
   context.subscriptions.push(vscode.window.registerWebviewViewProvider(
     'deepseekHarness.chat',
@@ -777,7 +813,7 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.ViewColumn.Beside,
       { enableScripts: true, retainContextWhenHidden: true },
     )
-    const entry = { panel, surface: new DshSurface(panel.webview, controller, output, context.extensionUri) }
+    const entry = { panel, surface: new DshSurface(panel.webview, controller, output, editorContext, context.extensionUri) }
     panels.add(entry)
     panel.onDidDispose(() => {
       entry.surface.dispose()
@@ -788,6 +824,14 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.restart', async () => {
     await controller.restart().catch(error => { void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error)) })
+  }))
+  context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.addSelection', async () => {
+    if (!editorContext.pinSelection()) {
+      void vscode.window.showInformationMessage('Select code in the current DeepSeek project first.')
+      return
+    }
+    await vscode.commands.executeCommand('workbench.view.extension.deepseekHarness')
+    provider.focusPrompt()
   }))
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.showOutput', () => { output.show(true) }))
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.openInBrowser', async () => {

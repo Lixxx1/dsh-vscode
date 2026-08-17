@@ -111,11 +111,13 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     .command-option-current { margin-left: auto; padding: 1px 5px; border-radius: 999px; color: var(--vscode-badge-foreground); background: var(--vscode-badge-background); font-family: var(--vscode-font-family); font-size: 10px; font-weight: 500; }
     .command-option-description { margin-top: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--vscode-descriptionForeground); font-size: 11px; }
     .command-option:hover .command-option-description, .command-option.selected .command-option-description { color: inherit; opacity: .82; }
-    .attachments { display: flex; flex-wrap: wrap; gap: 5px; padding: 8px 10px 0; }
-    .attachment-chip { min-width: 0; max-width: 100%; display: flex; align-items: center; gap: 5px; padding: 3px 5px 3px 8px; border: 1px solid var(--vscode-widget-border); border-radius: 6px; color: var(--vscode-descriptionForeground); background: var(--vscode-editor-background); }
-    .attachment-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-    .attachment-remove { width: 18px; height: 18px; padding: 0; border: 0; border-radius: 4px; background: transparent; }
-    .attachment-remove:hover { background: var(--vscode-toolbar-hoverBackground); }
+    .context-chips, .attachments { display: flex; flex-wrap: wrap; gap: 5px; padding: 8px 10px 0; }
+    .context-chip, .attachment-chip { min-width: 0; max-width: 100%; display: flex; align-items: center; gap: 5px; padding: 3px 5px 3px 8px; border: 1px solid var(--vscode-widget-border); border-radius: 6px; color: var(--vscode-descriptionForeground); background: var(--vscode-editor-background); }
+    .context-chip.selection { color: var(--vscode-foreground); border-color: color-mix(in srgb, #4d6bfe 55%, var(--vscode-widget-border)); }
+    .context-icon { flex: 0 0 auto; font-size: 12px; }
+    .context-name, .attachment-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .context-remove, .attachment-remove { width: 18px; height: 18px; padding: 0; border: 0; border-radius: 4px; background: transparent; }
+    .context-remove:hover, .attachment-remove:hover { background: var(--vscode-toolbar-hoverBackground); }
     textarea { width: 100%; min-height: 72px; max-height: 220px; resize: none; display: block; padding: 11px 12px 4px; border: 0; outline: 0; background: transparent; color: var(--vscode-input-foreground); }
     textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
     .composer-row { width: 100%; min-width: 0; min-height: 39px; padding: 4px 6px 6px; display: grid; grid-template-columns: 28px minmax(38px, .65fr) minmax(0, 1.25fr) minmax(50px, .65fr) 28px; align-items: center; gap: 5px; }
@@ -140,7 +142,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     <main id="scroll" class="scroll"><div id="conversation" class="conversation"></div></main>
     <footer class="composer-wrap">
       <div class="composer">
+        <div id="contextChips" class="context-chips hidden" aria-label="Editor context"></div>
         <div id="attachments" class="attachments hidden"></div>
+        <div id="mentionMenu" class="command-menu hidden" role="listbox" aria-label="Files and folders"></div>
         <div id="commandMenu" class="command-menu hidden" role="listbox" aria-label="DeepSeek commands"></div>
         <textarea id="prompt" rows="3" placeholder="Ask DeepSeek about this project" aria-label="Message DeepSeek"></textarea>
         <div class="composer-row">
@@ -162,11 +166,16 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       prompt: document.getElementById('prompt'), project: document.getElementById('project'), workspace: document.getElementById('workspace'),
       models: document.getElementById('models'), efforts: document.getElementById('efforts'),
       send: document.getElementById('send'), cancel: document.getElementById('cancel'),
-      attach: document.getElementById('attach'), attachments: document.getElementById('attachments'), commandMenu: document.getElementById('commandMenu'),
+      attach: document.getElementById('attach'), attachments: document.getElementById('attachments'),
+      contextChips: document.getElementById('contextChips'), mentionMenu: document.getElementById('mentionMenu'), commandMenu: document.getElementById('commandMenu'),
     };
     let state;
     let draftImages = [];
+    let ideContext = { pinned: [] };
     let commandIndex = 0;
+    let mentionIndex = 0;
+    let mentionRequestId = 0;
+    let mentionCandidates = [];
 
     function node(tag, className, text) {
       const value = document.createElement(tag);
@@ -407,6 +416,77 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       }
       updateSend();
     }
+    function sameSelection(left, right) {
+      return left && right && left.path === right.path && left.startLine === right.startLine && left.endLine === right.endLine;
+    }
+    function contextLabel(reference) {
+      if (reference.kind !== 'selection') return reference.path;
+      const lines = reference.startLine === reference.endLine ? 'L' + reference.startLine : 'L' + reference.startLine + '–' + reference.endLine;
+      return reference.path + ' ' + lines + (reference.truncated ? ' (truncated)' : '');
+    }
+    function renderIdeContext() {
+      elements.contextChips.replaceChildren();
+      const pinned = ideContext.pinned || [];
+      const references = [];
+      if (ideContext.activeFile) references.push(ideContext.activeFile);
+      if (ideContext.selection && !pinned.some(item => sameSelection(item, ideContext.selection))) references.push(ideContext.selection);
+      references.push(...pinned);
+      elements.contextChips.classList.toggle('hidden', references.length === 0);
+      for (const reference of references) {
+        const chip = node('div', 'context-chip' + (reference.kind === 'selection' ? ' selection' : ''));
+        chip.title = reference.kind === 'selection' ? 'Selected editor lines included with this prompt' : 'Current editor file included with this prompt';
+        chip.append(node('span', 'context-icon', reference.kind === 'selection' ? '§' : '▧'), node('span', 'context-name', contextLabel(reference)));
+        if (reference.id) {
+          const remove = node('button', 'context-remove', '×'); remove.title = 'Remove pinned context';
+          remove.addEventListener('click', () => vscode.postMessage({ type: 'remove-context', id: reference.id })); chip.append(remove);
+        }
+        elements.contextChips.append(chip);
+      }
+    }
+    function currentMentionQuery() {
+      const cursor = elements.prompt.selectionStart || 0;
+      const prefix = elements.prompt.value.slice(0, cursor);
+      const match = /(?:^|[\\s(])@(?:\\{([^}]*)|([^\\s@{}]*))$/.exec(prefix);
+      if (!match) return undefined;
+      const start = prefix.lastIndexOf('@');
+      return start < 0 ? undefined : { start, cursor, query: match[1] || match[2] || '' };
+    }
+    function requestMentions() {
+      const mention = currentMentionQuery();
+      if (!mention) { mentionCandidates = []; elements.mentionMenu.classList.add('hidden'); return; }
+      const requestId = ++mentionRequestId;
+      vscode.postMessage({ type: 'request-mentions', requestId, query: mention.query });
+    }
+    function renderMentionMenu() {
+      const mention = currentMentionQuery();
+      elements.mentionMenu.replaceChildren();
+      if (!mention || !mentionCandidates.length) { elements.mentionMenu.classList.add('hidden'); return; }
+      elements.commandMenu.classList.add('hidden');
+      mentionIndex = Math.min(mentionIndex, mentionCandidates.length - 1);
+      elements.mentionMenu.classList.remove('hidden');
+      mentionCandidates.forEach((candidate, index) => {
+        const option = node('button', 'command-option' + (index === mentionIndex ? ' selected' : ''));
+        option.type = 'button'; option.setAttribute('role', 'option'); option.setAttribute('aria-selected', String(index === mentionIndex));
+        const line = node('div', 'command-option-line');
+        line.append(node('span', 'command-option-name', candidate.path + (candidate.kind === 'folder' ? '/' : '')));
+        line.append(node('span', 'command-option-hint', candidate.kind === 'folder' ? 'Folder' : 'File'));
+        option.append(line);
+        option.addEventListener('mousedown', event => { event.preventDefault(); pickMention(candidate); });
+        elements.mentionMenu.append(option);
+      });
+    }
+    function pickMention(candidate) {
+      const mention = currentMentionQuery(); if (!mention) return;
+      const path = candidate.path + (candidate.kind === 'folder' ? '/' : '');
+      const encoded = path.includes(' ') ? '@{' + path + '}' : '@' + path;
+      const suffix = elements.prompt.value.slice(mention.cursor);
+      const insertion = encoded + (suffix.startsWith(' ') ? '' : ' ');
+      elements.prompt.value = elements.prompt.value.slice(0, mention.start) + insertion + suffix;
+      const cursor = mention.start + insertion.length;
+      elements.prompt.setSelectionRange(cursor, cursor);
+      mentionCandidates = []; mentionIndex = 0; elements.mentionMenu.classList.add('hidden');
+      resizePrompt(); elements.prompt.focus();
+    }
     function menuCandidates() {
       if (!state) return [];
       const raw = elements.prompt.value;
@@ -429,6 +509,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       const candidates = menuCandidates();
       elements.commandMenu.replaceChildren();
       if (!candidates.length) { elements.commandMenu.classList.add('hidden'); return; }
+      elements.mentionMenu.classList.add('hidden');
       commandIndex = Math.min(commandIndex, candidates.length - 1);
       elements.commandMenu.classList.remove('hidden');
       candidates.forEach((candidate, index) => {
@@ -467,7 +548,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       vscode.postMessage({ type: 'send', text: '/' + command.name });
       elements.prompt.value = ''; commandIndex = 0; resetPrompt();
     }
-    function resetPrompt() { elements.prompt.placeholder = 'Ask DeepSeek about this project'; resizePrompt(); renderCommandMenu(); }
+    function resetPrompt() { elements.prompt.placeholder = 'Ask DeepSeek about this project'; resizePrompt(); renderCommandMenu(); renderMentionMenu(); }
     function render(current) {
       const nearBottom = elements.scroll.scrollHeight - elements.scroll.scrollTop - elements.scroll.clientHeight < 80;
       state = current; elements.workspace.textContent = current.workspaceName || 'Workspace'; elements.project.title = current.cwd ? 'DeepSeek project: ' + current.cwd : 'Choose DeepSeek project';
@@ -500,8 +581,15 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       const text = elements.prompt.value.trim(); if ((!text && !draftImages.length) || !state || state.phase !== 'ready') return;
       vscode.postMessage({ type: 'send', text }); elements.prompt.value = ''; commandIndex = 0; resetPrompt();
     }
-    elements.prompt.addEventListener('input', () => { commandIndex = 0; elements.prompt.placeholder = 'Ask DeepSeek about this project'; resizePrompt(); renderCommandMenu(); });
+    elements.prompt.addEventListener('input', () => { commandIndex = 0; mentionIndex = 0; elements.prompt.placeholder = 'Ask DeepSeek about this project'; resizePrompt(); renderCommandMenu(); requestMentions(); });
+    elements.prompt.addEventListener('click', requestMentions);
     elements.prompt.addEventListener('keydown', event => {
+      const mentionOpen = !elements.mentionMenu.classList.contains('hidden') && mentionCandidates.length > 0;
+      if (mentionOpen && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+        event.preventDefault(); mentionIndex = (mentionIndex + (event.key === 'ArrowDown' ? 1 : mentionCandidates.length - 1)) % mentionCandidates.length; renderMentionMenu(); return;
+      }
+      if (mentionOpen && event.key === 'Escape') { event.preventDefault(); mentionCandidates = []; elements.mentionMenu.classList.add('hidden'); return; }
+      if (mentionOpen && (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey && !event.isComposing))) { event.preventDefault(); pickMention(mentionCandidates[mentionIndex]); return; }
       const candidates = menuCandidates(); const menuOpen = !elements.commandMenu.classList.contains('hidden') && candidates.length > 0;
       if (menuOpen && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
         event.preventDefault(); commandIndex = (commandIndex + (event.key === 'ArrowDown' ? 1 : candidates.length - 1)) % candidates.length; renderCommandMenu(); return;
@@ -519,7 +607,17 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       elements.efforts.disabled = !model.reasoningEfforts || !model.reasoningEfforts.length; vscode.postMessage({ type: 'select-model', selection: selectionFor(model, effort) });
     });
     elements.efforts.addEventListener('change', () => { if (!elements.models.value) return; const selected = JSON.parse(elements.models.value); const model = (state.models || []).find(item => item.provider === selected.provider && item.model === selected.model); if (model) vscode.postMessage({ type: 'select-model', selection: selectionFor(model, elements.efforts.value) }); });
-    window.addEventListener('message', event => { if (event.data && event.data.type === 'state') render(event.data.state); if (event.data && event.data.type === 'draft-images') { draftImages = event.data.images || []; renderAttachments(); } });
+    window.addEventListener('message', event => {
+      if (!event.data) return;
+      if (event.data.type === 'state') render(event.data.state);
+      if (event.data.type === 'draft-images') { draftImages = event.data.images || []; renderAttachments(); }
+      if (event.data.type === 'ide-context') { ideContext = event.data.state || { pinned: [] }; renderIdeContext(); }
+      if (event.data.type === 'mention-suggestions' && event.data.requestId === mentionRequestId) {
+        const mention = currentMentionQuery();
+        if (mention && mention.query === event.data.query) { mentionCandidates = event.data.candidates || []; mentionIndex = 0; renderMentionMenu(); }
+      }
+      if (event.data.type === 'focus-prompt') elements.prompt.focus();
+    });
     vscode.postMessage({ type: 'ready' });
   </script>
 </body>

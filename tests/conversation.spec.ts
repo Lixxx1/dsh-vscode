@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ConversationProjector, type DshEvent } from '../src/conversation.js'
+import { withIdeContext } from '../src/ide-context.js'
 
 function event(type: string, seq: number, data: unknown): DshEvent {
   return { type, seq, time: seq, data }
@@ -29,6 +30,22 @@ describe('ConversationProjector', () => {
     expect(projector.messages()).toEqual([
       { id: 'assistant:2:1', role: 'assistant', text: 'AB', streaming: true },
     ])
+  })
+
+  it('hides extension-owned IDE context from the durable user bubble', () => {
+    const projector = new ConversationProjector()
+    const text = withIdeContext('Explain this', {
+      activeFile: { kind: 'file', path: 'src/example.ts' },
+      pinned: [],
+      mentions: [],
+    })
+    projector.apply(event('user/message', 1, {
+      id: 'contextual',
+      source: { kind: 'user' },
+      content: [{ type: 'text', text }],
+    }))
+
+    expect(projector.messages()).toEqual([{ id: 'contextual', role: 'user', text: 'Explain this' }])
   })
 
   it('correlates official tool results through message.source.callId', () => {

@@ -1,3 +1,5 @@
+import { withoutIdeContext } from './ide-context.js'
+
 export type ConversationRole = 'user' | 'assistant' | 'tool' | 'command' | 'notice'
 
 export interface ConversationMessage {
@@ -72,7 +74,7 @@ export class ConversationProjector {
       const source = record(data.source)
       if (source?.kind !== 'user') return
       const id = typeof data.id === 'string' ? data.id : `user:${String(event.seq)}`
-      const text = textContent(data.content)
+      const text = withoutIdeContext(textContent(data.content))
       if (text !== '') this.set(id, { id, role: 'user', text })
       return
     }

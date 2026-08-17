@@ -38,6 +38,7 @@
   "activationEvents": [
     "onView:deepseekHarness.chat",
     "onCommand:deepseekHarness.openInEditor",
+    "onCommand:deepseekHarness.addSelection",
     "onCommand:deepseekHarness.restart",
     "onCommand:deepseekHarness.configureApiKey",
     "onCommand:deepseekHarness.clearApiKey"
@@ -79,6 +80,10 @@
         "icon": "$(debug-restart)"
       },
       {
+        "command": "deepseekHarness.addSelection",
+        "title": "DeepSeek Harness: Add Selection to Chat"
+      },
+      {
         "command": "deepseekHarness.showOutput",
         "title": "DeepSeek Harness: Show Runtime Output"
       },
@@ -97,6 +102,13 @@
       }
     ],
     "menus": {
+      "editor/context": [
+        {
+          "command": "deepseekHarness.addSelection",
+          "when": "editorHasSelection && resourceScheme == file",
+          "group": "navigation@100"
+        }
+      ],
       "view/title": [
         {
           "command": "deepseekHarness.openInEditor",
