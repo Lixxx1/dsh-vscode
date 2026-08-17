@@ -32,7 +32,24 @@ Install the official DeepSeek Harness CLI:
 npm install -g @deepseek-ai/dsh
 ```
 
-Then open **Extensions** in VS Code, search for **DSH Sidebar**, and select **Install**. You can also install it from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=lixxx1.dsh-sidebar).
+Then choose the extension channel that fits you:
+
+### Published release
+
+Open **Extensions** in VS Code, search for **DSH Sidebar**, and select **Install**. You can also install it from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=lixxx1.dsh-sidebar).
+
+### Latest development build
+
+To try features already available on `main` but not yet published to the Marketplace, build and install the latest VSIX:
+
+```sh
+git clone https://github.com/Lixxx1/dsh-vscode.git
+cd dsh-vscode
+pnpm install --frozen-lockfile
+pnpm run package
+```
+
+In VS Code, run **Extensions: Install from VSIX...** from the Command Palette and select `dsh-vscode.vsix`. Development builds move faster and may be less stable; pull the latest changes and rebuild the VSIX to update.
 
 Requires VS Code 1.100 or newer and Node.js `^22.19` or `>=24`.
 

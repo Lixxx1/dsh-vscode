@@ -32,7 +32,24 @@
 npm install -g @deepseek-ai/dsh
 ```
 
-然后在 VS Code 中打开**扩展**，搜索 **DSH Sidebar** 并点击**安装**；也可以直接从 [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=lixxx1.dsh-sidebar) 安装。
+然后根据需要选择扩展版本：
+
+### 发布版
+
+在 VS Code 中打开**扩展**，搜索 **DSH Sidebar** 并点击**安装**；也可以直接从 [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=lixxx1.dsh-sidebar) 安装。
+
+### 最新开发版
+
+如果想提前使用已经合并到 `main`、但尚未发布到 Marketplace 的功能，可以构建并安装最新 VSIX：
+
+```sh
+git clone https://github.com/Lixxx1/dsh-vscode.git
+cd dsh-vscode
+pnpm install --frozen-lockfile
+pnpm run package
+```
+
+然后在 VS Code 命令面板中运行 **Extensions: Install from VSIX...**，选择生成的 `dsh-vscode.vsix`。开发版更新更快，稳定性可能不如 Marketplace 版本；之后拉取最新代码并重新构建 VSIX 即可更新。
 
 需要 VS Code 1.100 或更新版本，以及 Node.js `^22.19` 或 `>=24`。
 
