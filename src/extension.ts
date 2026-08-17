@@ -257,9 +257,8 @@ class DshChatController implements vscode.Disposable {
 
   async newSession(): Promise<void> {
     const client = this.requireClient()
-    const reusable = this.summaries.find(summary => summary.blank && summary.cwd === this.cwd)
-    const sessionId = reusable?.sessionId ?? (await client.createSession(this.cwd)).sessionId
-    await this.loadSessions(sessionId)
+    const created = await client.createSession(this.cwd)
+    await this.loadSessions(created.sessionId)
   }
 
   async selectSession(sessionId: string): Promise<void> {
