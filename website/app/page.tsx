@@ -22,9 +22,9 @@ export default function Home() {
           <a href="#workflow">Workflow</a>
           <a href={githubUrl} target="_blank" rel="noreferrer">GitHub ↗</a>
         </nav>
-        <a className="nav-cta" href={marketplaceUrl} target="_blank" rel="noreferrer">
-          <span>Get extension</span>
-          <b aria-hidden="true">↗</b>
+        <a className="nav-cta" href={githubUrl} target="_blank" rel="noreferrer">
+          <span>Star on GitHub</span>
+          <b aria-hidden="true">☆</b>
         </a>
       </header>
 
@@ -35,44 +35,42 @@ export default function Home() {
           <img src="./deepseek.svg" alt="" />
         </div>
 
-        <div className="hero-meta reveal">
-          <span>Community-built</span>
-          <span>VS Code extension</span>
-          <span>2026 / 001</span>
-        </div>
-
         <div className="hero-title-wrap reveal">
-          <p className="hero-kicker"><i /> Project-aware coding agent</p>
+          <p className="hero-kicker"><i /> DeepSeek Harness for VS Code</p>
           <h1>
             <span>DeepSeek Harness</span>
-            <span className="hero-outline">inside VS Code.</span>
+            <span className="hero-accent">inside VS Code.</span>
           </h1>
         </div>
 
         <div className="hero-bottom reveal">
-          <p>
-            The official DSH runtime, reimagined for the place where you
-            already read, write, run, and review code.
-          </p>
-          <div className="hero-actions">
-            <a className="button button--electric" href={marketplaceUrl} target="_blank" rel="noreferrer">
-              Install from Marketplace <span>↗</span>
-            </a>
-            <a className="button button--dark" href={githubUrl} target="_blank" rel="noreferrer">
-              Explore the source <span>→</span>
-            </a>
+          <div className="hero-intro">
+            <p>
+              A project-aware DSH sidebar for the place where you already
+              read, write, run, and review code.
+            </p>
+            <p className="hero-star-note">Open source and built in public — a star helps more developers find it.</p>
+            <div className="hero-actions">
+              <a className="button button--electric" href={githubUrl} target="_blank" rel="noreferrer">
+                Star on GitHub <span>☆</span>
+              </a>
+              <a className="button button--dark" href={marketplaceUrl} target="_blank" rel="noreferrer">
+                Install for VS Code <span>↗</span>
+              </a>
+            </div>
+          </div>
+          <div className="hero-proof" aria-label="Product highlights">
+            <span><b>01</b> Project context</span>
+            <span><b>02</b> Native review</span>
+            <span><b>03</b> Official DSH runtime</span>
           </div>
         </div>
 
         <div className="product-scene reveal">
-          <div className="scene-label scene-label--one" aria-hidden="true">
-            <span>01</span> Current workspace
+          <div className="scene-heading">
+            <span>Product demo</span>
+            <span>Context → Edit → Review</span>
           </div>
-          <div className="scene-label scene-label--two" aria-hidden="true">
-            <span>02</span> Native review
-          </div>
-          <div className="scene-orbit scene-orbit--one" aria-hidden="true" />
-          <div className="scene-orbit scene-orbit--two" aria-hidden="true" />
           <div className="editor-window">
             <div className="window-bar">
               <span className="window-dots"><i /><i /><i /></span>
@@ -80,19 +78,17 @@ export default function Home() {
               <span className="window-status"><i /> DSH connected</span>
             </div>
             <div className="window-media">
-              <img
-                src="./demo.gif"
-                alt="DeepSeek Harness editing and reviewing code inside the VS Code sidebar"
-              />
+              <video
+                autoPlay
+                muted
+                loop
+                playsInline
+                preload="metadata"
+                aria-label="DeepSeek Harness editing and reviewing code inside the VS Code sidebar"
+              >
+                <source src="./demo.mp4" type="video/mp4" />
+              </video>
             </div>
-          </div>
-          <div className="scene-toast scene-toast--top" aria-hidden="true">
-            <span className="toast-icon">@</span>
-            <span><b>Selection attached</b><small>random_number.py · 12–26</small></span>
-          </div>
-          <div className="scene-toast scene-toast--bottom" aria-hidden="true">
-            <span className="toast-icon toast-icon--green">✓</span>
-            <span><b>Checks passed</b><small>Ready for review</small></span>
           </div>
         </div>
 
@@ -101,13 +97,6 @@ export default function Home() {
           <i aria-hidden="true" />
         </a>
       </section>
-
-      <div className="ticker" aria-hidden="true">
-        <div className="ticker-track">
-          <span>CONTEXT <i>✦</i> CONTROL <i>✦</i> REVIEW <i>✦</i> EXTEND <i>✦</i> STAY IN FLOW <i>✦</i></span>
-          <span>CONTEXT <i>✦</i> CONTROL <i>✦</i> REVIEW <i>✦</i> EXTEND <i>✦</i> STAY IN FLOW <i>✦</i></span>
-        </div>
-      </div>
 
       <section className="manifesto" id="manifesto">
         <div className="manifesto-index reveal">/ WHY</div>
@@ -129,7 +118,7 @@ export default function Home() {
 
       <section className="capabilities" id="capabilities">
         <div className="capabilities-head reveal">
-          <span className="section-index">02 / 05</span>
+          <span className="section-index">01 / 03</span>
           <p className="section-kicker">The development loop</p>
           <h2>From intent<br />to reviewed code.</h2>
           <p className="head-note">Four surfaces. One focused workspace.</p>
@@ -154,7 +143,7 @@ export default function Home() {
             <div className="visual-topline"><span>ATTACHED CONTEXT</span><span>3 ITEMS</span></div>
             <div className="context-file context-file--active">
               <span className="file-type">PY</span>
-              <span><b>random_number.py</b><small>Lines 12–26 · selected</small></span>
+              <span><b>temperature.py</b><small>Lines 1–8 · selected</small></span>
               <i>×</i>
             </div>
             <div className="context-file">
@@ -163,11 +152,11 @@ export default function Home() {
               <i>×</i>
             </div>
             <div className="context-editor">
-              <span className="editor-prompt">Review the selected function and fix the edge case</span>
+              <span className="editor-prompt">Fix the conversion bug and verify the result</span>
               <span className="editor-caret" />
               <div className="editor-toolbar"><span>+</span><span>@</span><span>/</span><b>↑</b></div>
             </div>
-            <div className="context-coordinate">12:26</div>
+            <div className="context-coordinate">1:8</div>
           </div>
         </article>
 
@@ -214,19 +203,19 @@ export default function Home() {
             </ul>
           </div>
           <div className="capability-visual review-visual" aria-hidden="true">
-            <div className="diff-tabs"><span>random_number.py</span><span>Changed files · 1</span></div>
+            <div className="diff-tabs"><span>temperature.py</span><span>Changed files · 1</span></div>
             <div className="diff-columns">
               <div className="diff-column">
-                <div><i>7</i><span>return random.randrange(</span></div>
-                <div className="code-remove"><i>8</i><span>start, end)</span></div>
-                <div><i>9</i><span>&nbsp;</span></div>
-                <div><i>10</i><span>values = [random_number(</span></div>
+                <div><i>1</i><span>def celsius_to_fahrenheit(</span></div>
+                <div className="code-remove"><i>2</i><span>return celsius * 9 / 5 - 32</span></div>
+                <div><i>3</i><span>&nbsp;</span></div>
+                <div><i>4</i><span>if __name__ == "__main__":</span></div>
               </div>
               <div className="diff-column">
-                <div><i>7</i><span>return random.randint(</span></div>
-                <div className="code-add"><i>8</i><span>start, end)</span></div>
-                <div><i>9</i><span>&nbsp;</span></div>
-                <div className="code-add"><i>10</i><span>assert start &lt;= end</span></div>
+                <div><i>1</i><span>def celsius_to_fahrenheit(</span></div>
+                <div className="code-add"><i>2</i><span>return celsius * 9 / 5 + 32</span></div>
+                <div><i>3</i><span>&nbsp;</span></div>
+                <div className="code-add"><i>5</i><span>assert celsius_to_fahrenheit(0) == 32</span></div>
               </div>
             </div>
             <div className="review-bar"><span><b>+12</b> <i>−2</i></span><span>OPEN DIFF&nbsp;&nbsp; KEEP&nbsp;&nbsp; REVERT</span></div>
@@ -267,7 +256,7 @@ export default function Home() {
 
       <section className="workflow" id="workflow">
         <div className="workflow-head reveal">
-          <span className="section-index">03 / 05</span>
+          <span className="section-index">02 / 03</span>
           <p className="section-kicker">A smaller loop</p>
           <h2>Open.<br />Ask.<br />Review.</h2>
         </div>
@@ -280,7 +269,7 @@ export default function Home() {
           </li>
           <li className="reveal">
             <span className="step-number">02</span>
-            <div className="step-icon step-icon--prompt">Fix the edge case ↵</div>
+            <div className="step-icon step-icon--prompt">Fix the conversion bug and verify it ↵</div>
             <h3>Ask in context</h3>
             <p>Attach what matters, choose the operating mode, and let the official runtime work.</p>
           </li>
@@ -296,7 +285,7 @@ export default function Home() {
       <section className="final-cta reveal">
         <div className="cta-grid" aria-hidden="true" />
         <div className="cta-whale" aria-hidden="true"><img src="./deepseek.svg" alt="" /></div>
-        <span className="section-index">04 / 05</span>
+        <span className="section-index">03 / 03</span>
         <p className="section-kicker">Stay in your flow</p>
         <h2>Keep the editor.<br /><span>Add the harness.</span></h2>
         <p>DeepSeek Harness is one sidebar away from your next coding session.</p>

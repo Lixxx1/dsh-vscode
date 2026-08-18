@@ -38,14 +38,29 @@ export function MotionLayer() {
     );
 
     document.querySelectorAll(".reveal").forEach((element) => observer.observe(element));
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const demoVideos = Array.from(document.querySelectorAll<HTMLVideoElement>("video"));
+    const syncVideoMotion = () => {
+      demoVideos.forEach((video) => {
+        if (reducedMotion.matches) {
+          video.pause();
+        } else {
+          void video.play().catch(() => undefined);
+        }
+      });
+    };
+
     window.addEventListener("pointermove", handlePointer, { passive: true });
     window.addEventListener("scroll", handleScroll, { passive: true });
+    reducedMotion.addEventListener("change", syncVideoMotion);
     handleScroll();
+    syncVideoMotion();
 
     return () => {
       observer.disconnect();
       window.removeEventListener("pointermove", handlePointer);
       window.removeEventListener("scroll", handleScroll);
+      reducedMotion.removeEventListener("change", syncVideoMotion);
       cancelAnimationFrame(mouseFrame);
       cancelAnimationFrame(scrollFrame);
     };
