@@ -107,10 +107,12 @@ function toolView(value: unknown, expected: 'call' | 'result'): unknown {
 export class ConversationProjector {
   private readonly orderedIds: string[] = []
   private readonly byId = new Map<string, ConversationMessage>()
+  private readonly hiddenCommandIds = new Set<string>()
 
   reset(entries: readonly (DshEvent | { event: DshEvent; view?: unknown })[]): void {
     this.orderedIds.length = 0
     this.byId.clear()
+    this.hiddenCommandIds.clear()
     for (const entry of entries) {
       if ('event' in entry) this.apply(entry.event, entry.view)
       else this.apply(entry)
@@ -212,6 +214,15 @@ export class ConversationProjector {
 
     if (event.type === 'command/run') {
       if (typeof data.commandId !== 'string' || typeof data.name !== 'string') return
+      // Plan on/off is a composer control transition as well as a slash
+      // command. Keep its durable DSH events for the projection, but do not
+      // turn a Shield click into a synthetic chat card.
+      if (data.name === 'plan'
+        && typeof data.args === 'string'
+        && (data.args.trim() === 'on' || data.args.trim() === 'off')) {
+        this.hiddenCommandIds.add(data.commandId)
+        return
+      }
       const id = `command:${data.commandId}`
       this.set(id, {
         id,
@@ -225,6 +236,7 @@ export class ConversationProjector {
 
     if (event.type === 'command/done') {
       if (typeof data.commandId !== 'string') return
+      if (this.hiddenCommandIds.has(data.commandId)) return
       const id = `command:${data.commandId}`
       const current = this.byId.get(id)
       const failed = data.kind === 'error'

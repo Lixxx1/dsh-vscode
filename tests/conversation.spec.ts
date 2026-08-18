@@ -162,16 +162,28 @@ describe('ConversationProjector', () => {
 
   it('folds official command lifecycle events into one card', () => {
     const projector = new ConversationProjector()
-    projector.apply(event('command/run', 1, { commandId: 'command-1', name: 'plan', args: ' off' }))
-    projector.apply(event('command/done', 2, { commandId: 'command-1', kind: 'success', text: 'Plan mode off.' }))
+    projector.apply(event('command/run', 1, { commandId: 'command-1', name: 'compact' }))
+    projector.apply(event('command/done', 2, { commandId: 'command-1', kind: 'success', text: 'Compacted.' }))
 
     expect(projector.messages()).toEqual([{
       id: 'command:command-1',
       role: 'command',
-      text: '/plan off',
+      text: '/compact',
       detail: 'Completed',
       failed: false,
-      rawResult: 'Plan mode off.',
+      rawResult: 'Compacted.',
     }])
+  })
+
+  it('hides plan control transitions from the conversation', () => {
+    const projector = new ConversationProjector()
+    projector.reset([
+      event('command/run', 1, { commandId: 'plan-on', name: 'plan', args: ' on' }),
+      event('command/done', 2, { commandId: 'plan-on', kind: 'success', text: 'Plan mode on.' }),
+      event('command/run', 3, { commandId: 'plan-off', name: 'plan', args: ' off' }),
+      event('command/done', 4, { commandId: 'plan-off', kind: 'success', text: 'Plan mode off.' }),
+    ])
+
+    expect(projector.messages()).toEqual([])
   })
 })
