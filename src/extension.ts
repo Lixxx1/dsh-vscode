@@ -4,7 +4,9 @@ import * as vscode from 'vscode'
 import { ConversationProjector, type ConversationImage, type ConversationMessage, type DshEvent } from './conversation.js'
 import {
   permissionPresetsOf,
+  planModeCommand,
   planModeStateOf,
+  planModeWithCommandAvailability,
   requiresFullAccessConfirmation,
   type PermissionPresetItem,
   type PlanModeState,
@@ -506,7 +508,14 @@ class DshChatController implements vscode.Disposable {
     try {
       const commands = await client.listCommands(sessionId)
       if (this.client === client && this._state.sessionId === sessionId) {
-        this.publish({ commands: commands.filter(command => command.name !== 'export') })
+        const visibleCommands = commands.filter(command => command.name !== 'export')
+        this.publish({
+          commands: visibleCommands,
+          plan: planModeWithCommandAvailability(
+            this._state.plan,
+            visibleCommands.some(command => command.name === 'plan'),
+          ),
+        })
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -992,7 +1001,7 @@ class DshSurface implements vscode.Disposable {
           return
         case 'select-mode':
           if ((value.mode === 'normal' || value.mode === 'plan') && this.controller.state.plan.available) {
-            await this.controller.send(value.mode === 'plan' ? '/plan on' : '/plan off')
+            await this.controller.send(planModeCommand(value.mode))
           }
           return
         case 'attach': await this.chooseImages(); return

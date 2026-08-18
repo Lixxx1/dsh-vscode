@@ -51,6 +51,14 @@ export function effectivePlanMode(plan: PlanModeState): boolean {
   return plan.pending ? !plan.active : plan.active
 }
 
+export function planModeWithCommandAvailability(plan: PlanModeState, available: boolean): PlanModeState {
+  return available && !plan.available ? { ...plan, available: true } : plan
+}
+
+export function planModeCommand(mode: 'normal' | 'plan'): '/plan' | '/plan off' {
+  return mode === 'plan' ? '/plan' : '/plan off'
+}
+
 export function requiresFullAccessConfirmation(value: string): boolean {
   return value === 'danger-full-access'
 }

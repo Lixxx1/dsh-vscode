@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 import {
   effectivePlanMode,
   permissionPresetsOf,
+  planModeCommand,
   planModeStateOf,
+  planModeWithCommandAvailability,
   requiresFullAccessConfirmation,
 } from '../src/collaboration-state.js'
 
@@ -32,6 +34,18 @@ describe('collaboration state projections', () => {
   it('shows the target mode while an official plan transition is pending', () => {
     expect(effectivePlanMode({ available: true, active: false, pending: true })).toBe(true)
     expect(effectivePlanMode({ available: true, active: true, pending: true })).toBe(false)
+  })
+
+  it('discovers plan availability from the official command list', () => {
+    expect(planModeWithCommandAvailability(
+      { available: false, active: false, pending: false },
+      true,
+    )).toEqual({ available: true, active: false, pending: false })
+  })
+
+  it('uses an empty plan command instead of sending on as a message', () => {
+    expect(planModeCommand('plan')).toBe('/plan')
+    expect(planModeCommand('normal')).toBe('/plan off')
   })
 
   it('requires confirmation only for the official full-access preset', () => {

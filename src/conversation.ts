@@ -214,12 +214,12 @@ export class ConversationProjector {
 
     if (event.type === 'command/run') {
       if (typeof data.commandId !== 'string' || typeof data.name !== 'string') return
-      // Plan on/off is a composer control transition as well as a slash
+      // Plan entry/exit is a composer control transition as well as a slash
       // command. Keep its durable DSH events for the projection, but do not
       // turn a Shield click into a synthetic chat card.
+      const planArgs = typeof data.args === 'string' ? data.args.trim() : ''
       if (data.name === 'plan'
-        && typeof data.args === 'string'
-        && (data.args.trim() === 'on' || data.args.trim() === 'off')) {
+        && (planArgs === '' || planArgs === 'on' || planArgs === 'off')) {
         this.hiddenCommandIds.add(data.commandId)
         return
       }

@@ -178,10 +178,12 @@ describe('ConversationProjector', () => {
   it('hides plan control transitions from the conversation', () => {
     const projector = new ConversationProjector()
     projector.reset([
-      event('command/run', 1, { commandId: 'plan-on', name: 'plan', args: ' on' }),
-      event('command/done', 2, { commandId: 'plan-on', kind: 'success', text: 'Plan mode on.' }),
-      event('command/run', 3, { commandId: 'plan-off', name: 'plan', args: ' off' }),
-      event('command/done', 4, { commandId: 'plan-off', kind: 'success', text: 'Plan mode off.' }),
+      event('command/run', 1, { commandId: 'plan', name: 'plan' }),
+      event('command/done', 2, { commandId: 'plan', kind: 'success', text: 'Plan mode on.' }),
+      event('command/run', 3, { commandId: 'legacy-plan-on', name: 'plan', args: ' on' }),
+      event('command/done', 4, { commandId: 'legacy-plan-on', kind: 'success', text: 'Plan mode on.' }),
+      event('command/run', 5, { commandId: 'plan-off', name: 'plan', args: ' off' }),
+      event('command/done', 6, { commandId: 'plan-off', kind: 'success', text: 'Plan mode off.' }),
     ])
 
     expect(projector.messages()).toEqual([])
