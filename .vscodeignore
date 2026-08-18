@@ -4,10 +4,15 @@ src/**
 tests/**
 coverage/**
 node_modules/**
+website/**
 media/*.mp4
+media/demo.gif
+media/sidebar-preview.jpg
 *.vsix
 .gitignore
+README.md
 README.zh.md
+pnpm-workspace.yaml
 tsconfig.json
 vitest.config.ts
 pnpm-lock.yaml

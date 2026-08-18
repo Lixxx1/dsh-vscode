@@ -181,7 +181,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --config vitest.config.ts",
     "check": "tsc -p tsconfig.json --noEmit && vitest run --config vitest.config.ts && tsc -p tsconfig.json",
-    "package": "vsce package --out dsh-vscode.vsix"
+    "package": "vsce package --readme-path README.marketplace.md --out dsh-vscode.vsix",
+    "publish:marketplace": "vsce publish --readme-path README.marketplace.md"
   },
   "devDependencies": {
     "@types/node": "^22.20.0",

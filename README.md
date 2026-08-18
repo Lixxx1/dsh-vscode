@@ -1,5 +1,8 @@
 # DeepSeek Harness for VS Code 🐋
 
+> [!NOTE]
+> ⭐ Like DSH Sidebar? [Give it a Star on GitHub](https://github.com/Lixxx1/dsh-vscode)! It helps more people find the project.
+
 Bring DeepSeek Harness into the same place you write code. dsh-vscode gives DSH a Claude Code/Codex-style right sidebar that already understands your project, active file, and selected code.
 
 Ask DeepSeek to inspect, change, and verify code without switching between your editor, terminal, and a separate chat window.

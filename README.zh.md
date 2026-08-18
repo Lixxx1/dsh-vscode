@@ -1,5 +1,8 @@
 # DeepSeek Harness for VS Code 🐋
 
+> [!NOTE]
+> ⭐ 如果觉得好用，欢迎[给项目点个 Star](https://github.com/Lixxx1/dsh-vscode)！也能让更多人看到它。
+
 把 DeepSeek Harness 放到你真正写代码的地方。dsh-vscode 为 DSH 提供类似 Claude Code、Codex 的 VS Code 右侧边栏，并自动理解当前项目、文件和选区。
 
 让 DeepSeek 直接阅读、修改和验证代码，不再需要在编辑器、终端和独立聊天窗口之间反复切换。
