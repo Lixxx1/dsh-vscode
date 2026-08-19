@@ -1,13 +1,20 @@
-export type IdeReferenceKind = 'file' | 'folder' | 'selection'
+export type IdeProblemSeverity = 'error' | 'warning'
+export type IdeReferenceKind = 'file' | 'folder' | 'selection' | 'problem' | 'problems'
 
 export interface IdeContextReference {
   kind: IdeReferenceKind
   path: string
   languageId?: string
   startLine?: number
+  startCharacter?: number
   endLine?: number
+  endCharacter?: number
   text?: string
   truncated?: boolean
+  severity?: IdeProblemSeverity
+  message?: string
+  source?: string
+  code?: string
 }
 
 export interface IdeContextSnapshot {
@@ -18,15 +25,34 @@ export interface IdeContextSnapshot {
 }
 
 export interface IdeMentionCandidate {
-  kind: 'file' | 'folder'
+  kind: 'file' | 'folder' | 'problem' | 'problems'
   path: string
+  startLine?: number
+  startCharacter?: number
+  severity?: IdeProblemSeverity
+  message?: string
+  source?: string
 }
 
 const CONTEXT_START = '<dsh-vscode-ide-context>'
 const CONTEXT_END = '</dsh-vscode-ide-context>'
+const DEFAULT_MAX_PROBLEMS_CHARACTERS = 100_000
 
 function referenceKey(reference: IdeContextReference): string {
-  return [reference.kind, reference.path, reference.startLine ?? '', reference.endLine ?? '', reference.text ?? '', reference.truncated ?? false].join(':')
+  return [
+    reference.kind,
+    reference.path,
+    reference.startLine ?? '',
+    reference.startCharacter ?? '',
+    reference.endLine ?? '',
+    reference.endCharacter ?? '',
+    reference.text ?? '',
+    reference.truncated ?? false,
+    reference.severity ?? '',
+    reference.message ?? '',
+    reference.source ?? '',
+    reference.code ?? '',
+  ].join(':')
 }
 
 export function uniqueIdeReferences(references: readonly IdeContextReference[]): IdeContextReference[] {
@@ -97,6 +123,38 @@ export function mentionedPaths(text: string): string[] {
   return paths
 }
 
+export function problemMention(reference: Pick<IdeContextReference, 'path' | 'startLine' | 'startCharacter'>): string {
+  return `${reference.path}:${String(reference.startLine ?? 1)}:${String(reference.startCharacter ?? 1)}`
+}
+
+export function resolveMentionReferences(
+  mentioned: readonly string[],
+  candidates: readonly IdeMentionCandidate[],
+  problems: readonly IdeContextReference[],
+  maxProblemsCharacters = DEFAULT_MAX_PROBLEMS_CHARACTERS,
+): IdeContextReference[] {
+  const byPath = new Map(candidates
+    .filter((candidate): candidate is IdeMentionCandidate & { kind: 'file' | 'folder' } => candidate.kind === 'file' || candidate.kind === 'folder')
+    .map(candidate => [candidate.path, candidate]))
+  const byProblemMention = new Map(problems.map(problem => [problemMention(problem), problem]))
+  return mentioned.flatMap((value): IdeContextReference[] => {
+    if (value === 'problems') {
+      const serialized = JSON.stringify(problems, null, 2)
+      const truncated = serialized.length > maxProblemsCharacters
+      return [{
+        kind: 'problems',
+        path: '.',
+        text: truncated ? serialized.slice(0, maxProblemsCharacters) : serialized,
+        ...(truncated ? { truncated: true } : {}),
+      }]
+    }
+    const problem = byProblemMention.get(value)
+    if (problem !== undefined) return [problem]
+    const candidate = byPath.get(value)
+    return candidate === undefined ? [] : [{ kind: candidate.kind, path: candidate.path }]
+  })
+}
+
 function subsequenceScore(value: string, query: string): number | undefined {
   let cursor = 0
   let gap = 0
@@ -110,9 +168,18 @@ function subsequenceScore(value: string, query: string): number | undefined {
 }
 
 function candidateScore(candidate: IdeMentionCandidate, query: string): number | undefined {
-  if (query === '') return candidate.kind === 'file' ? 20 : 30
+  if (query === '') {
+    if (candidate.kind === 'problems') return 0
+    if (candidate.kind === 'problem') return candidate.severity === 'error' ? 10 : 15
+    return candidate.kind === 'file' ? 20 : 30
+  }
   const path = candidate.path.toLowerCase()
   const name = path.split('/').filter(Boolean).at(-1) ?? path
+  const details = candidate.kind === 'problem'
+    ? `${candidate.severity ?? ''} ${candidate.message ?? ''} ${candidate.source ?? ''}`.toLowerCase()
+    : ''
+  if (candidate.kind === 'problems' && 'problems'.startsWith(query)) return 0
+  if (details.includes(query)) return 4 + details.indexOf(query) / 10_000
   if (path === query) return 0
   if (name.startsWith(query)) return 1 + name.length / 10_000
   if (path.startsWith(query)) return 3 + path.length / 10_000

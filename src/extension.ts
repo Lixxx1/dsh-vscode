@@ -28,7 +28,7 @@ import {
   type SessionModels,
   type SessionSummary,
 } from './dsh-client.js'
-import { replaceTextPreservingIdeContext, withIdeContext, type IdeContextSnapshot } from './ide-context.js'
+import { replaceTextPreservingIdeContext, withIdeContext, type IdeContextReference, type IdeContextSnapshot } from './ide-context.js'
 import { jobsSnapshotOf, type JobItem } from './jobs.js'
 import { queueSnapshotOf, type QueueItemState } from './queue.js'
 import { DshRuntime, type RuntimeState } from './runtime.js'
@@ -846,6 +846,8 @@ class DshChatController implements vscode.Disposable {
 class DshSurface implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[]
   private readonly draftImages: Array<PromptImage & { id: string }> = []
+  private ready = false
+  private pendingPrompt: string | undefined
 
   constructor(
     private readonly webview: vscode.Webview,
@@ -866,6 +868,14 @@ class DshSurface implements vscode.Disposable {
 
   focusPrompt(): void {
     void this.webview.postMessage({ type: 'focus-prompt' })
+  }
+
+  setPrompt(text: string): void {
+    if (!this.ready) {
+      this.pendingPrompt = text
+      return
+    }
+    void this.webview.postMessage({ type: 'set-prompt', text })
   }
 
   dispose(): void {
@@ -947,8 +957,13 @@ class DshSurface implements vscode.Disposable {
     const run = async (): Promise<void> => {
       switch (value.type) {
         case 'ready':
+          this.ready = true
           await this.webview.postMessage({ type: 'state', state: this.controller.state })
           await this.webview.postMessage({ type: 'ide-context', state: this.editorContext.viewState() })
+          if (this.pendingPrompt !== undefined) {
+            await this.webview.postMessage({ type: 'set-prompt', text: this.pendingPrompt })
+            this.pendingPrompt = undefined
+          }
           return
         case 'restart': await this.controller.restart(); return
         case 'output': this.output.show(true); return
@@ -1127,6 +1142,7 @@ function imageMediaType(filePath: string): ImageMediaType | undefined {
 
 class DshViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private surface: DshSurface | undefined
+  private pendingPrompt: string | undefined
 
   constructor(
     private readonly controller: DshChatController,
@@ -1139,6 +1155,10 @@ class DshViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
     this.surface?.dispose()
     const surface = new DshSurface(view.webview, this.controller, this.output, this.editorContext, this.extensionUri)
     this.surface = surface
+    if (this.pendingPrompt !== undefined) {
+      surface.setPrompt(this.pendingPrompt)
+      this.pendingPrompt = undefined
+    }
     view.onDidDispose(() => {
       surface.dispose()
       if (this.surface === surface) this.surface = undefined
@@ -1154,6 +1174,69 @@ class DshViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   focusPrompt(): void {
     this.surface?.focusPrompt()
   }
+
+  setPrompt(text: string): void {
+    if (this.surface === undefined) {
+      this.pendingPrompt = text
+      return
+    }
+    this.surface.setPrompt(text)
+  }
+}
+
+function problemPrompt(problem: IdeContextReference): string {
+  return `Fix @{${problem.path}:${String(problem.startLine ?? 1)}:${String(problem.startCharacter ?? 1)}}`
+}
+
+function problemLocationFromArguments(args: readonly unknown[]): { filePath?: string; line?: number; message?: string } {
+  let filePath: string | undefined
+  let line: number | undefined
+  let message: string | undefined
+  const inspect = (value: unknown): void => {
+    if (value instanceof vscode.Uri) {
+      if (value.scheme === 'file') filePath ??= value.fsPath
+      return
+    }
+    if (typeof value !== 'object' || value === null) return
+    const item = value as Record<string, unknown>
+    if (typeof item.message === 'string') message ??= item.message
+    if (typeof item.startLineNumber === 'number') line ??= item.startLineNumber
+    if (item.uri instanceof vscode.Uri) inspect(item.uri)
+    if (item.resource instanceof vscode.Uri) inspect(item.resource)
+    if (typeof item.range === 'object' && item.range !== null) {
+      const range = item.range as Record<string, unknown>
+      if (typeof range.start === 'object' && range.start !== null) {
+        const start = range.start as Record<string, unknown>
+        if (typeof start.line === 'number') line ??= start.line + 1
+      }
+    }
+  }
+  for (const arg of args) inspect(arg)
+  return {
+    ...(filePath === undefined ? {} : { filePath }),
+    ...(line === undefined ? {} : { line }),
+    ...(message === undefined ? {} : { message }),
+  }
+}
+
+async function chooseProblem(editorContext: EditorContextBridge, args: readonly unknown[] = []): Promise<IdeContextReference | undefined> {
+  const location = problemLocationFromArguments(args)
+  const direct = location.filePath === undefined
+    ? editorContext.problemAtActiveEditor()
+    : editorContext.problemForLocation(location.filePath, location.line, location.message)
+  if (direct !== undefined) return direct
+  const problems = editorContext.problems()
+  const items: Array<vscode.QuickPickItem & { problem: IdeContextReference }> = problems.map(problem => ({
+    label: `$(error) ${problem.path}:${String(problem.startLine ?? 1)}`,
+    description: problem.severity === 'warning' ? 'Warning' : 'Error',
+    detail: problem.message ?? '',
+    problem,
+  }))
+  const picked = await vscode.window.showQuickPick(items, {
+    title: 'Send a Problem to DeepSeek',
+    placeHolder: problems.length === 0 ? 'No workspace errors or warnings' : 'Choose a diagnostic',
+  })
+  return picked?.problem
 }
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -1217,6 +1300,31 @@ export function activate(context: vscode.ExtensionContext): void {
     }
     await vscode.commands.executeCommand('workbench.view.extension.deepseekHarness')
     provider.focusPrompt()
+  }))
+  context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.fixWithDeepSeek', async () => {
+    const problem = editorContext.problemAtActiveEditor()
+    let prompt: string
+    if (problem !== undefined) {
+      prompt = problemPrompt(problem)
+    } else if (editorContext.pinSelection()) {
+      prompt = 'Fix the selected code.'
+    } else {
+      const activeFile = editorContext.viewState().activeFile
+      if (activeFile === undefined) {
+        void vscode.window.showInformationMessage('Open a file in the current DeepSeek project first.')
+        return
+      }
+      const mention = activeFile.path.includes(' ') ? `@{${activeFile.path}}` : `@${activeFile.path}`
+      prompt = `Fix the issue in ${mention}.`
+    }
+    await vscode.commands.executeCommand('workbench.view.extension.deepseekHarness')
+    provider.setPrompt(prompt)
+  }))
+  context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.sendProblem', async (...args: unknown[]) => {
+    const problem = await chooseProblem(editorContext, args)
+    if (problem === undefined) return
+    await vscode.commands.executeCommand('workbench.view.extension.deepseekHarness')
+    provider.setPrompt(problemPrompt(problem))
   }))
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.showOutput', () => { output.show(true) }))
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.openInBrowser', async () => {

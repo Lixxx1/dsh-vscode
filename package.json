@@ -40,6 +40,8 @@
     "onView:deepseekHarness.chat",
     "onCommand:deepseekHarness.openInEditor",
     "onCommand:deepseekHarness.addSelection",
+    "onCommand:deepseekHarness.fixWithDeepSeek",
+    "onCommand:deepseekHarness.sendProblem",
     "onCommand:deepseekHarness.restart",
     "onCommand:deepseekHarness.managePlugins",
     "onCommand:deepseekHarness.configureApiKey",
@@ -91,6 +93,14 @@
         "title": "DeepSeek Harness: Add Selection to Chat"
       },
       {
+        "command": "deepseekHarness.fixWithDeepSeek",
+        "title": "DeepSeek Harness: Fix with DeepSeek"
+      },
+      {
+        "command": "deepseekHarness.sendProblem",
+        "title": "DeepSeek Harness: Send Problem to DeepSeek"
+      },
+      {
         "command": "deepseekHarness.showOutput",
         "title": "DeepSeek Harness: Show Runtime Output"
       },
@@ -113,6 +123,17 @@
         {
           "command": "deepseekHarness.addSelection",
           "when": "editorHasSelection && resourceScheme == file",
+          "group": "navigation@100"
+        },
+        {
+          "command": "deepseekHarness.fixWithDeepSeek",
+          "when": "resourceScheme == file",
+          "group": "navigation@101"
+        }
+      ],
+      "problems/context": [
+        {
+          "command": "deepseekHarness.sendProblem",
           "group": "navigation@100"
         }
       ],

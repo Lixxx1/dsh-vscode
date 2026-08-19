@@ -3,6 +3,7 @@ import {
   mentionedPaths,
   mentionQueryAt,
   replaceTextPreservingIdeContext,
+  resolveMentionReferences,
   searchMentionCandidates,
   withIdeContext,
   withoutIdeContext,
@@ -66,5 +67,46 @@ describe('IDE context', () => {
       { kind: 'file', path: 'src/extension.ts' },
       { kind: 'file', path: 'tests/extension.spec.ts' },
     ])
+  })
+
+  it('offers Problems before file mentions and searches diagnostic messages', () => {
+    const candidates = [
+      { kind: 'problems' as const, path: 'problems' },
+      {
+        kind: 'problem' as const,
+        path: 'src/app.ts',
+        startLine: 18,
+        startCharacter: 7,
+        severity: 'error' as const,
+        message: 'Cannot find name userId',
+        source: 'typescript',
+      },
+      { kind: 'file' as const, path: 'src/app.ts' },
+    ]
+
+    expect(searchMentionCandidates(candidates, '')[0]).toEqual({ kind: 'problems', path: 'problems' })
+    expect(searchMentionCandidates(candidates, 'userId')).toEqual([candidates[1]])
+  })
+
+  it('resolves aggregate and individual diagnostic mentions as IDE context', () => {
+    const problem = {
+      kind: 'problem' as const,
+      path: 'src/app.ts',
+      startLine: 18,
+      startCharacter: 7,
+      endLine: 18,
+      endCharacter: 13,
+      severity: 'error' as const,
+      message: 'Cannot find name userId',
+      source: 'typescript',
+    }
+    const candidates = [{ kind: 'file' as const, path: 'src/app.ts' }]
+
+    expect(resolveMentionReferences(['src/app.ts:18:7'], candidates, [problem])).toEqual([problem])
+    expect(resolveMentionReferences(['problems'], candidates, [problem])).toEqual([{
+      kind: 'problems',
+      path: '.',
+      text: JSON.stringify([problem], null, 2),
+    }])
   })
 })

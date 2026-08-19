@@ -703,17 +703,28 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
         const option = node('button', 'command-option' + (index === mentionIndex ? ' selected' : ''));
         option.type = 'button'; option.setAttribute('role', 'option'); option.setAttribute('aria-selected', String(index === mentionIndex));
         const line = node('div', 'command-option-line');
-        line.append(node('span', 'command-option-name', candidate.path + (candidate.kind === 'folder' ? '/' : '')));
-        line.append(node('span', 'command-option-hint', candidate.kind === 'folder' ? 'Folder' : 'File'));
-        option.append(line);
+        if (candidate.kind === 'problems') {
+          line.append(node('span', 'command-option-name', '@problems'), node('span', 'command-option-hint', 'Workspace diagnostics'));
+          option.append(line, node('div', 'command-option-description', 'Include all current errors and warnings'));
+        } else if (candidate.kind === 'problem') {
+          const location = candidate.path + ':' + candidate.startLine + ':' + candidate.startCharacter;
+          line.append(node('span', 'command-option-name', location), node('span', 'command-option-hint', candidate.severity === 'error' ? 'Error' : 'Warning'));
+          option.append(line, node('div', 'command-option-description', (candidate.source ? candidate.source + ' · ' : '') + candidate.message));
+        } else {
+          line.append(node('span', 'command-option-name', candidate.path + (candidate.kind === 'folder' ? '/' : '')));
+          line.append(node('span', 'command-option-hint', candidate.kind === 'folder' ? 'Folder' : 'File'));
+          option.append(line);
+        }
         option.addEventListener('mousedown', event => { event.preventDefault(); pickMention(candidate); });
         elements.mentionMenu.append(option);
       });
     }
     function pickMention(candidate) {
       const mention = currentMentionQuery(); if (!mention) return;
-      const path = candidate.path + (candidate.kind === 'folder' ? '/' : '');
-      const encoded = path.includes(' ') ? '@{' + path + '}' : '@' + path;
+      const path = candidate.kind === 'problem'
+        ? candidate.path + ':' + candidate.startLine + ':' + candidate.startCharacter
+        : candidate.path + (candidate.kind === 'folder' ? '/' : '');
+      const encoded = candidate.kind === 'problems' ? '@problems' : (path.includes(' ') || candidate.kind === 'problem' ? '@{' + path + '}' : '@' + path);
       const suffix = elements.prompt.value.slice(mention.cursor);
       const insertion = encoded + (suffix.startsWith(' ') ? '' : ' ');
       elements.prompt.value = elements.prompt.value.slice(0, mention.start) + insertion + suffix;
@@ -948,6 +959,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
         if (mention && mention.query === event.data.query) { mentionCandidates = event.data.candidates || []; mentionIndex = 0; renderMentionMenu(); }
       }
       if (event.data.type === 'focus-prompt') elements.prompt.focus();
+      if (event.data.type === 'set-prompt' && typeof event.data.text === 'string') {
+        elements.prompt.value = event.data.text; resizePrompt(); requestMentions(); renderCommandMenu(); elements.prompt.focus();
+        const cursor = elements.prompt.value.length; elements.prompt.setSelectionRange(cursor, cursor);
+      }
     });
     vscode.postMessage({ type: 'ready' });
   </script>

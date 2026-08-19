@@ -3,10 +3,12 @@ import * as path from 'node:path'
 import * as vscode from 'vscode'
 import {
   mentionedPaths,
+  resolveMentionReferences,
   searchMentionCandidates,
   type IdeContextReference,
   type IdeContextSnapshot,
   type IdeMentionCandidate,
+  type IdeProblemSeverity,
 } from './ide-context.js'
 
 const MAX_SELECTION_CHARACTERS = 100_000
@@ -40,10 +42,27 @@ function withoutText(reference: IdeContextReference, id?: string): IdeContextVie
     path: reference.path,
     ...(reference.languageId === undefined ? {} : { languageId: reference.languageId }),
     ...(reference.startLine === undefined ? {} : { startLine: reference.startLine }),
+    ...(reference.startCharacter === undefined ? {} : { startCharacter: reference.startCharacter }),
     ...(reference.endLine === undefined ? {} : { endLine: reference.endLine }),
+    ...(reference.endCharacter === undefined ? {} : { endCharacter: reference.endCharacter }),
     ...(reference.truncated === undefined ? {} : { truncated: reference.truncated }),
+    ...(reference.severity === undefined ? {} : { severity: reference.severity }),
+    ...(reference.message === undefined ? {} : { message: reference.message }),
+    ...(reference.source === undefined ? {} : { source: reference.source }),
+    ...(reference.code === undefined ? {} : { code: reference.code }),
     ...(id === undefined ? {} : { id }),
   }
+}
+
+function problemSeverity(severity: vscode.DiagnosticSeverity): IdeProblemSeverity | undefined {
+  if (severity === vscode.DiagnosticSeverity.Error) return 'error'
+  if (severity === vscode.DiagnosticSeverity.Warning) return 'warning'
+  return undefined
+}
+
+function diagnosticCode(code: vscode.Diagnostic['code']): string | undefined {
+  if (typeof code === 'string' || typeof code === 'number') return String(code)
+  return code?.value === undefined ? undefined : String(code.value)
 }
 
 export class EditorContextBridge implements vscode.Disposable {
@@ -67,6 +86,7 @@ export class EditorContextBridge implements vscode.Disposable {
       vscode.workspace.onDidCreateFiles(() => { this.invalidateCandidates() }),
       vscode.workspace.onDidDeleteFiles(() => { this.invalidateCandidates() }),
       vscode.workspace.onDidRenameFiles(() => { this.invalidateCandidates() }),
+      vscode.languages.onDidChangeDiagnostics(() => { this.publish() }),
     ]
   }
 
@@ -107,11 +127,8 @@ export class EditorContextBridge implements vscode.Disposable {
   async snapshotForPrompt(text: string): Promise<IdeContextSnapshot> {
     const current = this.currentReferences()
     const candidates = await this.candidates()
-    const byPath = new Map(candidates.map(candidate => [candidate.path, candidate]))
-    const mentions = mentionedPaths(text).flatMap((mentioned): IdeContextReference[] => {
-      const candidate = byPath.get(mentioned)
-      return candidate === undefined ? [] : [{ kind: candidate.kind, path: candidate.path }]
-    })
+    const problems = this.problems()
+    const mentions = resolveMentionReferences(mentionedPaths(text), candidates, problems)
     const pinned = this.pinned
       .map(item => item.reference)
       .filter(reference => current.selection === undefined
@@ -127,7 +144,75 @@ export class EditorContextBridge implements vscode.Disposable {
   }
 
   async search(query: string): Promise<IdeMentionCandidate[]> {
-    return searchMentionCandidates(await this.candidates(), query)
+    const problems: IdeMentionCandidate[] = this.problems().map(problem => ({
+      kind: 'problem',
+      path: problem.path,
+      ...(problem.startLine === undefined ? {} : { startLine: problem.startLine }),
+      ...(problem.startCharacter === undefined ? {} : { startCharacter: problem.startCharacter }),
+      ...(problem.severity === undefined ? {} : { severity: problem.severity }),
+      ...(problem.message === undefined ? {} : { message: problem.message }),
+      ...(problem.source === undefined ? {} : { source: problem.source }),
+    }))
+    return searchMentionCandidates([
+      { kind: 'problems', path: 'problems' },
+      ...problems,
+      ...await this.candidates(),
+    ], query)
+  }
+
+  problems(): IdeContextReference[] {
+    const cwd = this.cwd()
+    if (cwd === '') return []
+    return vscode.languages.getDiagnostics().flatMap(([uri, diagnostics]) => {
+      if (uri.scheme !== 'file') return []
+      const relative = insideWorkspace(cwd, uri.fsPath)
+      if (relative === undefined) return []
+      return diagnostics.flatMap((diagnostic): IdeContextReference[] => {
+        const severity = problemSeverity(diagnostic.severity)
+        if (severity === undefined) return []
+        const code = diagnosticCode(diagnostic.code)
+        return [{
+          kind: 'problem',
+          path: relative,
+          startLine: diagnostic.range.start.line + 1,
+          startCharacter: diagnostic.range.start.character + 1,
+          endLine: diagnostic.range.end.line + 1,
+          endCharacter: diagnostic.range.end.character + 1,
+          severity,
+          message: diagnostic.message,
+          ...(diagnostic.source === undefined ? {} : { source: diagnostic.source }),
+          ...(code === undefined ? {} : { code }),
+        }]
+      })
+    }).sort((left, right) => {
+      if (left.severity !== right.severity) return left.severity === 'error' ? -1 : 1
+      return left.path.localeCompare(right.path)
+        || (left.startLine ?? 0) - (right.startLine ?? 0)
+        || (left.startCharacter ?? 0) - (right.startCharacter ?? 0)
+    })
+  }
+
+  problemAtActiveEditor(): IdeContextReference | undefined {
+    const editor = vscode.window.activeTextEditor
+    if (editor === undefined || editor.document.uri.scheme !== 'file') return undefined
+    const relative = insideWorkspace(this.cwd(), editor.document.uri.fsPath)
+    if (relative === undefined) return undefined
+    const cursor = editor.selection.active
+    const onLine = this.problems().filter(problem => problem.path === relative && problem.startLine === cursor.line + 1)
+    return onLine.find(problem => {
+      const start = (problem.startCharacter ?? 1) - 1
+      const end = (problem.endCharacter ?? start + 1) - 1
+      return cursor.character >= start && cursor.character <= end
+    }) ?? onLine[0]
+  }
+
+  problemForLocation(filePath: string, line?: number, message?: string): IdeContextReference | undefined {
+    const relative = path.isAbsolute(filePath) ? insideWorkspace(this.cwd(), filePath) : filePath.split(path.sep).join('/')
+    if (relative === undefined) return undefined
+    const matching = this.problems().filter(problem => problem.path === relative)
+    return matching.find(problem => line !== undefined && problem.startLine === line && (message === undefined || problem.message === message))
+      ?? matching.find(problem => message !== undefined && problem.message === message)
+      ?? matching[0]
   }
 
   dispose(): void {
