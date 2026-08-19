@@ -164,6 +164,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     .command-option-current { margin-left: auto; padding: 1px 5px; border-radius: 999px; color: var(--vscode-badge-foreground); background: var(--vscode-badge-background); font-family: var(--vscode-font-family); font-size: 10px; font-weight: 500; }
     .command-option-description { margin-top: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--vscode-descriptionForeground); font-size: 11px; }
     .command-option:hover .command-option-description, .command-option.selected .command-option-description { color: inherit; opacity: .82; }
+    .command-section-label { padding: 6px 8px 3px; color: var(--vscode-descriptionForeground); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
     .policy-menu { max-height: 260px; }
     .policy-section-label { padding: 7px 8px 3px; color: var(--vscode-descriptionForeground); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
     .context-chips, .attachments { display: flex; flex-wrap: wrap; gap: 5px; padding: 8px 10px 0; }
@@ -747,9 +748,14 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       const text = raw.trim();
       if (!text.startsWith('/') || text.includes(' ')) return [];
       const query = text.slice(1).toLowerCase();
-      return (state.commands || [])
+      const commands = (state.commands || [])
         .filter(command => command.name.toLowerCase().includes(query))
         .map(command => ({ kind: 'command', command }));
+      const commandNames = new Set((state.commands || []).map(command => command.name));
+      const skills = (state.skills || [])
+        .filter(skill => !commandNames.has(skill.name) && skill.name.toLowerCase().includes(query))
+        .map(skill => ({ kind: 'skill', skill }));
+      return [...commands, ...skills];
     }
     function renderCommandMenu() {
       const candidates = menuCandidates();
@@ -758,7 +764,12 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       elements.mentionMenu.classList.add('hidden');
       commandIndex = Math.min(commandIndex, candidates.length - 1);
       elements.commandMenu.classList.remove('hidden');
+      let section = '';
       candidates.forEach((candidate, index) => {
+        const nextSection = candidate.kind === 'permission' ? '' : (candidate.kind === 'command' ? 'Commands' : 'Skills');
+        if (nextSection && nextSection !== section) {
+          elements.commandMenu.append(node('div', 'command-section-label', nextSection)); section = nextSection;
+        }
         const option = node('button', 'command-option' + (index === commandIndex ? ' selected' : ''));
         option.type = 'button'; option.setAttribute('role', 'option'); option.setAttribute('aria-selected', String(index === commandIndex));
         const line = node('div', 'command-option-line');
@@ -768,11 +779,17 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
           if (permission.label !== permission.value) line.append(node('span', 'command-option-hint', permission.value));
           if (permission.selected) line.append(node('span', 'command-option-current', 'Current'));
           option.append(line, node('div', 'command-option-description', permission.description || 'Use this permission preset'));
-        } else {
+        } else if (candidate.kind === 'command') {
           const command = candidate.command;
           line.append(node('span', 'command-option-name', '/' + command.name));
           if (command.input && command.input.hint) line.append(node('span', 'command-option-hint', command.input.hint));
           option.append(line, node('div', 'command-option-description', command.description));
+        } else {
+          const skill = candidate.skill;
+          line.append(node('span', 'command-option-name', '/' + skill.name));
+          line.append(node('span', 'command-option-hint', skill.modelInvocable ? 'Skill' : 'User only'));
+          const description = skill.whenToUse ? skill.description + ' · ' + skill.whenToUse : skill.description;
+          option.append(line, node('div', 'command-option-description', description)); option.title = description;
         }
         option.addEventListener('mousedown', event => { event.preventDefault(); pickCandidate(candidate); });
         elements.commandMenu.append(option);
@@ -782,6 +799,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       if (candidate.kind === 'permission') {
         vscode.postMessage({ type: 'send', text: '/permission ' + candidate.permission.value });
         elements.prompt.value = ''; commandIndex = 0; resetPrompt(); return;
+      }
+      if (candidate.kind === 'skill') {
+        elements.prompt.value = '/' + candidate.skill.name + ' ';
+        elements.prompt.placeholder = candidate.skill.whenToUse || candidate.skill.description || 'Skill instructions';
+        commandIndex = 0; resizePrompt(); renderCommandMenu(); elements.prompt.focus(); return;
       }
       pickCommand(candidate.command);
     }

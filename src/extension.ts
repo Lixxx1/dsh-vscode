@@ -27,6 +27,7 @@ import {
   type QueueAction,
   type SessionModels,
   type SessionSummary,
+  type SkillDescriptor,
 } from './dsh-client.js'
 import { replaceTextPreservingIdeContext, withIdeContext, type IdeContextReference, type IdeContextSnapshot } from './ide-context.js'
 import { jobsSnapshotOf, type JobItem } from './jobs.js'
@@ -38,6 +39,7 @@ import { DshPluginManager } from './plugin-manager.js'
 import type { PluginInventorySnapshot } from './plugin-profile.js'
 import type { SettingsDescription, SettingsMutation, SettingsNamespace } from './runtime-settings.js'
 import { earliestHistorySequence, mergeHistoryEntries, unseenHistoryEntries } from './history.js'
+import { routeSlashInput, type SlashRoute } from './slash-routing.js'
 
 let activeRuntime: DshRuntime | undefined
 
@@ -112,6 +114,7 @@ interface ChatViewState {
   approval: ApprovalItem | null
   question: QuestionRequest | null
   commands: CommandDescriptor[]
+  skills: SkillDescriptor[]
   permissions: PermissionPresetItem[]
   plan: PlanModeState
   changedFiles: ChangedFileGroup[]
@@ -136,6 +139,7 @@ function initialState(cwd: string): ChatViewState {
     approval: null,
     question: null,
     commands: [],
+    skills: [],
     permissions: [],
     plan: planModeStateOf(undefined),
     changedFiles: [],
@@ -221,6 +225,7 @@ class DshChatController implements vscode.Disposable {
       approval: null,
       question: null,
       commands: [],
+      skills: [],
       permissions: [],
       plan: planModeStateOf(undefined),
       changedFiles: [],
@@ -329,23 +334,24 @@ class DshChatController implements vscode.Disposable {
   ): Promise<void> {
     const normalized = text.trim()
     if ((normalized === '' && images.length === 0) || this._state.sessionId === '') return
-    if (normalized.startsWith('/')) {
-      const token = normalized.split(/\s/, 1)[0] ?? normalized
-      const name = /^\/([a-z0-9-]+)$/.exec(token)?.[1]
-      if (name === undefined || !this._state.commands.some(command => command.name === name)) {
-        throw new Error(`Unknown DeepSeek command: ${token}`)
-      }
+    const slash = this.slashRoute(normalized)
+    if (slash.kind === 'command') {
       if (images.length > 0) throw new Error('DeepSeek commands cannot include image attachments.')
       const execution = await this.requireClient().executeCommand(this._state.sessionId, normalized)
-      if (execution === undefined) throw new Error(`DeepSeek did not recognize ${token}.`)
+      if (execution === undefined) throw new Error(`DeepSeek did not recognize ${slash.token}.`)
       return
     }
+    if (slash.kind === 'unknown') throw new Error(`Unknown DeepSeek command or skill: ${slash.token}`)
     await this.requireClient().prompt(
       this._state.sessionId,
-      ideContext === undefined ? normalized : withIdeContext(normalized, ideContext),
+      slash.kind === 'skill' || ideContext === undefined ? normalized : withIdeContext(normalized, ideContext),
       images,
       mode,
     )
+  }
+
+  slashRoute(text: string): SlashRoute {
+    return routeSlashInput(text, this._state.commands, this._state.skills)
   }
 
   async cancel(): Promise<void> {
@@ -491,6 +497,7 @@ class DshChatController implements vscode.Disposable {
       approval: null,
       question: null,
       commands: [],
+      skills: [],
       permissions: permissionPresetsOf(summary?.projections?.values?.permissions),
       plan: planModeStateOf(summary?.projections?.values?.plan),
       changedFiles: this.diffReviews.rebuild(sessionId, this.cwd, events),
@@ -502,6 +509,7 @@ class DshChatController implements vscode.Disposable {
     })
     this.hydrateImages(client, sessionId)
     void this.loadCommands(client, sessionId)
+    void this.loadSkills(client, sessionId)
   }
 
   private async loadCommands(client: DshClient, sessionId: string): Promise<void> {
@@ -520,6 +528,16 @@ class DshChatController implements vscode.Disposable {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       this.output.appendLine(`[commands] Discovery unavailable: ${message}`)
+    }
+  }
+
+  private async loadSkills(client: DshClient, sessionId: string): Promise<void> {
+    try {
+      const skills = await client.listSkills(sessionId)
+      if (this.client === client && this._state.sessionId === sessionId) this.publish({ skills })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.output.appendLine(`[skills] Discovery unavailable: ${message}`)
     }
   }
 
@@ -665,6 +683,14 @@ class DshChatController implements vscode.Disposable {
 
     if (frame.channel === 'mux' && type === 'question/resolved' && sessionId === this._state.sessionId) {
       if (this._state.question?.rpcId === payload.questionRpcId) this.publish({ question: null })
+      return
+    }
+
+    if (type === 'agent-preset/selected' && sessionId === this._state.sessionId && this.client !== undefined) {
+      const client = this.client
+      this.publish({ commands: [], skills: [] })
+      void this.loadCommands(client, sessionId)
+      void this.loadSkills(client, sessionId)
       return
     }
 
@@ -985,12 +1011,13 @@ class DshSurface implements vscode.Disposable {
               )
               if (confirmed !== 'Enable Full Access') return
             }
-            const isCommand = value.text.trim().startsWith('/')
-            const ideContext = isCommand ? undefined : await this.editorContext.snapshotForPrompt(value.text)
+            const slash = this.controller.slashRoute(value.text)
+            const carriesIdeContext = slash.kind === 'prompt'
+            const ideContext = carriesIdeContext ? await this.editorContext.snapshotForPrompt(value.text) : undefined
             const mode: PromptMode = value.mode === 'steer' ? 'steer' : 'queue'
             await this.controller.send(value.text, this.draftImages, ideContext, mode)
             this.draftImages.length = 0
-            if (!isCommand) this.editorContext.clearPinned()
+            if (carriesIdeContext) this.editorContext.clearPinned()
             await this.publishDraftImages()
           }
           return

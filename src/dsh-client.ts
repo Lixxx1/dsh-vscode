@@ -40,6 +40,13 @@ export interface CommandExecution {
   }
 }
 
+export interface SkillDescriptor {
+  name: string
+  description: string
+  whenToUse?: string
+  modelInvocable: boolean
+}
+
 export type ImageMediaType = 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'
 
 export interface PromptImage {
@@ -220,6 +227,11 @@ export class DshClient {
 
   listCommands(sessionId: string): Promise<CommandDescriptor[]> {
     return this.call('commands/list', { args: { agentId: sessionId } }, 10_000)
+  }
+
+  async listSkills(sessionId: string): Promise<SkillDescriptor[]> {
+    const result = await this.call<{ skills: SkillDescriptor[] }>('skill.list', { sessionId }, 10_000)
+    return result.skills
   }
 
   executeCommand(sessionId: string, line: string): Promise<CommandExecution | undefined> {
