@@ -47,6 +47,7 @@ import type { PluginInventorySnapshot } from './plugin-profile.js'
 import type { SettingsDescription, SettingsMutation, SettingsNamespace } from './runtime-settings.js'
 import { earliestHistorySequence, mergeHistoryEntries, unseenHistoryEntries } from './history.js'
 import { routeSlashInput, type SlashRoute } from './slash-routing.js'
+import { unavailableUsageMeterState, usageMeterStateOf, type UsageMeterState } from './usage-meter.js'
 
 let activeRuntime: DshRuntime | undefined
 
@@ -123,6 +124,7 @@ interface ChatViewState {
   commands: CommandDescriptor[]
   skills: SkillDescriptor[]
   agentPreset: AgentPresetState
+  usage: UsageMeterState
   permissions: PermissionPresetItem[]
   plan: PlanModeState
   changedFiles: ChangedFileGroup[]
@@ -149,6 +151,7 @@ function initialState(cwd: string): ChatViewState {
     commands: [],
     skills: [],
     agentPreset: unavailableAgentPresetState(),
+    usage: unavailableUsageMeterState(),
     permissions: [],
     plan: planModeStateOf(undefined),
     changedFiles: [],
@@ -236,6 +239,7 @@ class DshChatController implements vscode.Disposable {
       commands: [],
       skills: [],
       agentPreset: unavailableAgentPresetState(),
+      usage: unavailableUsageMeterState(),
       permissions: [],
       plan: planModeStateOf(undefined),
       changedFiles: [],
@@ -543,6 +547,7 @@ class DshChatController implements vscode.Disposable {
       commands: [],
       skills: [],
       agentPreset: unavailableAgentPresetState(),
+      usage: usageMeterStateOf(summary?.projections?.values),
       permissions: permissionPresetsOf(summary?.projections?.values?.permissions),
       plan: planModeStateOf(summary?.projections?.values?.plan),
       changedFiles: this.diffReviews.rebuild(sessionId, this.cwd, events),
@@ -784,6 +789,13 @@ class DshChatController implements vscode.Disposable {
       }
       if (payload.key === 'plan' && sessionId === this._state.sessionId) {
         this.publish({ plan: planModeStateOf(payload.value) })
+      }
+      if ((payload.key === 'tokenUsage'
+        || payload.key === 'sessionStats'
+        || payload.key === 'contextPressure'
+        || payload.key === 'contextBreakdown')
+        && sessionId === this._state.sessionId) {
+        this.publish({ usage: usageMeterStateOf(summary?.projections?.values) })
       }
       return
     }
@@ -1057,6 +1069,9 @@ class DshSurface implements vscode.Disposable {
     const value = message as Record<string, unknown>
     const run = async (): Promise<void> => {
       switch (value.type) {
+        case 'webview-error':
+          this.output.appendLine(`[webview] ${typeof value.message === 'string' ? value.message : 'Unknown error'}`)
+          return
         case 'ready':
           this.ready = true
           await this.webview.postMessage({ type: 'state', state: this.controller.state })

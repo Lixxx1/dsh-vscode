@@ -154,7 +154,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     .queue-action { min-height: 23px; padding: 1px 5px; border: 0; border-radius: 4px; color: var(--vscode-descriptionForeground); background: transparent; font-size: 10px; }
     .queue-action:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
     .queue-editor { width: 100%; min-width: 0; min-height: 30px; height: 30px; padding: 4px 6px; resize: none; border: 1px solid var(--vscode-input-border, var(--vscode-widget-border)); border-radius: 4px; background: var(--vscode-input-background); }
-    .composer { width: 100%; min-width: 0; max-width: 760px; margin: 0 auto; overflow: hidden; border: 1px solid var(--vscode-input-border, var(--vscode-widget-border)); border-radius: 14px; background: var(--vscode-input-background); box-shadow: 0 2px 10px color-mix(in srgb, var(--vscode-widget-shadow) 75%, transparent); }
+    .composer { width: 100%; min-width: 0; max-width: 760px; margin: 0 auto; border: 1px solid var(--vscode-input-border, var(--vscode-widget-border)); border-radius: 14px; background: var(--vscode-input-background); box-shadow: 0 2px 10px color-mix(in srgb, var(--vscode-widget-shadow) 75%, transparent); }
     .command-menu { max-height: 210px; padding: 5px; overflow-y: auto; border-bottom: 1px solid var(--vscode-widget-border); }
     .command-option { width: 100%; min-width: 0; padding: 7px 8px; display: block; border: 0; border-radius: 6px; text-align: left; background: transparent; }
     .command-option:hover, .command-option.selected { color: var(--vscode-list-activeSelectionForeground); background: var(--vscode-list-activeSelectionBackground); }
@@ -187,6 +187,29 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
     .composer-row { width: 100%; min-width: 0; min-height: 39px; padding: 4px 6px 6px; display: grid; grid-template-columns: 28px 28px minmax(28px, .5fr) minmax(0, 1.2fr) minmax(46px, .55fr) auto; align-items: center; gap: 5px; }
     .run-actions { display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
+    .usage-control { position: relative; flex: 0 0 auto; }
+    .usage-trigger { color: var(--vscode-descriptionForeground); }
+    .usage-trigger:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
+    .usage-track, .usage-fill { fill: none; stroke-width: 2; }
+    .usage-track { stroke: var(--vscode-widget-border); }
+    .usage-fill { stroke: var(--vscode-descriptionForeground); stroke-linecap: round; }
+    .usage-trigger.warning .usage-fill { stroke: var(--vscode-editorWarning-foreground); }
+    .usage-trigger.danger .usage-fill { stroke: var(--vscode-errorForeground); }
+    .usage-panel { position: absolute; z-index: 30; right: -36px; bottom: calc(100% + 8px); width: min(264px, calc(100vw - 34px)); padding: 12px; border: 1px solid var(--vscode-widget-border); border-radius: 10px; color: var(--vscode-descriptionForeground); background: var(--vscode-menu-background); box-shadow: 0 7px 22px var(--vscode-widget-shadow); font-size: 11px; line-height: 18px; }
+    .usage-header { display: flex; align-items: baseline; gap: 5px; }
+    .usage-percent, .usage-figures { color: var(--vscode-foreground); font-weight: 600; }
+    .usage-figures { margin-left: auto; font-variant-numeric: tabular-nums; }
+    .usage-bar { height: 4px; margin: 10px 0 8px; display: flex; gap: 1px; overflow: hidden; border-radius: 999px; background: var(--vscode-toolbar-hoverBackground); }
+    .usage-segment { min-width: 2px; height: 100%; border-radius: 1px; }
+    .usage-system { background: var(--vscode-descriptionForeground); }
+    .usage-tools { background: #a78bfa; }
+    .usage-messages { background: #4d6bfe; }
+    .usage-rows { margin: 0; }
+    .usage-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 2px 0; }
+    .usage-row dt, .usage-row dd { margin: 0; }
+    .usage-row dd { color: var(--vscode-foreground); font-variant-numeric: tabular-nums; }
+    .usage-swatch { width: 7px; height: 7px; margin-right: 6px; display: inline-block; border-radius: 2px; }
+    .usage-stats { min-width: 0; padding: 0 12px 8px; overflow: hidden; color: var(--vscode-descriptionForeground); font-size: 10px; line-height: 14px; text-overflow: ellipsis; white-space: nowrap; }
     .project { width: 100%; min-width: 0; height: 28px; padding: 0 4px; overflow: hidden; display: flex; align-items: center; gap: 5px; border: 0; border-radius: 6px; color: var(--vscode-descriptionForeground); background: transparent; }
     .project:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
     .project span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -231,15 +254,27 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
           <select id="models" class="model-select" aria-label="Model"></select>
           <select id="efforts" class="effort-select" aria-label="Reasoning effort"></select>
           <div class="run-actions">
+            <div id="usageControl" class="usage-control hidden">
+              <button id="usageTrigger" class="icon-button usage-trigger" title="Context usage" aria-label="Context usage" aria-haspopup="dialog" aria-expanded="false"><svg viewBox="0 0 14 14"><circle class="usage-track" cx="7" cy="7" r="5.5"/><circle id="usageFill" class="usage-fill" cx="7" cy="7" r="5.5" transform="rotate(-90 7 7)"/></svg></button>
+              <div id="usagePanel" class="usage-panel hidden" role="dialog" aria-label="Context usage details"></div>
+            </div>
             <button id="cancel" class="icon-button cancel hidden" title="Stop" aria-label="Stop"><svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1"/></svg></button>
             <button id="send" class="icon-button send" title="Send (Enter)" aria-label="Send"><svg viewBox="0 0 24 24"><path d="M12 19V5M6.5 10.5 12 5l5.5 5.5"/></svg></button>
           </div>
         </div>
+        <div id="usageStats" class="usage-stats hidden"></div>
       </div>
     </footer>
   </div>
   <script nonce="${token}">
     const vscode = acquireVsCodeApi();
+    window.addEventListener('error', event => {
+      vscode.postMessage({ type: 'webview-error', message: event.message || 'Unknown webview error' });
+    });
+    window.addEventListener('unhandledrejection', event => {
+      const reason = event.reason instanceof Error ? event.reason.message : String(event.reason || 'Unknown promise rejection');
+      vscode.postMessage({ type: 'webview-error', message: reason });
+    });
     const elements = {
       conversation: document.getElementById('conversation'), scroll: document.getElementById('scroll'),
       sessions: document.getElementById('sessions'), newSession: document.getElementById('newSession'), jobsControl: document.getElementById('jobsControl'), jobsTrigger: document.getElementById('jobsTrigger'), jobsCount: document.getElementById('jobsCount'), jobsMenu: document.getElementById('jobsMenu'),
@@ -247,6 +282,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       models: document.getElementById('models'), efforts: document.getElementById('efforts'),
       policyTrigger: document.getElementById('policyTrigger'), policyMenu: document.getElementById('policyMenu'),
       send: document.getElementById('send'), cancel: document.getElementById('cancel'),
+      usageControl: document.getElementById('usageControl'), usageTrigger: document.getElementById('usageTrigger'), usageFill: document.getElementById('usageFill'), usagePanel: document.getElementById('usagePanel'), usageStats: document.getElementById('usageStats'),
       attach: document.getElementById('attach'), attachments: document.getElementById('attachments'),
       queueDock: document.getElementById('queueDock'),
       modeChips: document.getElementById('modeChips'), contextChips: document.getElementById('contextChips'), mentionMenu: document.getElementById('mentionMenu'), commandMenu: document.getElementById('commandMenu'),
@@ -261,6 +297,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     let queueEditing = null;
     let queueRenderSignature = '';
     let policyMenuOpen = false;
+    let usageOpen = false;
     let jobsOpen = false;
     let jobsTimer;
     let historyAnchor;
@@ -676,6 +713,111 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       if (!available) policyMenuOpen = false;
       elements.policyMenu.classList.toggle('hidden', !policyMenuOpen || !available);
     }
+    function formatTokens(value) {
+      if (!Number.isFinite(value)) return '0';
+      if (value < 1000) return String(Math.round(value));
+      if (value < 1000000) return (value / 1000).toFixed(value < 10000 ? 1 : 0).replace(/\.0$/, '') + 'K';
+      return (value / 1000000).toFixed(value < 10000000 ? 1 : 0).replace(/\.0$/, '') + 'M';
+    }
+    function formatDuration(value) {
+      if (!Number.isFinite(value) || value <= 0) return '0ms';
+      if (value < 1000) return Math.round(value) + 'ms';
+      if (value < 60000) return (value / 1000).toFixed(value < 10000 ? 1 : 0) + 's';
+      return (value / 60000).toFixed(1) + 'm';
+    }
+    function usageStatsLine(usage) {
+      const groups = [];
+      const stats = usage && usage.sessionStats;
+      if (stats && stats.steps > 0) {
+        groups.push(stats.turns + (stats.turns === 1 ? ' turn' : ' turns') + ' · ' + stats.steps + (stats.steps === 1 ? ' step' : ' steps'));
+        const durations = [];
+        if (stats.llmMs > 0) durations.push('LLM ' + formatDuration(stats.llmMs));
+        if (stats.toolMs > 0) durations.push('tools ' + formatDuration(stats.toolMs));
+        if (durations.length) groups.push(durations.join(' · '));
+        const speeds = [];
+        if (stats.ttftSteps > 0) speeds.push('TTFT avg ' + formatDuration(stats.ttftMs / stats.ttftSteps));
+        if (stats.decodeMs > 0) speeds.push((stats.decodeTokens / (stats.decodeMs / 1000)).toFixed(1) + ' tok/s');
+        if (speeds.length) groups.push(speeds.join(' · '));
+      }
+      const tokens = usage && usage.tokenUsage;
+      if (tokens) {
+        const input = tokens.uncachedInputTokens + tokens.cacheReadTokens + tokens.cacheWriteTokens;
+        if (input > 0 || tokens.outputTokens > 0) {
+          if (input > 0) groups.push('cache ' + Math.round(tokens.cacheReadTokens / input * 100) + '%');
+          groups.push('in ' + formatTokens(input) + ' · out ' + formatTokens(tokens.outputTokens));
+        }
+      }
+      return groups.join('  |  ');
+    }
+    function usageStatsSummary(usage) {
+      const groups = [];
+      const stats = usage && usage.sessionStats;
+      if (stats && stats.steps > 0) {
+        groups.push(stats.turns + (stats.turns === 1 ? ' turn' : ' turns'));
+        groups.push(stats.steps + (stats.steps === 1 ? ' step' : ' steps'));
+      }
+      const tokens = usage && usage.tokenUsage;
+      if (tokens) {
+        const total = tokens.uncachedInputTokens + tokens.cacheReadTokens + tokens.cacheWriteTokens + tokens.outputTokens;
+        if (total > 0) groups.push(formatTokens(total) + ' tokens');
+      }
+      return groups.join(' · ');
+    }
+    function renderUsage(current) {
+      const usage = current.usage || { available: false, percent: 0, usedTokens: 0, contextWindow: 0 };
+      const stats = usageStatsSummary(usage);
+      elements.usageStats.textContent = stats;
+      elements.usageStats.title = usageStatsLine(usage);
+      elements.usageStats.classList.toggle('hidden', stats === '');
+      elements.usageControl.classList.toggle('hidden', usage.available !== true);
+      if (usage.available !== true) {
+        usageOpen = false;
+        elements.usagePanel.classList.add('hidden');
+        elements.usageTrigger.setAttribute('aria-expanded', 'false');
+        return;
+      }
+      const percent = Math.max(0, Math.min(100, Number(usage.percent) || 0));
+      const circumference = 2 * Math.PI * 5.5;
+      elements.usageFill.setAttribute('stroke-dasharray', (circumference * percent / 100) + ' ' + circumference);
+      elements.usageTrigger.classList.toggle('warning', percent >= 75 && percent < 90);
+      elements.usageTrigger.classList.toggle('danger', percent >= 90);
+      elements.usageTrigger.title = 'Context ' + percent + '% used';
+      elements.usageTrigger.setAttribute('aria-label', elements.usageTrigger.title);
+      elements.usageTrigger.setAttribute('aria-expanded', String(usageOpen));
+      elements.usagePanel.replaceChildren();
+      if (usageOpen) {
+        const header = node('div', 'usage-header');
+        header.append(node('span', '', 'Context'), node('span', 'usage-percent', percent + '% used'), node('span', 'usage-figures', '~' + formatTokens(usage.usedTokens) + ' / ' + formatTokens(usage.contextWindow)));
+        const bar = node('div', 'usage-bar');
+        const breakdown = usage.breakdown;
+        const parts = breakdown ? [
+          { key: 'systemTokens', label: 'System prompt', className: 'usage-system' },
+          { key: 'toolsTokens', label: 'Tools', className: 'usage-tools' },
+          { key: 'messageTokens', label: 'Messages', className: 'usage-messages' },
+        ] : [];
+        const total = parts.reduce((sum, part) => sum + Number(breakdown[part.key] || 0), 0);
+        if (total > 0) {
+          for (const part of parts) {
+            const width = percent * Number(breakdown[part.key] || 0) / total;
+            if (width <= 0) continue;
+            const segment = node('span', 'usage-segment ' + part.className); segment.style.width = width + '%'; bar.append(segment);
+          }
+        } else {
+          const segment = node('span', 'usage-segment usage-messages'); segment.style.width = percent + '%'; bar.append(segment);
+        }
+        elements.usagePanel.append(header, bar);
+        if (breakdown) {
+          const rows = node('dl', 'usage-rows');
+          for (const part of parts) {
+            const row = node('div', 'usage-row');
+            const term = node('dt', ''); term.append(node('span', 'usage-swatch ' + part.className), document.createTextNode(part.label));
+            row.append(term, node('dd', '', '~' + formatTokens(breakdown[part.key]))); rows.append(row);
+          }
+          elements.usagePanel.append(rows);
+        }
+      }
+      elements.usagePanel.classList.toggle('hidden', !usageOpen);
+    }
     function sameSelection(left, right) {
       return left && right && left.path === right.path && left.startLine === right.startLine && left.endLine === right.endLine;
     }
@@ -922,6 +1064,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       if (!elements.models.childElementCount) elements.models.append(new Option('Default model', ''));
       renderEfforts((current.models || []).find(model => model.selected) || (current.models || [])[0]);
       renderPolicyState(current);
+      renderUsage(current);
       renderJobs();
       elements.conversation.replaceChildren();
       if (current.phase !== 'ready') elements.conversation.append(renderStatus(current));
@@ -973,8 +1116,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); send(state && state.running && (event.metaKey || event.ctrlKey) ? 'steer' : 'queue'); }
     });
     elements.send.addEventListener('click', () => send('queue')); elements.cancel.addEventListener('click', () => vscode.postMessage({ type: 'cancel' })); elements.attach.addEventListener('click', () => vscode.postMessage({ type: 'attach' }));
+    elements.usageTrigger.addEventListener('click', event => {
+      event.stopPropagation(); usageOpen = !usageOpen; policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false'); if (state) renderUsage(state);
+    });
     elements.policyTrigger.addEventListener('click', event => {
-      event.stopPropagation(); policyMenuOpen = !policyMenuOpen; elements.commandMenu.classList.add('hidden'); elements.mentionMenu.classList.add('hidden'); if (state) renderPolicyState(state);
+      event.stopPropagation(); policyMenuOpen = !policyMenuOpen; usageOpen = false; elements.usagePanel.classList.add('hidden'); elements.usageTrigger.setAttribute('aria-expanded', 'false'); elements.commandMenu.classList.add('hidden'); elements.mentionMenu.classList.add('hidden'); if (state) renderPolicyState(state);
     });
     elements.jobsTrigger.addEventListener('click', event => {
       event.stopPropagation(); jobsOpen = !jobsOpen; elements.jobsMenu.classList.toggle('hidden', !jobsOpen); elements.jobsTrigger.setAttribute('aria-expanded', String(jobsOpen)); renderJobs();
@@ -991,8 +1137,16 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       if (policyMenuOpen && !elements.policyMenu.contains(event.target) && !elements.policyTrigger.contains(event.target)) {
         policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false');
       }
+      if (usageOpen && !elements.usagePanel.contains(event.target) && !elements.usageTrigger.contains(event.target)) {
+        usageOpen = false; elements.usagePanel.classList.add('hidden'); elements.usageTrigger.setAttribute('aria-expanded', 'false');
+      }
       if (jobsOpen && !elements.jobsMenu.contains(event.target) && !elements.jobsTrigger.contains(event.target)) {
         jobsOpen = false; elements.jobsMenu.classList.add('hidden'); elements.jobsTrigger.setAttribute('aria-expanded', 'false'); renderJobs();
+      }
+    });
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && usageOpen) {
+        usageOpen = false; elements.usagePanel.classList.add('hidden'); elements.usageTrigger.setAttribute('aria-expanded', 'false'); elements.usageTrigger.focus();
       }
     });
     window.addEventListener('message', event => {
