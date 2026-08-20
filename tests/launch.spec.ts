@@ -53,4 +53,65 @@ describe('DSH launch resolution', () => {
       sourceCheckout: false,
     })
   })
+
+  it('launches an npm-installed DSH entry directly on Windows', () => {
+    const prefix = mkdtempSync(join(tmpdir(), 'dsh-vscode-windows-prefix-'))
+    const packageRoot = join(prefix, 'node_modules', '@deepseek-ai', 'dsh')
+    const entry = join(packageRoot, 'lib', 'bin.js')
+    mkdirSync(join(packageRoot, 'lib'), { recursive: true })
+    writeFileSync(join(prefix, 'dsh.cmd'), '@echo off\r\n')
+    writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({
+      name: '@deepseek-ai/dsh',
+      bin: { dsh: 'lib/bin.js' },
+    }))
+    writeFileSync(entry, '')
+
+    expect(resolveLaunch('/not/a/source/tree', '', ['web', '--port', '0'], {
+      platform: 'win32',
+      execPath: 'C:\\Program Files\\Microsoft VS Code\\Code.exe',
+      env: { Path: prefix },
+    })).toEqual({
+      command: 'C:\\Program Files\\Microsoft VS Code\\Code.exe',
+      args: [entry, 'web', '--port', '0'],
+      sourceCheckout: false,
+      env: { ELECTRON_RUN_AS_NODE: '1' },
+    })
+  })
+
+  it('keeps the dsh.cmd fallback when a Windows install cannot be resolved safely', () => {
+    const prefix = mkdtempSync(join(tmpdir(), 'dsh-vscode-windows-missing-'))
+    expect(resolveLaunch('/not/a/source/tree', '', ['web'], {
+      platform: 'win32',
+      execPath: 'C:\\Program Files\\Microsoft VS Code\\Code.exe',
+      env: { Path: prefix },
+    })).toEqual({
+      command: 'dsh.cmd',
+      args: ['web'],
+      sourceCheckout: false,
+    })
+  })
+
+  it('resolves an explicitly configured npm dsh.cmd on Windows', () => {
+    const prefix = mkdtempSync(join(tmpdir(), 'dsh-vscode-windows-explicit-'))
+    const packageRoot = join(prefix, 'node_modules', '@deepseek-ai', 'dsh')
+    const entry = join(packageRoot, 'lib', 'bin.js')
+    mkdirSync(join(packageRoot, 'lib'), { recursive: true })
+    writeFileSync(join(prefix, 'dsh.cmd'), '@echo off\r\n')
+    writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({
+      name: '@deepseek-ai/dsh',
+      bin: 'lib/bin.js',
+    }))
+    writeFileSync(entry, '')
+
+    expect(resolveLaunch('/not/a/source/tree', join(prefix, 'dsh.cmd'), ['web'], {
+      platform: 'win32',
+      execPath: 'C:\\Program Files\\Microsoft VS Code\\Code.exe',
+      env: {},
+    })).toEqual({
+      command: 'C:\\Program Files\\Microsoft VS Code\\Code.exe',
+      args: [entry, 'web'],
+      sourceCheckout: false,
+      env: { ELECTRON_RUN_AS_NODE: '1' },
+    })
+  })
 })

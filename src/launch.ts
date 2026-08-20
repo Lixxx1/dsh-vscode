@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 export interface LaunchCommand {
@@ -10,7 +10,84 @@ export interface LaunchCommand {
   env?: Readonly<Record<string, string>>
 }
 
+interface LaunchHost {
+  platform: NodeJS.Platform
+  execPath: string
+  env: Readonly<Record<string, string | undefined>>
+}
+
 const SOURCE_ROOT_PACKAGE = '@deepseek-ai/dsh-root'
+const INSTALLED_PACKAGE = '@deepseek-ai/dsh'
+
+function hostPath(env: Readonly<Record<string, string | undefined>>): string {
+  for (const [key, value] of Object.entries(env)) {
+    if (key.toLowerCase() === 'path') return value ?? ''
+  }
+  return ''
+}
+
+function windowsPathDirectories(env: Readonly<Record<string, string | undefined>>): string[] {
+  return hostPath(env)
+    .split(';')
+    .map(value => value.trim().replace(/^"|"$/g, ''))
+    .filter(value => value !== '')
+}
+
+function installedDshEntry(binDirectory: string): string | undefined {
+  const packageRoot = join(binDirectory, 'node_modules', '@deepseek-ai', 'dsh')
+  const manifestPath = join(packageRoot, 'package.json')
+  if (!existsSync(manifestPath)) return undefined
+
+  try {
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+      name?: unknown
+      bin?: unknown
+    }
+    if (manifest.name !== INSTALLED_PACKAGE) return undefined
+    const bin = typeof manifest.bin === 'string'
+      ? manifest.bin
+      : typeof manifest.bin === 'object' && manifest.bin !== null
+        ? (manifest.bin as Record<string, unknown>).dsh
+        : undefined
+    if (typeof bin !== 'string') return undefined
+    const entry = resolve(packageRoot, bin)
+    const packageRelative = relative(packageRoot, entry)
+    if (packageRelative.startsWith('..') || isAbsolute(packageRelative) || !existsSync(entry)) return undefined
+    return entry
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * npm exposes global binaries as .cmd shims on Windows. Node cannot execute
+ * those shims without a shell, while spawn(..., { shell: true }) leaves args
+ * unescaped (DEP0190). Resolve npm's real JS entry and run it in Electron's
+ * Node mode instead.
+ */
+function resolveWindowsDsh(
+  executable: string,
+  configuredArgs: readonly string[],
+  host: LaunchHost,
+): LaunchCommand | undefined {
+  if (executable !== '' && basename(executable).toLowerCase() !== 'dsh.cmd') return undefined
+
+  const directories = isAbsolute(executable)
+    ? [dirname(executable)]
+    : windowsPathDirectories(host.env)
+  for (const directory of directories) {
+    if (!existsSync(join(directory, 'dsh.cmd'))) continue
+    const entry = installedDshEntry(directory)
+    if (entry === undefined) continue
+    return {
+      command: host.execPath,
+      args: [entry, ...configuredArgs],
+      sourceCheckout: false,
+      env: { ELECTRON_RUN_AS_NODE: '1' },
+    }
+  }
+  return undefined
+}
 
 function resolveTsxImport(sourceRoot: string): string {
   try {
@@ -58,9 +135,24 @@ export function resolveLaunch(
   extensionPath: string,
   executable: string,
   configuredArgs: readonly string[],
+  overrides: Partial<LaunchHost> = {},
 ): LaunchCommand {
-  if (executable.trim() !== '') {
-    return { command: executable, args: [...configuredArgs], sourceCheckout: false }
+  const configuredExecutable = executable.trim()
+  const host: LaunchHost = {
+    platform: overrides.platform ?? process.platform,
+    execPath: overrides.execPath ?? process.execPath,
+    env: overrides.env ?? process.env,
+  }
+
+  if (configuredExecutable !== '') {
+    const windowsLaunch = host.platform === 'win32'
+      ? resolveWindowsDsh(configuredExecutable, configuredArgs, host)
+      : undefined
+    return windowsLaunch ?? {
+      command: configuredExecutable,
+      args: [...configuredArgs],
+      sourceCheckout: false,
+    }
   }
 
   const sourceRoot = findSourceRoot(extensionPath)
@@ -84,8 +176,13 @@ export function resolveLaunch(
     }
   }
 
+  if (host.platform === 'win32') {
+    const windowsLaunch = resolveWindowsDsh('', configuredArgs, host)
+    if (windowsLaunch !== undefined) return windowsLaunch
+  }
+
   return {
-    command: process.platform === 'win32' ? 'dsh.cmd' : 'dsh',
+    command: host.platform === 'win32' ? 'dsh.cmd' : 'dsh',
     args: [...configuredArgs],
     sourceCheckout: false,
   }
