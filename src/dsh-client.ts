@@ -47,6 +47,21 @@ export interface SkillDescriptor {
   modelInvocable: boolean
 }
 
+export interface AgentPresetDescriptor {
+  id: string
+  trust: 'system' | 'user'
+  isDefault: boolean
+  name?: string
+  description?: string
+  broken?: string
+}
+
+export interface AgentPresetRoster {
+  presets: AgentPresetDescriptor[]
+  authorable: boolean
+  hasDocument: boolean
+}
+
 export type ImageMediaType = 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'
 
 export interface PromptImage {
@@ -232,6 +247,14 @@ export class DshClient {
   async listSkills(sessionId: string): Promise<SkillDescriptor[]> {
     const result = await this.call<{ skills: SkillDescriptor[] }>('skill.list', { sessionId }, 10_000)
     return result.skills
+  }
+
+  listAgentPresets(): Promise<AgentPresetRoster> {
+    return this.call('agentPreset.list', {}, 10_000)
+  }
+
+  selectAgentPreset(sessionId: string, agentPreset: string): Promise<{ agentPreset: string }> {
+    return this.call('agentPreset.select', { sessionId, agentPreset }, 30_000)
   }
 
   executeCommand(sessionId: string, line: string): Promise<CommandExecution | undefined> {

@@ -175,6 +175,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     .context-remove, .attachment-remove { width: 18px; height: 18px; padding: 0; border: 0; border-radius: 4px; background: transparent; }
     .context-remove:hover, .attachment-remove:hover { background: var(--vscode-toolbar-hoverBackground); }
     .mode-chips { display: flex; flex-wrap: wrap; gap: 5px; padding: 8px 10px 0; }
+    .preset-chip { min-width: 0; max-width: 100%; min-height: 25px; padding: 2px 6px; display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--vscode-widget-border); border-radius: 6px; color: var(--vscode-descriptionForeground); background: var(--vscode-editor-background); }
+    .preset-chip.locked { opacity: .72; }
+    .preset-icon, .preset-lock { flex: 0 0 auto; font-size: 10px; }
+    .preset-select { min-width: 0; max-width: 210px; border: 0; outline: 0; color: var(--vscode-foreground); background: transparent; font-weight: 600; text-overflow: ellipsis; }
+    .preset-select:disabled { color: var(--vscode-descriptionForeground); opacity: 1; }
     .plan-chip { min-height: 25px; padding: 2px 5px 2px 8px; display: inline-flex; align-items: center; gap: 5px; border: 1px solid color-mix(in srgb, #4d6bfe 58%, var(--vscode-widget-border)); border-radius: 6px; color: var(--vscode-foreground); background: color-mix(in srgb, #4d6bfe 12%, var(--vscode-editor-background)); font-weight: 600; }
     .plan-chip-close { width: 18px; height: 18px; padding: 0; border: 0; border-radius: 4px; background: transparent; line-height: 1; }
     .plan-chip-close:hover { background: var(--vscode-toolbar-hoverBackground); }
@@ -613,6 +618,25 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       const selectedPermission = permissions.find(permission => permission.selected) || permissions[0];
       const available = plan.available === true || permissions.length > 0;
       elements.modeChips.replaceChildren();
+      const preset = current.agentPreset || { available: false, current: '', locked: true, busy: false, options: [] };
+      if (preset.available && preset.options.length) {
+        const selectedPreset = preset.options.find(option => option.selected) || preset.options[0];
+        const chip = node('div', 'preset-chip' + (preset.locked ? ' locked' : ''));
+        chip.append(node('span', 'preset-icon', '◇'));
+        const select = node('select', 'preset-select'); select.setAttribute('aria-label', 'Agent preset');
+        for (const option of preset.options) {
+          const label = option.label + (option.trust === 'user' ? ' · User' : '');
+          select.append(new Option(label, option.id, false, option.selected === true));
+        }
+        select.disabled = preset.locked || preset.busy || current.running === true || current.phase !== 'ready';
+        select.title = preset.locked
+          ? 'Agent preset is fixed after the first turn'
+          : ((selectedPreset && selectedPreset.description) || 'Choose the agent composition for this new conversation');
+        select.addEventListener('change', () => vscode.postMessage({ type: 'select-agent-preset', agentPreset: select.value }));
+        chip.append(select);
+        if (preset.locked) chip.append(node('span', 'preset-lock', 'Locked'));
+        elements.modeChips.append(chip);
+      }
       if (planActive) {
         const chip = node('span', 'plan-chip');
         chip.append(node('span', '', plan.pending ? 'Plan…' : 'Plan'));
