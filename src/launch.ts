@@ -12,6 +12,26 @@ export interface LaunchCommand {
 
 const SOURCE_ROOT_PACKAGE = '@deepseek-ai/dsh-root'
 
+function supportsNoOpen(version: string): boolean {
+  const match = /(?:^|\s)(\d+)\.(\d+)\.(\d+)(?:-rc\.(\d+))?(?:\s|$)/.exec(version)
+  if (match === null) return false
+  const major = Number(match[1])
+  const minor = Number(match[2])
+  const patch = Number(match[3])
+  const rc = match[4] === undefined ? undefined : Number(match[4])
+  if (major !== 0) return major > 0
+  if (minor !== 1) return minor > 1
+  if (patch !== 0) return patch > 0
+  return rc === undefined || rc >= 8
+}
+
+/** Keep the extension-owned Web Host from opening a second, unused UI on rc.8+. */
+export function webArgsForDshVersion(args: readonly string[], version: string | undefined): string[] {
+  const webProfile = args[0] === 'web' || (args[0] === '--profile' && args[1] === 'web')
+  if (!webProfile || args.includes('--no-open') || version === undefined || !supportsNoOpen(version)) return [...args]
+  return [...args, '--no-open']
+}
+
 function resolveTsxImport(sourceRoot: string): string {
   try {
     const require = createRequire(join(sourceRoot, 'package.json'))
