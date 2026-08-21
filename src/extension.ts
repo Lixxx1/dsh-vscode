@@ -48,6 +48,7 @@ import type { SettingsDescription, SettingsMutation, SettingsNamespace } from '.
 import { earliestHistorySequence, mergeHistoryEntries, unseenHistoryEntries } from './history.js'
 import { routeSlashInput, type SlashRoute } from './slash-routing.js'
 import { unavailableUsageMeterState, usageMeterStateOf, type UsageMeterState } from './usage-meter.js'
+import { diffConversationMessages, type ConversationMessagesPatch } from './chat-state-patch.js'
 
 let activeRuntime: DshRuntime | undefined
 
@@ -132,6 +133,25 @@ interface ChatViewState {
   jobs: JobItem[]
   hasMoreHistory: boolean
   loadingHistory: boolean
+}
+
+interface ChatViewStateUpdate {
+  patch: Partial<Omit<ChatViewState, 'messages'>>
+  messages?: ConversationMessagesPatch
+}
+
+function stateUpdate(previous: ChatViewState, next: ChatViewState): ChatViewStateUpdate | undefined {
+  const patch: Partial<Omit<ChatViewState, 'messages'>> = {}
+  const previousRecord = previous as unknown as Record<string, unknown>
+  const nextRecord = next as unknown as Record<string, unknown>
+  const patchRecord = patch as Record<string, unknown>
+  for (const key of Object.keys(nextRecord)) {
+    if (key !== 'messages' && previousRecord[key] !== nextRecord[key]) patchRecord[key] = nextRecord[key]
+  }
+  const messages = diffConversationMessages(previous.messages, next.messages)
+  return Object.keys(patchRecord).length === 0 && messages === undefined
+    ? undefined
+    : { patch, ...(messages === undefined ? {} : { messages }) }
 }
 
 function initialState(cwd: string): ChatViewState {
@@ -977,6 +997,10 @@ class DshSurface implements vscode.Disposable {
   private readonly draftImages: Array<PromptImage & { id: string }> = []
   private ready = false
   private pendingPrompt: string | undefined
+  private pendingState: ChatViewState | undefined
+  private postedState: ChatViewState | undefined
+  private stateTimer: NodeJS.Timeout | undefined
+  private statePosts: Promise<void> = Promise.resolve()
 
   constructor(
     private readonly webview: vscode.Webview,
@@ -989,7 +1013,7 @@ class DshSurface implements vscode.Disposable {
     webview.options = { enableScripts: true, localResourceRoots: [mediaRoot] }
     webview.html = chatHtml(webview, webview.asWebviewUri(vscode.Uri.joinPath(mediaRoot, 'deepseek.svg')))
     this.disposables = [
-      controller.onDidChangeState(state => { void webview.postMessage({ type: 'state', state }) }),
+      controller.onDidChangeState(state => { this.queueState(state) }),
       editorContext.onDidChange(state => { void webview.postMessage({ type: 'ide-context', state }) }),
       webview.onDidReceiveMessage(message => { this.acceptMessage(message) }),
     ]
@@ -1008,7 +1032,51 @@ class DshSurface implements vscode.Disposable {
   }
 
   dispose(): void {
+    if (this.stateTimer !== undefined) clearTimeout(this.stateTimer)
     for (const disposable of this.disposables) disposable.dispose()
+  }
+
+  private queueState(state: ChatViewState): void {
+    this.pendingState = state
+    if (!this.ready || this.stateTimer !== undefined) return
+    this.stateTimer = setTimeout(() => {
+      this.stateTimer = undefined
+      const pending = this.pendingState
+      this.pendingState = undefined
+      if (pending === undefined) return
+      this.statePosts = this.statePosts
+        .then(() => this.postStateUpdate(pending))
+        .catch(error => {
+          this.output.appendLine(`[webview] Could not publish state: ${error instanceof Error ? error.message : String(error)}`)
+        })
+    }, 16)
+  }
+
+  private async postFullState(state: ChatViewState): Promise<void> {
+    await this.webview.postMessage({ type: 'state', state })
+    this.postedState = state
+  }
+
+  private async postStateUpdate(state: ChatViewState): Promise<void> {
+    const previous = this.postedState
+    if (previous === undefined || previous.sessionId !== state.sessionId) {
+      await this.postFullState(state)
+      return
+    }
+    const update = stateUpdate(previous, state)
+    if (update !== undefined) await this.webview.postMessage({ type: 'state-update', update })
+    this.postedState = state
+  }
+
+  private async resyncState(): Promise<void> {
+    const snapshot = this.controller.state
+    this.pendingState = undefined
+    if (this.stateTimer !== undefined) {
+      clearTimeout(this.stateTimer)
+      this.stateTimer = undefined
+    }
+    this.statePosts = this.statePosts.then(() => this.postFullState(snapshot))
+    await this.statePosts
   }
 
   private async chooseImages(): Promise<void> {
@@ -1090,7 +1158,7 @@ class DshSurface implements vscode.Disposable {
           return
         case 'ready':
           this.ready = true
-          await this.webview.postMessage({ type: 'state', state: this.controller.state })
+          await this.resyncState()
           await this.webview.postMessage({ type: 'ide-context', state: this.editorContext.viewState() })
           if (this.pendingPrompt !== undefined) {
             await this.webview.postMessage({ type: 'set-prompt', text: this.pendingPrompt })
@@ -1140,7 +1208,7 @@ class DshSurface implements vscode.Disposable {
                 'Enable Full Access',
               )
               if (confirmed !== 'Enable Full Access') {
-                await this.webview.postMessage({ type: 'state', state: this.controller.state })
+                await this.resyncState()
                 return
               }
             }

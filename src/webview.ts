@@ -1090,6 +1090,25 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
         requestAnimationFrame(() => { elements.scroll.scrollTop = anchor.top + elements.scroll.scrollHeight - anchor.height; });
       } else if (!preservingHistory && (nearBottom || current.approval || current.question)) requestAnimationFrame(() => { elements.scroll.scrollTop = elements.scroll.scrollHeight; });
     }
+    function applyMessagesPatch(current, patch) {
+      if (Array.isArray(patch && patch.reset)) return patch.reset;
+      const messages = Array.isArray(current) ? [...current] : [];
+      const indexes = new Map(messages.map((message, index) => [message.id, index]));
+      for (const message of array(patch && patch.upserts)) {
+        const index = indexes.get(message.id);
+        if (index === undefined) { indexes.set(message.id, messages.length); messages.push(message); }
+        else messages[index] = message;
+      }
+      return messages;
+    }
+    function applyStateUpdate(update) {
+      if (!state) return;
+      const patch = record(update && update.patch) || {};
+      const messages = update && update.messages
+        ? applyMessagesPatch(state.messages, update.messages)
+        : state.messages;
+      render({ ...state, ...patch, messages });
+    }
     function updateSend() { elements.send.disabled = !state || state.phase !== 'ready' || (elements.prompt.value.trim() === '' && draftImages.length === 0); }
     function resizePrompt() { elements.prompt.style.height = 'auto'; elements.prompt.style.height = Math.min(elements.prompt.scrollHeight, 220) + 'px'; updateSend(); }
     function selectionFor(model, reasoningEffort) { return { provider: model.provider, model: model.model, ...(reasoningEffort ? { reasoningEffort } : {}) }; }
@@ -1152,6 +1171,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     window.addEventListener('message', event => {
       if (!event.data) return;
       if (event.data.type === 'state') render(event.data.state);
+      if (event.data.type === 'state-update') applyStateUpdate(event.data.update);
       if (event.data.type === 'draft-images') { draftImages = event.data.images || []; renderAttachments(); }
       if (event.data.type === 'ide-context') { ideContext = event.data.state || { pinned: [] }; renderIdeContext(); }
       if (event.data.type === 'mention-suggestions' && event.data.requestId === mentionRequestId) {
