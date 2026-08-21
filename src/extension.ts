@@ -1189,15 +1189,21 @@ class DshSurface implements vscode.Disposable {
           return
         case 'load-history': await this.controller.loadOlderHistory(); return
         case 'load-tool-output':
-          if (typeof value.messageId === 'string') {
-            const message = this.controller.state.messages.find(candidate => candidate.id === value.messageId && candidate.role === 'tool')
-            if (message !== undefined) {
-              await this.webview.postMessage({
-                type: 'tool-output',
-                sessionId: this.controller.state.sessionId,
-                message,
-              })
-            }
+          if (typeof value.messageId === 'string' && typeof value.requestId === 'number') {
+            const sessionId = this.controller.state.sessionId
+            const requestedSessionId = typeof value.sessionId === 'string' ? value.sessionId : ''
+            const message = requestedSessionId === sessionId
+              ? this.controller.state.messages.find(candidate => candidate.id === value.messageId && candidate.role === 'tool')
+              : undefined
+            await this.webview.postMessage({
+              type: 'tool-output',
+              sessionId,
+              messageId: value.messageId,
+              requestId: value.requestId,
+              ...(message === undefined
+                ? { error: requestedSessionId === sessionId ? 'Tool output is no longer available.' : 'The conversation changed before this output loaded.' }
+                : { message }),
+            })
           }
           return
         case 'send':

@@ -315,7 +315,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     let renderedChrome = {};
     const renderedMessages = new Map();
     const expandedToolIds = new Set();
-    const loadingToolIds = new Set();
+    const loadingToolRequests = new Map();
+    const toolOutputErrors = new Map();
+    let toolOutputRequestId = 0;
     const toolOutputChunkSize = 20000;
 
     function node(tag, className, text) {
@@ -656,10 +658,19 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
         if (contentInitialized) return;
         contentInitialized = true;
         if (message.deferredBody === true) {
-          item.append(node('div', 'tool-body', 'Loading tool output…'));
-          if (!loadingToolIds.has(message.id)) {
-            loadingToolIds.add(message.id); vscode.postMessage({ type: 'load-tool-output', messageId: message.id });
-          }
+          const body = node('div', 'tool-body'); item.append(body);
+          const load = () => {
+            const requestId = ++toolOutputRequestId;
+            loadingToolRequests.set(message.id, requestId); toolOutputErrors.delete(message.id);
+            body.replaceChildren(node('div', '', 'Loading tool output…'));
+            vscode.postMessage({ type: 'load-tool-output', messageId: message.id, sessionId: state && state.sessionId, requestId });
+          };
+          const error = toolOutputErrors.get(message.id);
+          if (error) {
+            body.append(node('div', 'status error', error));
+            const retry = node('button', 'tool-output-more', 'Retry'); retry.type = 'button'; retry.addEventListener('click', load); body.append(retry);
+          } else if (!loadingToolRequests.has(message.id)) load();
+          else body.append(node('div', '', 'Loading tool output…'));
         } else item.append(renderToolBody(message, callView, resultView));
       };
       if (item.open) initializeContent();
@@ -1237,7 +1248,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     function renderConversation(current) {
       if (renderedSessionId !== current.sessionId) {
         renderedSessionId = current.sessionId; renderedMessages.clear(); elements.messages.replaceChildren();
-        renderedHistoryKey = ''; renderedTail = {}; expandedToolIds.clear(); loadingToolIds.clear();
+        renderedHistoryKey = ''; renderedTail = {}; expandedToolIds.clear(); loadingToolRequests.clear(); toolOutputErrors.clear();
       }
       const statusKey = current.phase + '::' + current.statusText;
       if (statusKey !== renderedStatusKey) {
@@ -1404,9 +1415,15 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       if (!event.data) return;
       if (event.data.type === 'state') scheduleRender(event.data.state);
       if (event.data.type === 'state-update') applyStateUpdate(event.data.update);
-      if (event.data.type === 'tool-output' && state && event.data.sessionId === state.sessionId && event.data.message) {
-        loadingToolIds.delete(event.data.message.id);
-        scheduleRender({ ...state, messages: applyMessagesPatch(state.messages, { upserts: [event.data.message] }) });
+      if (event.data.type === 'tool-output' && state && event.data.sessionId === state.sessionId && typeof event.data.messageId === 'string') {
+        if (loadingToolRequests.get(event.data.messageId) !== event.data.requestId) return;
+        loadingToolRequests.delete(event.data.messageId);
+        if (typeof event.data.error === 'string') {
+          toolOutputErrors.set(event.data.messageId, event.data.error); renderedMessages.delete(event.data.messageId);
+          scheduleRender({ ...state, messages: [...state.messages] }); return;
+        }
+        toolOutputErrors.delete(event.data.messageId);
+        if (event.data.message) scheduleRender({ ...state, messages: applyMessagesPatch(state.messages, { upserts: [event.data.message] }) });
       }
       if (event.data.type === 'draft-images') { draftImages = event.data.images || []; renderAttachments(); }
       if (event.data.type === 'ide-context') { ideContext = event.data.state || { pinned: [] }; renderIdeContext(); }
