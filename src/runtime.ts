@@ -105,10 +105,14 @@ export class DshRuntime implements vscode.Disposable {
     const configuredExecutable = config.get<string>('executable', '')
     const configuredArgs = config.get<string[]>('arguments', ['web', '--host', '127.0.0.1', '--port', '0'])
     const timeoutMs = config.get<number>('startupTimeout', 60_000)
-    const versionLaunch = resolveLaunch(this.context.extensionUri.fsPath, configuredExecutable, ['--version'])
+    const versionLaunch = resolveLaunch(this.context.extensionUri.fsPath, configuredExecutable, ['--version'], {
+      cwd: workspace.fsPath,
+    })
     const version = await readDshVersion(versionLaunch, workspace.fsPath)
     const args = webArgsForDshVersion(configuredArgs, version)
-    const launch = resolveLaunch(this.context.extensionUri.fsPath, configuredExecutable, args)
+    const launch = resolveLaunch(this.context.extensionUri.fsPath, configuredExecutable, args, {
+      cwd: workspace.fsPath,
+    })
     const storedApiKey = await this.context.secrets.get(DEEPSEEK_API_KEY_SECRET)
 
     const pending = deferredStart()
