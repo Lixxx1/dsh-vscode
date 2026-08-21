@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
 export const DEFAULT_DSH_SERVER_URL = 'http://127.0.0.1:3080'
+export const DEFAULT_DSH_WEB_ARGS = ['web', '--host', '127.0.0.1', '--port', '0'] as const
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
@@ -25,4 +26,15 @@ export async function probeDshServer(baseUrl: URL, timeoutMs = 750): Promise<boo
   } catch {
     return false
   }
+}
+
+/** Explicit launch settings take precedence over automatic endpoint reuse. */
+export function shouldProbeExistingDsh(
+  enabled: boolean,
+  executable: string,
+  hasCustomArguments: boolean,
+): boolean {
+  return enabled
+    && executable.trim() === ''
+    && !hasCustomArguments
 }

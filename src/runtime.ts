@@ -2,12 +2,19 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import * as vscode from 'vscode'
 import { DEEPSEEK_API_KEY_SECRET } from './credentials.js'
 import { parseDshWebUrl, resolveLaunch, type LaunchCommand, webArgsForDshVersion } from './launch.js'
-import { DEFAULT_DSH_SERVER_URL, probeDshServer } from './runtime-endpoint.js'
+import {
+  DEFAULT_DSH_SERVER_URL,
+  DEFAULT_DSH_WEB_ARGS,
+  probeDshServer,
+  shouldProbeExistingDsh,
+} from './runtime-endpoint.js'
+
+export type RuntimeOwnership = 'external' | 'managed'
 
 export type RuntimeState =
   | { kind: 'stopped' }
   | { kind: 'starting'; detail: string }
-  | { kind: 'ready'; localUri: vscode.Uri }
+  | { kind: 'ready'; localUri: vscode.Uri; ownership: RuntimeOwnership }
   | { kind: 'failed'; message: string }
 
 interface PendingStart {
@@ -104,7 +111,11 @@ export class DshRuntime implements vscode.Disposable {
 
     const config = vscode.workspace.getConfiguration('deepseekHarness', workspace)
     const configuredExecutable = config.get<string>('executable', '')
-    const configuredArgs = config.get<string[]>('arguments', ['web', '--host', '127.0.0.1', '--port', '0'])
+    const configuredArgs = config.get<string[]>('arguments', [...DEFAULT_DSH_WEB_ARGS])
+    const inspectedArgs = config.inspect<string[]>('arguments')
+    const hasCustomArguments = inspectedArgs?.globalValue !== undefined
+      || inspectedArgs?.workspaceValue !== undefined
+      || inspectedArgs?.workspaceFolderValue !== undefined
     const reuseExistingRuntime = config.get<boolean>('reuseExistingRuntime', true)
     const timeoutMs = config.get<number>('startupTimeout', 60_000)
     const pending = deferredStart()
@@ -116,7 +127,7 @@ export class DshRuntime implements vscode.Disposable {
     let version: string | undefined
     let storedApiKey: string | undefined
     try {
-      if (reuseExistingRuntime) {
+      if (shouldProbeExistingDsh(reuseExistingRuntime, configuredExecutable, hasCustomArguments)) {
         const existingUrl = new URL(DEFAULT_DSH_SERVER_URL)
         this.publish({ kind: 'starting', detail: 'Looking for an existing DeepSeek Harness runtime…' })
         if (await probeDshServer(existingUrl)) {
@@ -124,7 +135,7 @@ export class DshRuntime implements vscode.Disposable {
           const localUri = vscode.Uri.parse(existingUrl.href)
           this.output.appendLine(`[runtime] reusing existing DSH: ${existingUrl.href}`)
           this.pending = undefined
-          this.publish({ kind: 'ready', localUri })
+          this.publish({ kind: 'ready', localUri, ownership: 'external' })
           pending.resolve(localUri)
           return pending.promise
         }
@@ -227,7 +238,7 @@ export class DshRuntime implements vscode.Disposable {
     const pending = this.pending
     this.pending = undefined
     this.clearStartupTimer()
-    this.publish({ kind: 'ready', localUri })
+    this.publish({ kind: 'ready', localUri, ownership: 'managed' })
     pending.resolve(localUri)
   }
 

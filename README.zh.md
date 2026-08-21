@@ -32,15 +32,11 @@
 
 ## 📦 安装
 
-DSH Sidebar 使用官方 DeepSeek Harness runtime。如果 `http://127.0.0.1:3080` 已经运行 DSH，扩展会先验证并直接复用它，不会重复启动进程。
-
-否则，请在 VS Code 扩展实际运行的本地、WSL、SSH 或容器环境中安装 CLI：
+先安装官方 DeepSeek Harness CLI：
 
 ```sh
 npm install -g @deepseek-ai/dsh
 ```
-
-扩展随后会为当前 VS Code 工作区启动一个独立的 DSH Web runtime。
 
 然后根据需要选择扩展版本：
 

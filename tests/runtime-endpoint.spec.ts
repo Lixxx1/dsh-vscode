@@ -1,7 +1,7 @@
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
-import { probeDshServer } from '../src/runtime-endpoint.ts'
+import { probeDshServer, shouldProbeExistingDsh } from '../src/runtime-endpoint.ts'
 
 const servers: Server[] = []
 
@@ -32,6 +32,13 @@ afterEach(async () => {
 })
 
 describe('existing DSH runtime probe', () => {
+  it('runs only for the default unmanaged launch configuration', () => {
+    expect(shouldProbeExistingDsh(true, '', false)).toBe(true)
+    expect(shouldProbeExistingDsh(false, '', false)).toBe(false)
+    expect(shouldProbeExistingDsh(true, '/opt/custom-dsh', false)).toBe(false)
+    expect(shouldProbeExistingDsh(true, '', true)).toBe(false)
+  })
+
   it('accepts a matching official session.list response', async () => {
     const url = await serve(request => ({
       type: 'server-response',

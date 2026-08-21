@@ -37,6 +37,7 @@ interface CatalogCache {
 
 interface PluginController {
   readonly cwd: string
+  readonly runtimeOwnership: 'external' | 'managed' | undefined
   readonly state: {
     phase: 'loading' | 'ready' | 'error'
     statusText: string
@@ -349,11 +350,7 @@ export class DshPluginManager {
       const changed = await this.configureNamespace(selected.namespace)
       if (!changed) continue
       if (selected.namespace.applies === 'restart') {
-        await this.controller.restart()
-        if ((this.controller.state.phase as string) === 'error') {
-          throw new Error(`Settings saved, but DSH could not restart: ${this.controller.state.statusText}`)
-        }
-        await vscode.window.showInformationMessage(`${selected.namespace.ns} updated. DeepSeek Harness restarted.`)
+        await this.restartAfterChange(`${selected.namespace.ns} updated`)
         return
       }
       await vscode.window.showInformationMessage(`${selected.namespace.ns} updated.`)
@@ -498,6 +495,12 @@ export class DshPluginManager {
   }
 
   private async restartAfterChange(successMessage: string): Promise<void> {
+    if (this.controller.runtimeOwnership === 'external') {
+      await vscode.window.showWarningMessage(
+        `${successMessage}. Restart the external DeepSeek Harness process to apply this change, then reconnect from VS Code.`,
+      )
+      return
+    }
     await this.controller.restart()
     if (this.controller.state.phase === 'error') {
       throw new Error(`${successMessage}, but DSH could not restart: ${this.controller.state.statusText}`)

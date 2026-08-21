@@ -39,7 +39,7 @@ import {
 import { replaceTextPreservingIdeContext, withIdeContext, type IdeContextReference, type IdeContextSnapshot } from './ide-context.js'
 import { jobsSnapshotOf, type JobItem } from './jobs.js'
 import { queueSnapshotOf, type QueueItemState } from './queue.js'
-import { DshRuntime, type RuntimeState } from './runtime.js'
+import { DshRuntime, type RuntimeOwnership, type RuntimeState } from './runtime.js'
 import { toolWriteIntents } from './tool-write-guard.js'
 import { chatHtml } from './webview.js'
 import { DshPluginManager } from './plugin-manager.js'
@@ -200,6 +200,11 @@ class DshChatController implements vscode.Disposable {
 
   get state(): ChatViewState {
     return this._state
+  }
+
+  get runtimeOwnership(): RuntimeOwnership | undefined {
+    const state = this.runtime.state
+    return state.kind === 'ready' ? state.ownership : undefined
   }
 
   publish(patch: Partial<ChatViewState>): void {
@@ -1468,6 +1473,12 @@ export function activate(context: vscode.ExtensionContext): void {
   }))
 
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.configureApiKey', async () => {
+    if (controller.runtimeOwnership === 'external') {
+      void vscode.window.showInformationMessage(
+        'This sidebar is using an external DeepSeek Harness runtime. Configure its API key where that process is started.',
+      )
+      return
+    }
     const value = await vscode.window.showInputBox({
       title: 'Configure DeepSeek API Key',
       prompt: 'Paste the key here. It is stored in VS Code SecretStorage and passed only to the official DSH child process.',
@@ -1502,6 +1513,12 @@ export function activate(context: vscode.ExtensionContext): void {
 
     await context.secrets.delete(DEEPSEEK_API_KEY_SECRET)
     output.appendLine('[credentials] DeepSeek API key removed from VS Code SecretStorage.')
+    if (controller.runtimeOwnership === 'external') {
+      void vscode.window.showInformationMessage(
+        'Stored DeepSeek API key removed. The reused external DSH keeps its own credentials.',
+      )
+      return
+    }
     await controller.restart()
     void vscode.window.showInformationMessage('Stored DeepSeek API key removed. DeepSeek Harness restarted.')
   }))
