@@ -165,11 +165,13 @@
       "properties": {
         "deepseekHarness.executable": {
           "type": "string",
+          "scope": "resource",
           "default": "",
           "markdownDescription": "DSH executable. Leave empty to use a source checkout when nested inside deepseek-harness, otherwise `dsh` from PATH."
         },
         "deepseekHarness.arguments": {
           "type": "array",
+          "scope": "resource",
           "items": {
             "type": "string"
           },
@@ -189,11 +191,13 @@
         },
         "deepseekHarness.reuseExistingRuntime": {
           "type": "boolean",
+          "scope": "resource",
           "default": true,
           "description": "Reuse a healthy official DSH Web runtime on 127.0.0.1:3080 when no custom executable or arguments are configured."
         },
         "deepseekHarness.startupTimeout": {
           "type": "number",
+          "scope": "resource",
           "default": 60000,
           "minimum": 1000,
           "maximum": 300000,

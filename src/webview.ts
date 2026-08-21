@@ -19,8 +19,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data:; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${token}';">
-  <style>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data:; style-src ${webview.cspSource} 'nonce-${token}'; script-src 'nonce-${token}';">
+  <style nonce="${token}">
     :root { color-scheme: light dark; }
     * { box-sizing: border-box; }
     html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
@@ -49,6 +49,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
     .scroll { min-width: 0; min-height: 0; overflow-x: hidden; overflow-y: auto; scrollbar-color: var(--vscode-scrollbarSlider-background) transparent; }
     .conversation { width: 100%; min-width: 0; max-width: 760px; margin: 0 auto; padding: 12px 14px 30px; overflow: hidden; }
+    .conversation-slot, .messages { display: contents; }
     .history-loader { display: flex; justify-content: center; padding: 1px 0 9px; }
     .history-button { padding: 3px 9px; border: 0; border-radius: 5px; color: var(--vscode-textLink-foreground); background: transparent; font-size: 11px; }
     .history-button:hover { background: var(--vscode-toolbar-hoverBackground); }
@@ -75,6 +76,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     .pending-steering .message-body::after { content: 'Steering…'; display: block; margin-top: 3px; color: var(--vscode-descriptionForeground); font-size: 10px; }
     .markdown > :first-child { margin-top: 0; }
     .markdown > :last-child { margin-bottom: 0; }
+    .streaming-plain { white-space: pre-wrap; overflow-wrap: anywhere; }
     .markdown p { margin: 0 0 9px; }
     .markdown h1, .markdown h2, .markdown h3 { margin: 14px 0 7px; line-height: 1.3; }
     .markdown h1 { font-size: 17px; } .markdown h2 { font-size: 15px; } .markdown h3 { font-size: 13px; }
@@ -97,6 +99,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     .tool-detail { color: var(--vscode-descriptionForeground); font-size: 11px; }
     .tool-body { padding: 0 10px 9px 34px; min-width: 0; overflow: hidden; color: var(--vscode-descriptionForeground); }
     .tool-body pre { color: var(--vscode-foreground); }
+    .tool-output-more { margin: 5px 0 0; padding: 2px 7px; border: 1px solid var(--vscode-widget-border); border-radius: 5px; color: var(--vscode-textLink-foreground); background: transparent; font-size: 11px; }
+    .tool-output-more:hover { background: var(--vscode-toolbar-hoverBackground); }
     .command-card { margin: 7px 0 10px; padding: 8px 10px; border: 1px solid var(--vscode-widget-border); border-radius: 8px; background: color-mix(in srgb, var(--vscode-editor-background) 72%, transparent); }
     .command-card.failed { border-color: var(--vscode-errorForeground); }
     .command-head { min-width: 0; display: flex; align-items: center; gap: 7px; }
@@ -106,6 +110,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     .diff-old { border-left: 2px solid var(--vscode-gitDecoration-deletedResourceForeground); }
     .diff-new { border-left: 2px solid var(--vscode-gitDecoration-addedResourceForeground); }
     .source { display: block; margin: 4px 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .source-line { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--vscode-editor-font-family); font-size: 11px; }
     .tool-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 2px; }
     .tool-action { min-height: 24px; padding: 2px 7px; border: 1px solid var(--vscode-widget-border); border-radius: 5px; color: var(--vscode-foreground); background: transparent; font-size: 11px; }
     .tool-action:hover { background: var(--vscode-toolbar-hoverBackground); }
@@ -236,7 +241,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       </div>
       <button id="newSession" class="icon-button" title="New conversation" aria-label="New conversation"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
     </header>
-    <main id="scroll" class="scroll"><div id="conversation" class="conversation"></div></main>
+    <main id="scroll" class="scroll"><div id="conversation" class="conversation"><div id="conversationStatus" class="conversation-slot"></div><div id="conversationHistory" class="conversation-slot"></div><div id="messages" class="messages"></div><div id="conversationTail" class="conversation-slot"></div></div></main>
     <footer class="composer-wrap">
       <div id="queueDock" class="queue-dock hidden" aria-label="Queued messages"></div>
       <div class="composer">
@@ -277,6 +282,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     });
     const elements = {
       conversation: document.getElementById('conversation'), scroll: document.getElementById('scroll'),
+      conversationStatus: document.getElementById('conversationStatus'), conversationHistory: document.getElementById('conversationHistory'), messages: document.getElementById('messages'), conversationTail: document.getElementById('conversationTail'),
       sessions: document.getElementById('sessions'), newSession: document.getElementById('newSession'), jobsControl: document.getElementById('jobsControl'), jobsTrigger: document.getElementById('jobsTrigger'), jobsCount: document.getElementById('jobsCount'), jobsMenu: document.getElementById('jobsMenu'),
       prompt: document.getElementById('prompt'), project: document.getElementById('project'), workspace: document.getElementById('workspace'),
       models: document.getElementById('models'), efforts: document.getElementById('efforts'),
@@ -301,6 +307,22 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     let jobsOpen = false;
     let jobsTimer;
     let historyAnchor;
+    let renderFrame;
+    let pendingRenderState;
+    let renderedSessionId;
+    let renderedStatusKey = '';
+    let renderedHistoryKey = '';
+    let renderedTail = {};
+    let renderedChrome = {};
+    const renderedMessages = new Map();
+    const expandedToolIds = new Set();
+    const loadingToolRequests = new Map();
+    const toolOutputErrors = new Map();
+    const toolOutputPages = new Map();
+    const deferredOutputViews = new Map();
+    const pendingMessageAppends = new Map();
+    let toolOutputRequestId = 0;
+    const toolOutputChunkSize = 20000;
 
     function node(tag, className, text) {
       const value = document.createElement(tag);
@@ -419,6 +441,59 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       return root;
     }
 
+    function createMarkdownStream(text) {
+      const stream = {
+        root: node('div', 'markdown'), text: '', committedOffset: 0, scanOffset: 0,
+        safeBoundary: 0, fenced: false, linePrefix: '', lineHasContent: false, tailNode: undefined, marker: document.createComment('stream-end'),
+      };
+      stream.root.append(stream.marker);
+      appendMarkdownStream(stream, String(text || ''), true);
+      return stream;
+    }
+    function scanMarkdownStream(stream, text) {
+      for (let index = stream.scanOffset; index < text.length; index += 1) {
+        const character = text[index];
+        if (character === '\\n') {
+          if (stream.linePrefix === String.fromCharCode(96).repeat(3)) stream.fenced = !stream.fenced;
+          else if (!stream.lineHasContent && !stream.fenced) stream.safeBoundary = index + 1;
+          stream.linePrefix = ''; stream.lineHasContent = false;
+        } else {
+          if (stream.linePrefix.length < 3) stream.linePrefix += character;
+          if (!/\\s/.test(character)) stream.lineHasContent = true;
+        }
+      }
+      stream.scanOffset = text.length;
+    }
+    function appendMarkdownNodes(parent, text, before) {
+      if (!text) return [];
+      const parsed = text.length > toolOutputChunkSize ? node('div', 'streaming-plain', text) : renderMarkdown(text);
+      const children = parsed.classList && parsed.classList.contains('streaming-plain') ? [parsed] : [...parsed.childNodes];
+      for (const child of children) parent.insertBefore(child, before || null);
+      return children;
+    }
+    function appendMarkdownStream(stream, delta, streaming) {
+      const previousBoundary = stream.safeBoundary;
+      stream.text += String(delta || '');
+      scanMarkdownStream(stream, stream.text);
+      const boundary = streaming ? stream.safeBoundary : stream.text.length;
+      if (boundary > stream.committedOffset) {
+        if (stream.tailNode) stream.tailNode.remove();
+        stream.tailNode = undefined;
+        appendMarkdownNodes(stream.root, stream.text.slice(stream.committedOffset, boundary), stream.marker);
+        stream.committedOffset = boundary;
+      }
+      if (streaming && boundary < stream.text.length) {
+        if (stream.tailNode && boundary === previousBoundary && stream.tailNode.firstChild) stream.tailNode.firstChild.appendData(String(delta || ''));
+        else {
+          if (stream.tailNode) stream.tailNode.remove();
+          stream.tailNode = node('div', 'streaming-plain'); stream.tailNode.append(document.createTextNode(stream.text.slice(boundary)));
+          stream.root.insertBefore(stream.tailNode, stream.marker);
+        }
+      } else if (stream.tailNode) {
+        stream.tailNode.remove(); stream.tailNode = undefined;
+      }
+    }
+
     function toolTitle(message, callView, resultView) {
       return string(resultView && resultView.title) || string(callView && callView.title) || message.text || 'Tool';
     }
@@ -438,7 +513,28 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       }
       if (gallery.childNodes.length) parent.append(gallery);
     }
-    function appendPre(parent, text, className) { if (text) parent.append(node('pre', className || '', text)); }
+    function appendPre(parent, text, className) {
+      if (!text) return;
+      parent.append(node('pre', className || '', String(text)));
+    }
+    function appendPrefixedPre(parent, text, prefix, className, continuation) {
+      const value = String(text || '');
+      if (!value) return;
+      const element = node('pre', className || '', (continuation ? '' : prefix) + value.replace(/\\n/g, '\\n' + prefix));
+      if (continuation) element.dataset.diffContinuation = 'true';
+      parent.append(element);
+    }
+    function appendMarkdownPage(parent, text) {
+      const value = String(text || '');
+      if (!value) return;
+      parent.append(renderMarkdown(value));
+    }
+    function appendItems(parent, values, appendItem) {
+      if (!values.length) return;
+      const container = node('div');
+      for (const value of values) appendItem(container, value);
+      parent.append(container);
+    }
     function renderToolBody(message, callView, resultView) {
       const body = node('div', 'tool-body');
       const view = resultView || callView;
@@ -453,12 +549,15 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
         for (const diffValue of array(view.diffs)) {
           const diff = record(diffValue); if (!diff) continue;
           const filePath = string(diff.path, 'File change');
-          if (filePath !== 'File change' && !paths.includes(filePath)) paths.push(filePath);
-          const pathRow = node('div', 'diff-path');
-          pathRow.append(filePath === 'File change' ? document.createTextNode(filePath) : fileButton(filePath, undefined, filePath));
-          body.append(pathRow);
-          if (typeof diff.oldText === 'string') appendPre(body, '- ' + diff.oldText.replace(/\\n/g, '\\n- '), 'diff-old');
-          appendPre(body, '+ ' + string(diff.newText).replace(/\\n/g, '\\n+ '), 'diff-new');
+          const continuation = diff.continuation === true;
+          if (!continuation) {
+            if (filePath !== 'File change' && !paths.includes(filePath)) paths.push(filePath);
+            const pathRow = node('div', 'diff-path');
+            pathRow.append(filePath === 'File change' ? document.createTextNode(filePath) : fileButton(filePath, undefined, filePath));
+            body.append(pathRow);
+          }
+          if (typeof diff.oldText === 'string') appendPrefixedPre(body, diff.oldText, '- ', 'diff-old', continuation);
+          appendPrefixedPre(body, string(diff.newText), '+ ', 'diff-new', continuation);
         }
         for (const filePath of paths) {
           const actions = node('div', 'tool-actions');
@@ -473,29 +572,40 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       } else if (card === 'read') {
         const filePath = string(view.path, 'File'); const title = node('div', 'result-title');
         title.append(filePath === 'File' ? document.createTextNode(filePath) : fileButton(filePath, Number(view.offset) || undefined, filePath)); body.append(title);
-        const lines = array(view.lines).map(value => { const line = record(value); return line ? String(line.number).padStart(4, ' ') + '  ' + string(line.text) : ''; }).filter(Boolean);
-        appendPre(body, lines.join('\\n') || message.rawResult);
+        const lines = array(view.lines);
+        if (lines.length) appendItems(body, lines, (container, value) => {
+          const line = record(value); if (line) container.append(node('div', 'source-line', String(line.number).padStart(4, ' ') + '  ' + string(line.text)));
+        });
+        else appendPre(body, message.rawResult);
       } else if (card === 'search') {
-        if (view.shape === 'paths') for (const pathValue of array(view.paths)) {
-          const filePath = string(pathValue); const row = node('div', 'source'); if (filePath) row.append(fileButton(filePath, undefined, filePath)); body.append(row);
-        }
-        if (view.shape === 'matches') for (const fileValue of array(view.files)) {
-          const file = record(fileValue); if (!file) continue;
-          const filePath = string(file.path); const title = node('div', 'result-title'); if (filePath) title.append(fileButton(filePath, undefined, filePath)); body.append(title);
-          for (const matchValue of array(file.matches)) {
-            const match = record(matchValue); if (!match) continue; const line = Number(match.lineNumber) || undefined; const row = node('div', 'source');
-            if (filePath) row.append(fileButton(filePath, line, String(match.lineNumber) + ': ' + string(match.line))); body.append(row);
+        if (view.shape === 'paths') appendItems(body, array(view.paths), (container, pathValue) => {
+          const filePath = string(pathValue); const row = node('div', 'source'); if (filePath) row.append(fileButton(filePath, undefined, filePath)); container.append(row);
+        });
+        if (view.shape === 'matches') {
+          const matches = [];
+          for (const fileValue of array(view.files)) {
+            const file = record(fileValue); if (!file) continue; const filePath = string(file.path);
+            matches.push({ kind: 'file', path: filePath });
+            for (const matchValue of array(file.matches)) matches.push({ kind: 'match', path: filePath, value: matchValue });
           }
+          appendItems(body, matches, (container, entry) => {
+            if (entry.kind === 'file') { const title = node('div', 'result-title'); if (entry.path) title.append(fileButton(entry.path, undefined, entry.path)); container.append(title); return; }
+            const match = record(entry.value); if (!match) return; const line = Number(match.lineNumber) || undefined; const row = node('div', 'source');
+            if (entry.path) row.append(fileButton(entry.path, line, String(match.lineNumber) + ': ' + string(match.line))); container.append(row);
+          });
         }
         if (view.truncated === true) body.append(node('div', '', 'Showing a limited result set (' + String(view.total || '') + ' total).'));
       } else if (card === 'web') {
-        if (typeof view.answer === 'string') body.append(renderMarkdown(view.answer));
-        for (const sourceValue of array(view.sources)) { const source = record(sourceValue); if (source && typeof source.url === 'string') body.append(link(source.url, string(source.title) || source.url)); }
+        if (typeof view.answer === 'string') {
+          if (view.plainText === true) body.append(node('div', 'streaming-plain', view.answer));
+          else appendMarkdownPage(body, view.answer);
+        }
+        appendItems(body, array(view.sources), (container, sourceValue) => { const source = record(sourceValue); if (source && typeof source.url === 'string') container.append(link(source.url, string(source.title) || source.url)); });
         if (typeof view.url === 'string') body.append(link(view.url, view.url));
       } else {
         const presented = contentText(view && view.content);
-        const raw = presented || message.rawResult || (view && view.rawInput !== undefined ? pretty(view.rawInput) : '') || message.rawInput || '';
-        if (raw) appendPre(body, pretty(raw));
+        const raw = presented || message.rawResult || message.rawInput || (view && view.rawInput !== undefined ? view.rawInput : '');
+        if (raw) appendPre(body, typeof raw === 'string' && raw.length > toolOutputChunkSize ? raw : pretty(raw));
         for (const locationValue of array(callView && callView.locations)) {
           const location = record(locationValue); if (!location) continue; const filePath = string(location.path); const line = Number(location.line) || undefined; const row = node('div', 'source');
           if (filePath) row.append(fileButton(filePath, line, filePath + (line ? ':' + String(line) : ''))); body.append(row);
@@ -504,17 +614,97 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       appendImages(body, message.images);
       return body;
     }
+    function cancelDeferredRequest(messageId) {
+      const request = loadingToolRequests.get(messageId);
+      if (request) clearTimeout(request.timer);
+      loadingToolRequests.delete(messageId);
+    }
+    function resetDeferredOutput(messageId) {
+      cancelDeferredRequest(messageId); toolOutputPages.delete(messageId); toolOutputErrors.delete(messageId); deferredOutputViews.delete(messageId);
+    }
+    function prepareDeferredOutput(message) {
+      const loaded = toolOutputPages.get(message.id);
+      if (loaded && loaded.revision !== message.deferredBodyRevision) resetDeferredOutput(message.id);
+    }
+    function appendDeferredPage(parent, page, renderPage) {
+      const rendered = renderPage(page);
+      const continuation = rendered.querySelector('pre[data-diff-continuation="true"]');
+      if (continuation) {
+        const selector = continuation.classList.contains('diff-old') ? 'pre.diff-old' : 'pre.diff-new';
+        const candidates = parent.querySelectorAll(selector);
+        const target = candidates[candidates.length - 1];
+        if (target) { target.textContent += continuation.textContent; return; }
+      }
+      parent.append(rendered);
+    }
+    function attachDeferredOutput(message, parent, renderPage, autoLoad, initialLabel) {
+      prepareDeferredOutput(message);
+      const pages = node('div'); const controls = node('div'); parent.append(pages, controls);
+      const loaded = toolOutputPages.get(message.id) || { pages: [], nextCursor: undefined, revision: message.deferredBodyRevision };
+      toolOutputPages.set(message.id, loaded);
+      for (const page of loaded.pages) appendDeferredPage(pages, page, renderPage);
+      function load(cursor) {
+        if (loadingToolRequests.has(message.id)) return;
+        const requestId = ++toolOutputRequestId;
+        const timer = setTimeout(() => {
+          const pending = loadingToolRequests.get(message.id);
+          if (!pending || pending.requestId !== requestId) return;
+          loadingToolRequests.delete(message.id); toolOutputErrors.set(message.id, { message: 'Output took too long to load.', cursor }); controller.renderControls();
+        }, 15000);
+        loadingToolRequests.set(message.id, { requestId, cursor, timer }); toolOutputErrors.delete(message.id); controller.renderControls();
+        vscode.postMessage({ type: 'load-tool-output', messageId: message.id, sessionId: state && state.sessionId, requestId, ...(cursor ? { cursor } : {}) });
+      }
+      const controller = {
+        revision: message.deferredBodyRevision,
+        append(page, nextCursor) {
+          appendDeferredPage(pages, page, renderPage); loaded.pages.push(page); loaded.nextCursor = nextCursor; controller.renderControls();
+        },
+        renderControls() {
+          controls.replaceChildren();
+          const error = toolOutputErrors.get(message.id);
+          if (error) {
+            controls.append(node('div', 'status error', error.message));
+            const retry = node('button', 'tool-output-more', 'Retry'); retry.type = 'button'; retry.addEventListener('click', () => load(error.cursor)); controls.append(retry); return;
+          }
+          if (loadingToolRequests.has(message.id)) { controls.append(node('div', 'tool-output-loading', 'Loading output…')); return; }
+          if (loaded.pages.length === 0) {
+            if (autoLoad !== false) load(undefined);
+            else {
+              const show = node('button', 'tool-output-more', initialLabel || 'Show output'); show.type = 'button'; show.addEventListener('click', () => load(undefined)); controls.append(show);
+            }
+            return;
+          }
+          if (loaded.nextCursor) {
+            const more = node('button', 'tool-output-more', 'Show more'); more.type = 'button'; more.addEventListener('click', () => load(loaded.nextCursor)); controls.append(more);
+          }
+        },
+      };
+      deferredOutputViews.set(message.id, controller); controller.renderControls();
+    }
     function renderTool(message) {
       const callView = record(message.callView);
       const resultView = record(message.resultView);
       const item = document.createElement('details');
       item.className = 'tool' + (message.failed ? ' failed' : '');
-      item.open = message.streaming === true || message.failed === true;
+      item.open = message.streaming === true || message.failed === true || expandedToolIds.has(message.id);
       const summary = document.createElement('summary');
       summary.append(node('span', 'tool-icon', message.streaming ? '●' : (message.failed ? '!' : '✓')));
       summary.append(node('span', 'tool-title', toolTitle(message, callView, resultView)));
       summary.append(node('span', 'tool-detail', message.detail || ''));
-      item.append(summary, renderToolBody(message, callView, resultView));
+      item.append(summary);
+      let contentInitialized = false;
+      const initializeContent = () => {
+        if (contentInitialized) return;
+        contentInitialized = true;
+        if (message.deferredBody === true) {
+          const body = node('div', 'tool-body'); item.append(body); attachDeferredOutput(message, body, page => renderToolBody(page, record(page.callView), record(page.resultView)));
+        } else item.append(renderToolBody(message, callView, resultView));
+      };
+      if (item.open) initializeContent();
+      item.addEventListener('toggle', () => {
+        if (item.open) { expandedToolIds.add(message.id); initializeContent(); }
+        else expandedToolIds.delete(message.id);
+      });
       return item;
     }
     function renderCommand(message) {
@@ -524,7 +714,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       head.append(node('span', 'command-name', message.text));
       head.append(node('span', 'tool-detail', message.detail || ''));
       item.append(head);
-      if (message.rawResult) item.append(node('div', 'command-result', message.rawResult));
+      if (message.deferredBody === true) {
+        const result = node('div', 'command-result'); item.append(result); attachDeferredOutput(message, result, page => renderToolBody(page, record(page.callView), record(page.resultView)), false, 'Show command output');
+      } else if (message.rawResult) { const result = node('div', 'command-result'); appendPre(result, message.rawResult); item.append(result); }
       return item;
     }
     function renderChangedFiles(groups) {
@@ -554,19 +746,63 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       const body = node('div', 'message-body', item.preview || 'Steering message');
       bubble.append(body); return bubble;
     }
+    function renderAssistantPage(page) {
+      const view = record(page.resultView);
+      const body = view && view.plainText === true ? node('div', 'streaming-plain', page.text) : renderMarkdown(page.text);
+      body.classList.add('assistant-page'); appendImages(body, page.images); return body;
+    }
     function renderMessage(message) {
-      if (message.role === 'tool') return renderTool(message);
-      if (message.role === 'command') return renderCommand(message);
-      if (message.role === 'notice') return node('div', 'status' + (message.failed ? ' error' : ''), message.text);
+      if (message.role === 'tool') return { message, node: renderTool(message) };
+      if (message.role === 'command') return { message, node: renderCommand(message) };
+      if (message.role === 'notice') return { message, node: node('div', 'status' + (message.failed ? ' error' : ''), message.text) };
       const item = node('article', 'message ' + message.role);
       const head = node('div', 'message-head');
       head.append(node('span', 'avatar' + (message.role === 'assistant' ? ' deepseek-mark' : ''), message.role === 'user' ? 'Y' : ''));
       head.append(node('span', '', message.role === 'user' ? 'You' : 'DeepSeek'));
-      const body = message.role === 'assistant' ? renderMarkdown(message.text) : node('div', '', message.text);
+      const markdown = message.role === 'assistant' && message.streaming === true ? createMarkdownStream(message.text) : undefined;
+      const body = message.role === 'assistant'
+        ? message.deferredBody === true ? node('div', 'markdown') : (markdown ? markdown.root : renderMarkdown(message.text))
+        : node('div', '', message.text);
       body.classList.add('message-body');
       if (message.streaming) body.classList.add('streaming');
-      appendImages(body, message.images);
-      item.append(head, body); return item;
+      if (message.deferredBody === true) attachDeferredOutput(message, body, renderAssistantPage, false, 'Show full response' + (message.bodyLength ? ' · ' + String(message.bodyLength) + ' characters' : ''));
+      else appendImages(body, message.images);
+      item.append(head, body); return { message, node: item, ...(markdown ? { markdown } : {}) };
+    }
+    function messageNode(message) {
+      const rendered = renderedMessages.get(message.id);
+      if (rendered && rendered.message === message) return rendered.node;
+      if (rendered && rendered.message.deferredBodyRevision !== message.deferredBodyRevision) resetDeferredOutput(message.id);
+      const appended = pendingMessageAppends.get(message.id);
+      if (rendered && rendered.markdown && appended !== undefined && message.role === 'assistant' && message.images === rendered.message.images) {
+        pendingMessageAppends.delete(message.id); appendMarkdownStream(rendered.markdown, appended, message.streaming === true);
+        rendered.message = message;
+        rendered.markdown.root.classList.toggle('streaming', message.streaming === true);
+        return rendered.node;
+      }
+      const next = renderMessage(message);
+      if (rendered) deferredOutputViews.delete(message.id);
+      if (rendered && rendered.node.isConnected) rendered.node.replaceWith(next.node);
+      renderedMessages.set(message.id, next);
+      return next.node;
+    }
+    function reconcileMessages(messages, current) {
+      if (!messages.length) {
+        renderedMessages.clear(); elements.messages.replaceChildren(renderEmpty(current)); return;
+      }
+      const ids = new Set(messages.map(message => message.id));
+      for (const [id, rendered] of renderedMessages) {
+        if (!ids.has(id)) {
+          rendered.node.remove(); renderedMessages.delete(id); expandedToolIds.delete(id); resetDeferredOutput(id); pendingMessageAppends.delete(id);
+        }
+      }
+      let cursor = elements.messages.firstChild;
+      for (const message of messages) {
+        const desired = messageNode(message);
+        if (desired === cursor) cursor = cursor.nextSibling;
+        else elements.messages.insertBefore(desired, cursor);
+      }
+      while (cursor) { const next = cursor.nextSibling; cursor.remove(); cursor = next; }
     }
     function renderStatus(current) {
       const box = node('div', 'status' + (current.phase === 'error' ? ' error' : ''), current.statusText || 'Starting DeepSeek Harness…');
@@ -1052,43 +1288,116 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       if (jobsTimer) { clearInterval(jobsTimer); jobsTimer = undefined; }
       if (jobsOpen && live > 0) jobsTimer = setInterval(renderJobs, 1000);
     }
+    function renderConversation(current) {
+      if (renderedSessionId !== current.sessionId) {
+        renderedSessionId = current.sessionId; renderedMessages.clear(); elements.messages.replaceChildren();
+        renderedHistoryKey = ''; renderedTail = {}; expandedToolIds.clear();
+        for (const request of loadingToolRequests.values()) clearTimeout(request.timer);
+        loadingToolRequests.clear(); toolOutputErrors.clear(); toolOutputPages.clear(); deferredOutputViews.clear(); pendingMessageAppends.clear();
+      }
+      const statusKey = current.phase + '::' + current.statusText;
+      if (statusKey !== renderedStatusKey) {
+        renderedStatusKey = statusKey;
+        elements.conversationStatus.replaceChildren();
+        if (current.phase !== 'ready') elements.conversationStatus.append(renderStatus(current));
+      }
+      if (current.phase !== 'ready') {
+        elements.conversationHistory.replaceChildren(); elements.messages.replaceChildren(); elements.conversationTail.replaceChildren();
+        renderedHistoryKey = ''; renderedTail = {};
+        return;
+      }
+
+      const historyKey = String(current.hasMoreHistory) + '::' + String(current.loadingHistory);
+      if (historyKey !== renderedHistoryKey) {
+        renderedHistoryKey = historyKey; elements.conversationHistory.replaceChildren();
+        if (current.hasMoreHistory || current.loadingHistory) {
+          const loader = node('div', 'history-loader'); const button = node('button', 'history-button', current.loadingHistory ? 'Loading earlier messages…' : 'Load earlier messages'); button.type = 'button'; button.disabled = current.loadingHistory === true;
+          button.addEventListener('click', () => { historyAnchor = { sessionId: current.sessionId, height: elements.scroll.scrollHeight, top: elements.scroll.scrollTop }; button.disabled = true; button.textContent = 'Loading earlier messages…'; vscode.postMessage({ type: 'load-history' }); }); loader.append(button); elements.conversationHistory.append(loader);
+        }
+      }
+      reconcileMessages(array(current.messages), current);
+
+      if (renderedTail.queue !== current.queue || renderedTail.changedFiles !== current.changedFiles || renderedTail.approval !== current.approval || renderedTail.question !== current.question) {
+        renderedTail = { queue: current.queue, changedFiles: current.changedFiles, approval: current.approval, question: current.question };
+        elements.conversationTail.replaceChildren();
+        for (const item of current.queue || []) if (item.placement === 'steering') elements.conversationTail.append(renderPendingSteering(item));
+        if (current.changedFiles && current.changedFiles.length) elements.conversationTail.append(renderChangedFiles(current.changedFiles));
+        if (current.approval) elements.conversationTail.append(renderApproval(current.approval));
+        if (current.question) elements.conversationTail.append(renderQuestions(current.question));
+      }
+    }
     function render(current) {
       const nearBottom = elements.scroll.scrollHeight - elements.scroll.scrollTop - elements.scroll.clientHeight < 80;
       const preservingHistory = historyAnchor && historyAnchor.sessionId === current.sessionId;
-      state = current; elements.workspace.textContent = current.workspaceName || 'Workspace'; elements.project.title = current.cwd ? 'DeepSeek project: ' + current.cwd : 'Choose DeepSeek project';
-      elements.sessions.replaceChildren();
-      for (const session of current.sessions || []) { const option = new Option(session.title, session.id, false, session.id === current.sessionId); elements.sessions.append(option); }
-      if (!elements.sessions.childElementCount) elements.sessions.append(new Option('New conversation', ''));
-      elements.models.replaceChildren();
-      for (const model of current.models || []) { const option = new Option(model.label, JSON.stringify({ provider: model.provider, model: model.model }), false, model.selected === true); elements.models.append(option); }
-      if (!elements.models.childElementCount) elements.models.append(new Option('Default model', ''));
-      renderEfforts((current.models || []).find(model => model.selected) || (current.models || [])[0]);
-      renderPolicyState(current);
-      renderUsage(current);
-      renderJobs();
-      elements.conversation.replaceChildren();
-      if (current.phase !== 'ready') elements.conversation.append(renderStatus(current));
-      else {
-        if (current.hasMoreHistory || current.loadingHistory) {
-          const loader = node('div', 'history-loader'); const button = node('button', 'history-button', current.loadingHistory ? 'Loading earlier messages…' : 'Load earlier messages'); button.type = 'button'; button.disabled = current.loadingHistory === true;
-          button.addEventListener('click', () => { historyAnchor = { sessionId: current.sessionId, height: elements.scroll.scrollHeight, top: elements.scroll.scrollTop }; button.disabled = true; button.textContent = 'Loading earlier messages…'; vscode.postMessage({ type: 'load-history' }); }); loader.append(button); elements.conversation.append(loader);
-        }
-        if (!current.messages || current.messages.length === 0) elements.conversation.append(renderEmpty(current));
-        else for (const message of current.messages) elements.conversation.append(renderMessage(message));
-        for (const item of current.queue || []) if (item.placement === 'steering') elements.conversation.append(renderPendingSteering(item));
-        if (current.changedFiles && current.changedFiles.length) elements.conversation.append(renderChangedFiles(current.changedFiles));
-        if (current.approval) elements.conversation.append(renderApproval(current.approval));
-        if (current.question) elements.conversation.append(renderQuestions(current.question));
+      state = current;
+      if (renderedChrome.workspaceName !== current.workspaceName || renderedChrome.cwd !== current.cwd) {
+        elements.workspace.textContent = current.workspaceName || 'Workspace'; elements.project.title = current.cwd ? 'DeepSeek project: ' + current.cwd : 'Choose DeepSeek project';
       }
+      if (renderedChrome.sessions !== current.sessions) {
+        elements.sessions.replaceChildren();
+        for (const session of current.sessions || []) { const option = new Option(session.title, session.id, false, session.id === current.sessionId); elements.sessions.append(option); }
+        if (!elements.sessions.childElementCount) elements.sessions.append(new Option('New conversation', ''));
+      } else if (elements.sessions.value !== current.sessionId) elements.sessions.value = current.sessionId;
+      if (renderedChrome.models !== current.models) {
+        elements.models.replaceChildren();
+        for (const model of current.models || []) { const option = new Option(model.label, JSON.stringify({ provider: model.provider, model: model.model }), false, model.selected === true); elements.models.append(option); }
+        if (!elements.models.childElementCount) elements.models.append(new Option('Default model', ''));
+        renderEfforts((current.models || []).find(model => model.selected) || (current.models || [])[0]);
+      }
+      const policyChanged = renderedChrome.agentPreset !== current.agentPreset || renderedChrome.permissions !== current.permissions || renderedChrome.plan !== current.plan || renderedChrome.running !== current.running || renderedChrome.phase !== current.phase;
+      if (policyChanged) renderPolicyState(current);
+      if (renderedChrome.usage !== current.usage) renderUsage(current);
+      if (renderedChrome.jobs !== current.jobs) renderJobs();
+      renderConversation(current);
       const enabled = current.phase === 'ready' && current.routable !== false && Boolean(current.sessionId);
       elements.prompt.disabled = !enabled; elements.attach.disabled = !enabled; elements.project.disabled = current.running === true; elements.newSession.disabled = current.phase !== 'ready'; elements.sessions.disabled = current.phase !== 'ready';
       elements.models.disabled = !enabled || !(current.models || []).length; elements.efforts.disabled = !enabled || !elements.efforts.options.length || elements.efforts.value === '';
       elements.cancel.classList.toggle('hidden', current.running !== true); elements.send.title = current.running ? 'Queue message (Enter) · Steer now (Cmd/Ctrl+Enter)' : 'Send (Enter)'; updateSend(); renderQueue();
-      renderCommandMenu();
+      if (renderedChrome.commands !== current.commands || renderedChrome.skills !== current.skills || renderedChrome.permissions !== current.permissions) renderCommandMenu();
+      renderedChrome = {
+        workspaceName: current.workspaceName, cwd: current.cwd, sessions: current.sessions, models: current.models,
+        agentPreset: current.agentPreset, permissions: current.permissions, plan: current.plan, running: current.running,
+        phase: current.phase, usage: current.usage, jobs: current.jobs, commands: current.commands, skills: current.skills,
+      };
       if (preservingHistory && current.loadingHistory !== true) {
         const anchor = historyAnchor; historyAnchor = undefined;
         requestAnimationFrame(() => { elements.scroll.scrollTop = anchor.top + elements.scroll.scrollHeight - anchor.height; });
       } else if (!preservingHistory && (nearBottom || current.approval || current.question)) requestAnimationFrame(() => { elements.scroll.scrollTop = elements.scroll.scrollHeight; });
+    }
+    function scheduleRender(current) {
+      state = current; pendingRenderState = current;
+      if (renderFrame !== undefined) return;
+      renderFrame = requestAnimationFrame(() => {
+        renderFrame = undefined;
+        const pending = pendingRenderState; pendingRenderState = undefined;
+        if (pending) render(pending);
+      });
+    }
+    function applyMessagesPatch(current, patch) {
+      if (Array.isArray(patch && patch.reset)) { pendingMessageAppends.clear(); return patch.reset; }
+      const messages = Array.isArray(current) ? [...current] : [];
+      const indexes = new Map(messages.map((message, index) => [message.id, index]));
+      for (const message of array(patch && patch.upserts)) {
+        pendingMessageAppends.delete(message.id);
+        const index = indexes.get(message.id);
+        if (index === undefined) { indexes.set(message.id, messages.length); messages.push(message); }
+        else messages[index] = message;
+      }
+      for (const append of array(patch && patch.appends)) {
+        const index = indexes.get(append.id); const message = index === undefined ? undefined : messages[index];
+        if (!message || message.role !== 'assistant') continue;
+        pendingMessageAppends.set(append.id, string(pendingMessageAppends.get(append.id)) + string(append.text));
+        messages[index] = { ...message, text: message.text + string(append.text), streaming: append.streaming === true };
+      }
+      return messages;
+    }
+    function applyStateUpdate(update) {
+      if (!state) return;
+      const patch = record(update && update.patch) || {};
+      const messages = update && update.messages
+        ? applyMessagesPatch(state.messages, update.messages)
+        : state.messages;
+      scheduleRender({ ...state, ...patch, messages });
     }
     function updateSend() { elements.send.disabled = !state || state.phase !== 'ready' || (elements.prompt.value.trim() === '' && draftImages.length === 0); }
     function resizePrompt() { elements.prompt.style.height = 'auto'; elements.prompt.style.height = Math.min(elements.prompt.scrollHeight, 220) + 'px'; updateSend(); }
@@ -1151,7 +1460,27 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     });
     window.addEventListener('message', event => {
       if (!event.data) return;
-      if (event.data.type === 'state') render(event.data.state);
+      if (event.data.type === 'state') { pendingMessageAppends.clear(); scheduleRender(event.data.state); }
+      if (event.data.type === 'state-update') applyStateUpdate(event.data.update);
+      if (event.data.type === 'tool-output' && state && event.data.sessionId === state.sessionId && typeof event.data.messageId === 'string') {
+        const request = loadingToolRequests.get(event.data.messageId);
+        if (!request || request.requestId !== event.data.requestId) return;
+        clearTimeout(request.timer); loadingToolRequests.delete(event.data.messageId);
+        if (typeof event.data.error === 'string') {
+          toolOutputErrors.set(event.data.messageId, { message: event.data.error, cursor: request.cursor });
+          const controller = deferredOutputViews.get(event.data.messageId); if (controller) controller.renderControls(); return;
+        }
+        toolOutputErrors.delete(event.data.messageId);
+        if (event.data.page && event.data.page.message) {
+          const controller = deferredOutputViews.get(event.data.messageId);
+          if (controller) controller.append(event.data.page.message, event.data.page.nextCursor);
+          else {
+            const message = array(state.messages).find(candidate => candidate.id === event.data.messageId);
+            const loaded = toolOutputPages.get(event.data.messageId) || { pages: [], nextCursor: undefined, revision: message && message.deferredBodyRevision };
+            loaded.pages.push(event.data.page.message); loaded.nextCursor = event.data.page.nextCursor; toolOutputPages.set(event.data.messageId, loaded);
+          }
+        }
+      }
       if (event.data.type === 'draft-images') { draftImages = event.data.images || []; renderAttachments(); }
       if (event.data.type === 'ide-context') { ideContext = event.data.state || { pinned: [] }; renderIdeContext(); }
       if (event.data.type === 'mention-suggestions' && event.data.requestId === mentionRequestId) {
