@@ -49,6 +49,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
     .scroll { min-width: 0; min-height: 0; overflow-x: hidden; overflow-y: auto; scrollbar-color: var(--vscode-scrollbarSlider-background) transparent; }
     .conversation { width: 100%; min-width: 0; max-width: 760px; margin: 0 auto; padding: 12px 14px 30px; overflow: hidden; }
+    .conversation-slot, .messages { display: contents; }
     .history-loader { display: flex; justify-content: center; padding: 1px 0 9px; }
     .history-button { padding: 3px 9px; border: 0; border-radius: 5px; color: var(--vscode-textLink-foreground); background: transparent; font-size: 11px; }
     .history-button:hover { background: var(--vscode-toolbar-hoverBackground); }
@@ -236,7 +237,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       </div>
       <button id="newSession" class="icon-button" title="New conversation" aria-label="New conversation"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
     </header>
-    <main id="scroll" class="scroll"><div id="conversation" class="conversation"></div></main>
+    <main id="scroll" class="scroll"><div id="conversation" class="conversation"><div id="conversationStatus" class="conversation-slot"></div><div id="conversationHistory" class="conversation-slot"></div><div id="messages" class="messages"></div><div id="conversationTail" class="conversation-slot"></div></div></main>
     <footer class="composer-wrap">
       <div id="queueDock" class="queue-dock hidden" aria-label="Queued messages"></div>
       <div class="composer">
@@ -277,6 +278,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     });
     const elements = {
       conversation: document.getElementById('conversation'), scroll: document.getElementById('scroll'),
+      conversationStatus: document.getElementById('conversationStatus'), conversationHistory: document.getElementById('conversationHistory'), messages: document.getElementById('messages'), conversationTail: document.getElementById('conversationTail'),
       sessions: document.getElementById('sessions'), newSession: document.getElementById('newSession'), jobsControl: document.getElementById('jobsControl'), jobsTrigger: document.getElementById('jobsTrigger'), jobsCount: document.getElementById('jobsCount'), jobsMenu: document.getElementById('jobsMenu'),
       prompt: document.getElementById('prompt'), project: document.getElementById('project'), workspace: document.getElementById('workspace'),
       models: document.getElementById('models'), efforts: document.getElementById('efforts'),
@@ -301,6 +303,13 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     let jobsOpen = false;
     let jobsTimer;
     let historyAnchor;
+    let renderFrame;
+    let pendingRenderState;
+    let renderedSessionId;
+    let renderedStatusKey = '';
+    let renderedHistoryKey = '';
+    let renderedTail = {};
+    const renderedMessages = new Map();
 
     function node(tag, className, text) {
       const value = document.createElement(tag);
@@ -567,6 +576,30 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       if (message.streaming) body.classList.add('streaming');
       appendImages(body, message.images);
       item.append(head, body); return item;
+    }
+    function messageNode(message) {
+      const rendered = renderedMessages.get(message.id);
+      if (rendered && rendered.message === message) return rendered.node;
+      const next = renderMessage(message);
+      if (rendered && rendered.node.isConnected) rendered.node.replaceWith(next);
+      renderedMessages.set(message.id, { message, node: next });
+      return next;
+    }
+    function reconcileMessages(messages, current) {
+      if (!messages.length) {
+        renderedMessages.clear(); elements.messages.replaceChildren(renderEmpty(current)); return;
+      }
+      const ids = new Set(messages.map(message => message.id));
+      for (const [id, rendered] of renderedMessages) {
+        if (!ids.has(id)) { rendered.node.remove(); renderedMessages.delete(id); }
+      }
+      let cursor = elements.messages.firstChild;
+      for (const message of messages) {
+        const desired = messageNode(message);
+        if (desired === cursor) cursor = cursor.nextSibling;
+        else elements.messages.insertBefore(desired, cursor);
+      }
+      while (cursor) { const next = cursor.nextSibling; cursor.remove(); cursor = next; }
     }
     function renderStatus(current) {
       const box = node('div', 'status' + (current.phase === 'error' ? ' error' : ''), current.statusText || 'Starting DeepSeek Harness…');
@@ -1052,6 +1085,41 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       if (jobsTimer) { clearInterval(jobsTimer); jobsTimer = undefined; }
       if (jobsOpen && live > 0) jobsTimer = setInterval(renderJobs, 1000);
     }
+    function renderConversation(current) {
+      if (renderedSessionId !== current.sessionId) {
+        renderedSessionId = current.sessionId; renderedMessages.clear(); elements.messages.replaceChildren();
+        renderedHistoryKey = ''; renderedTail = {};
+      }
+      const statusKey = current.phase + '::' + current.statusText;
+      if (statusKey !== renderedStatusKey) {
+        renderedStatusKey = statusKey;
+        elements.conversationStatus.replaceChildren();
+        if (current.phase !== 'ready') elements.conversationStatus.append(renderStatus(current));
+      }
+      if (current.phase !== 'ready') {
+        elements.conversationHistory.replaceChildren(); elements.messages.replaceChildren(); elements.conversationTail.replaceChildren();
+        return;
+      }
+
+      const historyKey = String(current.hasMoreHistory) + '::' + String(current.loadingHistory);
+      if (historyKey !== renderedHistoryKey) {
+        renderedHistoryKey = historyKey; elements.conversationHistory.replaceChildren();
+        if (current.hasMoreHistory || current.loadingHistory) {
+          const loader = node('div', 'history-loader'); const button = node('button', 'history-button', current.loadingHistory ? 'Loading earlier messages…' : 'Load earlier messages'); button.type = 'button'; button.disabled = current.loadingHistory === true;
+          button.addEventListener('click', () => { historyAnchor = { sessionId: current.sessionId, height: elements.scroll.scrollHeight, top: elements.scroll.scrollTop }; button.disabled = true; button.textContent = 'Loading earlier messages…'; vscode.postMessage({ type: 'load-history' }); }); loader.append(button); elements.conversationHistory.append(loader);
+        }
+      }
+      reconcileMessages(array(current.messages), current);
+
+      if (renderedTail.queue !== current.queue || renderedTail.changedFiles !== current.changedFiles || renderedTail.approval !== current.approval || renderedTail.question !== current.question) {
+        renderedTail = { queue: current.queue, changedFiles: current.changedFiles, approval: current.approval, question: current.question };
+        elements.conversationTail.replaceChildren();
+        for (const item of current.queue || []) if (item.placement === 'steering') elements.conversationTail.append(renderPendingSteering(item));
+        if (current.changedFiles && current.changedFiles.length) elements.conversationTail.append(renderChangedFiles(current.changedFiles));
+        if (current.approval) elements.conversationTail.append(renderApproval(current.approval));
+        if (current.question) elements.conversationTail.append(renderQuestions(current.question));
+      }
+    }
     function render(current) {
       const nearBottom = elements.scroll.scrollHeight - elements.scroll.scrollTop - elements.scroll.clientHeight < 80;
       const preservingHistory = historyAnchor && historyAnchor.sessionId === current.sessionId;
@@ -1066,20 +1134,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       renderPolicyState(current);
       renderUsage(current);
       renderJobs();
-      elements.conversation.replaceChildren();
-      if (current.phase !== 'ready') elements.conversation.append(renderStatus(current));
-      else {
-        if (current.hasMoreHistory || current.loadingHistory) {
-          const loader = node('div', 'history-loader'); const button = node('button', 'history-button', current.loadingHistory ? 'Loading earlier messages…' : 'Load earlier messages'); button.type = 'button'; button.disabled = current.loadingHistory === true;
-          button.addEventListener('click', () => { historyAnchor = { sessionId: current.sessionId, height: elements.scroll.scrollHeight, top: elements.scroll.scrollTop }; button.disabled = true; button.textContent = 'Loading earlier messages…'; vscode.postMessage({ type: 'load-history' }); }); loader.append(button); elements.conversation.append(loader);
-        }
-        if (!current.messages || current.messages.length === 0) elements.conversation.append(renderEmpty(current));
-        else for (const message of current.messages) elements.conversation.append(renderMessage(message));
-        for (const item of current.queue || []) if (item.placement === 'steering') elements.conversation.append(renderPendingSteering(item));
-        if (current.changedFiles && current.changedFiles.length) elements.conversation.append(renderChangedFiles(current.changedFiles));
-        if (current.approval) elements.conversation.append(renderApproval(current.approval));
-        if (current.question) elements.conversation.append(renderQuestions(current.question));
-      }
+      renderConversation(current);
       const enabled = current.phase === 'ready' && current.routable !== false && Boolean(current.sessionId);
       elements.prompt.disabled = !enabled; elements.attach.disabled = !enabled; elements.project.disabled = current.running === true; elements.newSession.disabled = current.phase !== 'ready'; elements.sessions.disabled = current.phase !== 'ready';
       elements.models.disabled = !enabled || !(current.models || []).length; elements.efforts.disabled = !enabled || !elements.efforts.options.length || elements.efforts.value === '';
@@ -1089,6 +1144,15 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
         const anchor = historyAnchor; historyAnchor = undefined;
         requestAnimationFrame(() => { elements.scroll.scrollTop = anchor.top + elements.scroll.scrollHeight - anchor.height; });
       } else if (!preservingHistory && (nearBottom || current.approval || current.question)) requestAnimationFrame(() => { elements.scroll.scrollTop = elements.scroll.scrollHeight; });
+    }
+    function scheduleRender(current) {
+      state = current; pendingRenderState = current;
+      if (renderFrame !== undefined) return;
+      renderFrame = requestAnimationFrame(() => {
+        renderFrame = undefined;
+        const pending = pendingRenderState; pendingRenderState = undefined;
+        if (pending) render(pending);
+      });
     }
     function applyMessagesPatch(current, patch) {
       if (Array.isArray(patch && patch.reset)) return patch.reset;
@@ -1107,7 +1171,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       const messages = update && update.messages
         ? applyMessagesPatch(state.messages, update.messages)
         : state.messages;
-      render({ ...state, ...patch, messages });
+      scheduleRender({ ...state, ...patch, messages });
     }
     function updateSend() { elements.send.disabled = !state || state.phase !== 'ready' || (elements.prompt.value.trim() === '' && draftImages.length === 0); }
     function resizePrompt() { elements.prompt.style.height = 'auto'; elements.prompt.style.height = Math.min(elements.prompt.scrollHeight, 220) + 'px'; updateSend(); }
@@ -1170,7 +1234,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     });
     window.addEventListener('message', event => {
       if (!event.data) return;
-      if (event.data.type === 'state') render(event.data.state);
+      if (event.data.type === 'state') scheduleRender(event.data.state);
       if (event.data.type === 'state-update') applyStateUpdate(event.data.update);
       if (event.data.type === 'draft-images') { draftImages = event.data.images || []; renderAttachments(); }
       if (event.data.type === 'ide-context') { ideContext = event.data.state || { pinned: [] }; renderIdeContext(); }
