@@ -80,7 +80,7 @@
       },
       {
         "command": "deepseekHarness.restart",
-        "title": "DeepSeek Harness: Restart Runtime",
+        "title": "DeepSeek Harness: Reconnect / Restart Runtime",
         "icon": "$(debug-restart)"
       },
       {
@@ -186,6 +186,11 @@
           "type": "boolean",
           "default": true,
           "description": "Start DSH when the sidebar first opens."
+        },
+        "deepseekHarness.reuseExistingRuntime": {
+          "type": "boolean",
+          "default": true,
+          "description": "Reuse a healthy official DSH Web runtime on 127.0.0.1:3080 when no custom executable or arguments are configured."
         },
         "deepseekHarness.startupTimeout": {
           "type": "number",

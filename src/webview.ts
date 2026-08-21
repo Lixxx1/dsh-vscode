@@ -572,7 +572,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       const box = node('div', 'status' + (current.phase === 'error' ? ' error' : ''), current.statusText || 'Starting DeepSeek Harness…');
       if (current.phase === 'error') {
         const actions = node('div', 'actions');
-        const retry = node('button', 'secondary', 'Restart'); const output = node('button', 'secondary', 'Show output');
+        const retry = node('button', 'secondary', 'Reconnect'); const output = node('button', 'secondary', 'Show output');
         retry.addEventListener('click', () => vscode.postMessage({ type: 'restart' })); output.addEventListener('click', () => vscode.postMessage({ type: 'output' }));
         actions.append(retry, output); box.append(actions);
       }
