@@ -105,20 +105,31 @@ export class DshRuntime implements vscode.Disposable {
     const configuredExecutable = config.get<string>('executable', '')
     const configuredArgs = config.get<string[]>('arguments', ['web', '--host', '127.0.0.1', '--port', '0'])
     const timeoutMs = config.get<number>('startupTimeout', 60_000)
-    const versionLaunch = resolveLaunch(this.context.extensionUri.fsPath, configuredExecutable, ['--version'], {
-      cwd: workspace.fsPath,
-    })
-    const version = await readDshVersion(versionLaunch, workspace.fsPath)
-    const args = webArgsForDshVersion(configuredArgs, version)
-    const launch = resolveLaunch(this.context.extensionUri.fsPath, configuredExecutable, args, {
-      cwd: workspace.fsPath,
-    })
-    const storedApiKey = await this.context.secrets.get(DEEPSEEK_API_KEY_SECRET)
-
     const pending = deferredStart()
     this.pending = pending
     this.stdoutBuffer = ''
     this.stopping = false
+
+    let launch: LaunchCommand
+    let version: string | undefined
+    let storedApiKey: string | undefined
+    try {
+      const versionLaunch = resolveLaunch(this.context.extensionUri.fsPath, configuredExecutable, ['--version'], {
+        cwd: workspace.fsPath,
+      })
+      version = await readDshVersion(versionLaunch, workspace.fsPath)
+      if (this.pending !== pending) return pending.promise
+      const args = webArgsForDshVersion(configuredArgs, version)
+      launch = resolveLaunch(this.context.extensionUri.fsPath, configuredExecutable, args, {
+        cwd: workspace.fsPath,
+      })
+      storedApiKey = await this.context.secrets.get(DEEPSEEK_API_KEY_SECRET)
+      if (this.pending !== pending) return pending.promise
+    } catch (error) {
+      this.failStart(error instanceof Error ? error : new Error(String(error)), pending)
+      return pending.promise
+    }
+
     const renderedCommand = [launch.command, ...launch.args].map(part => JSON.stringify(part)).join(' ')
     this.output.appendLine(`[runtime] cwd: ${workspace.fsPath}`)
     if (version !== undefined) this.output.appendLine(`[runtime] DSH version: ${version}`)
@@ -143,7 +154,7 @@ export class DshRuntime implements vscode.Disposable {
         windowsHide: true,
       })
     } catch (error) {
-      this.failStart(error instanceof Error ? error : new Error(String(error)))
+      this.failStart(error instanceof Error ? error : new Error(String(error)), pending)
       return pending.promise
     }
     this.child = child
@@ -154,7 +165,7 @@ export class DshRuntime implements vscode.Disposable {
     child.stderr.on('data', (chunk: string) => { this.output.append(chunk) })
     child.on('error', (error) => {
       if (child.pid === undefined) this.child = undefined
-      this.failStart(error)
+      this.failStart(error, pending)
     })
     child.on('exit', (code, signal) => {
       this.clearStartupTimer()
@@ -166,14 +177,14 @@ export class DshRuntime implements vscode.Disposable {
         return
       }
       if (this.pending !== undefined) {
-        this.failStart(new Error(detail))
+        this.failStart(new Error(detail), pending)
       } else {
         this.publish({ kind: 'failed', message: detail })
       }
     })
 
     this.startupTimer = setTimeout(() => {
-      this.failStart(new Error(`DSH did not report a web URL within ${String(timeoutMs)} ms.`))
+      this.failStart(new Error(`DSH did not report a web URL within ${String(timeoutMs)} ms.`), pending)
       void this.stop()
     }, timeoutMs)
 
@@ -204,12 +215,8 @@ export class DshRuntime implements vscode.Disposable {
     pending.resolve(localUri)
   }
 
-  private failStart(error: Error): void {
-    const pending = this.pending
-    if (pending === undefined) {
-      if (!this.stopping) this.publish({ kind: 'failed', message: error.message })
-      return
-    }
+  private failStart(error: Error, pending: PendingStart): void {
+    if (this.pending !== pending) return
     this.pending = undefined
     this.clearStartupTimer()
     this.publish({ kind: 'failed', message: error.message })
