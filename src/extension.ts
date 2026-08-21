@@ -1473,6 +1473,7 @@ export function activate(context: vscode.ExtensionContext): void {
   }))
 
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.configureApiKey', async () => {
+    if (controller.runtimeOwnership === undefined) await controller.start()
     if (controller.runtimeOwnership === 'external') {
       void vscode.window.showInformationMessage(
         'This sidebar is using an external DeepSeek Harness runtime. Configure its API key where that process is started.',
