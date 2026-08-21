@@ -41,6 +41,7 @@ import { jobsSnapshotOf, type JobItem } from './jobs.js'
 import { queueSnapshotOf, type QueueItemState } from './queue.js'
 import { DshRuntime, type RuntimeOwnership, type RuntimeState } from './runtime.js'
 import { toolWriteIntents } from './tool-write-guard.js'
+import { pageToolOutput } from './tool-output-page.js'
 import { chatHtml } from './webview.js'
 import { DshPluginManager } from './plugin-manager.js'
 import type { PluginInventorySnapshot } from './plugin-profile.js'
@@ -1202,7 +1203,7 @@ class DshSurface implements vscode.Disposable {
               requestId: value.requestId,
               ...(message === undefined
                 ? { error: requestedSessionId === sessionId ? 'Tool output is no longer available.' : 'The conversation changed before this output loaded.' }
-                : { message }),
+                : { page: pageToolOutput(message, typeof value.cursor === 'string' ? value.cursor : undefined) }),
             })
           }
           return

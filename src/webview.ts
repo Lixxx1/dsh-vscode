@@ -317,6 +317,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     const expandedToolIds = new Set();
     const loadingToolRequests = new Map();
     const toolOutputErrors = new Map();
+    const toolOutputPages = new Map();
     let toolOutputRequestId = 0;
     const toolOutputChunkSize = 20000;
 
@@ -659,18 +660,33 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
         contentInitialized = true;
         if (message.deferredBody === true) {
           const body = node('div', 'tool-body'); item.append(body);
-          const load = () => {
+          const loaded = toolOutputPages.get(message.id) || { pages: [], nextCursor: undefined };
+          for (const page of loaded.pages) {
+            const callPage = record(page.callView); const resultPage = record(page.resultView);
+            body.append(renderToolBody(page, callPage, resultPage));
+          }
+          const load = cursor => {
+            if (loadingToolRequests.has(message.id)) return;
             const requestId = ++toolOutputRequestId;
-            loadingToolRequests.set(message.id, requestId); toolOutputErrors.delete(message.id);
-            body.replaceChildren(node('div', '', 'Loading tool output…'));
-            vscode.postMessage({ type: 'load-tool-output', messageId: message.id, sessionId: state && state.sessionId, requestId });
+            const timer = setTimeout(() => {
+              const pending = loadingToolRequests.get(message.id);
+              if (!pending || pending.requestId !== requestId) return;
+              loadingToolRequests.delete(message.id); toolOutputErrors.set(message.id, { message: 'Tool output took too long to load.', cursor }); renderedMessages.delete(message.id);
+              if (state) scheduleRender({ ...state, messages: [...state.messages] });
+            }, 15000);
+            loadingToolRequests.set(message.id, { requestId, cursor, timer }); toolOutputErrors.delete(message.id);
+            const loading = node('div', 'tool-output-loading', 'Loading tool output…'); body.append(loading);
+            vscode.postMessage({ type: 'load-tool-output', messageId: message.id, sessionId: state && state.sessionId, requestId, ...(cursor ? { cursor } : {}) });
           };
           const error = toolOutputErrors.get(message.id);
           if (error) {
-            body.append(node('div', 'status error', error));
-            const retry = node('button', 'tool-output-more', 'Retry'); retry.type = 'button'; retry.addEventListener('click', load); body.append(retry);
-          } else if (!loadingToolRequests.has(message.id)) load();
-          else body.append(node('div', '', 'Loading tool output…'));
+            body.append(node('div', 'status error', error.message));
+            const retry = node('button', 'tool-output-more', 'Retry'); retry.type = 'button'; retry.addEventListener('click', () => load(error.cursor)); body.append(retry);
+          } else if (loadingToolRequests.has(message.id)) body.append(node('div', 'tool-output-loading', 'Loading tool output…'));
+          else if (loaded.pages.length === 0) load(undefined);
+          else if (loaded.nextCursor) {
+            const more = node('button', 'tool-output-more', 'Show more'); more.type = 'button'; more.addEventListener('click', () => load(loaded.nextCursor)); body.append(more);
+          }
         } else item.append(renderToolBody(message, callView, resultView));
       };
       if (item.open) initializeContent();
@@ -751,7 +767,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       }
       const ids = new Set(messages.map(message => message.id));
       for (const [id, rendered] of renderedMessages) {
-        if (!ids.has(id)) { rendered.node.remove(); renderedMessages.delete(id); }
+        if (!ids.has(id)) {
+          rendered.node.remove(); renderedMessages.delete(id); expandedToolIds.delete(id); toolOutputPages.delete(id); toolOutputErrors.delete(id);
+          const request = loadingToolRequests.get(id); if (request) clearTimeout(request.timer); loadingToolRequests.delete(id);
+        }
       }
       let cursor = elements.messages.firstChild;
       for (const message of messages) {
@@ -1248,7 +1267,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     function renderConversation(current) {
       if (renderedSessionId !== current.sessionId) {
         renderedSessionId = current.sessionId; renderedMessages.clear(); elements.messages.replaceChildren();
-        renderedHistoryKey = ''; renderedTail = {}; expandedToolIds.clear(); loadingToolRequests.clear(); toolOutputErrors.clear();
+        renderedHistoryKey = ''; renderedTail = {}; expandedToolIds.clear();
+        for (const request of loadingToolRequests.values()) clearTimeout(request.timer);
+        loadingToolRequests.clear(); toolOutputErrors.clear(); toolOutputPages.clear();
       }
       const statusKey = current.phase + '::' + current.statusText;
       if (statusKey !== renderedStatusKey) {
@@ -1416,14 +1437,19 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       if (event.data.type === 'state') scheduleRender(event.data.state);
       if (event.data.type === 'state-update') applyStateUpdate(event.data.update);
       if (event.data.type === 'tool-output' && state && event.data.sessionId === state.sessionId && typeof event.data.messageId === 'string') {
-        if (loadingToolRequests.get(event.data.messageId) !== event.data.requestId) return;
-        loadingToolRequests.delete(event.data.messageId);
+        const request = loadingToolRequests.get(event.data.messageId);
+        if (!request || request.requestId !== event.data.requestId) return;
+        clearTimeout(request.timer); loadingToolRequests.delete(event.data.messageId);
         if (typeof event.data.error === 'string') {
-          toolOutputErrors.set(event.data.messageId, event.data.error); renderedMessages.delete(event.data.messageId);
+          toolOutputErrors.set(event.data.messageId, { message: event.data.error, cursor: request.cursor }); renderedMessages.delete(event.data.messageId);
           scheduleRender({ ...state, messages: [...state.messages] }); return;
         }
         toolOutputErrors.delete(event.data.messageId);
-        if (event.data.message) scheduleRender({ ...state, messages: applyMessagesPatch(state.messages, { upserts: [event.data.message] }) });
+        if (event.data.page && event.data.page.message) {
+          const loaded = toolOutputPages.get(event.data.messageId) || { pages: [], nextCursor: undefined };
+          toolOutputPages.set(event.data.messageId, { pages: [...loaded.pages, event.data.page.message], nextCursor: event.data.page.nextCursor });
+          renderedMessages.delete(event.data.messageId); scheduleRender({ ...state, messages: [...state.messages] });
+        }
       }
       if (event.data.type === 'draft-images') { draftImages = event.data.images || []; renderAttachments(); }
       if (event.data.type === 'ide-context') { ideContext = event.data.state || { pinned: [] }; renderIdeContext(); }
