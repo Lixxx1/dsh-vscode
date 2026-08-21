@@ -12,7 +12,6 @@ export interface LaunchCommand {
 
 interface LaunchHost {
   platform: NodeJS.Platform
-  execPath: string
   env: Readonly<Record<string, string | undefined>>
 }
 
@@ -59,6 +58,20 @@ function installedDshEntry(binDirectory: string): string | undefined {
   }
 }
 
+/** Match the runtime selection performed by npm's Windows command shim. */
+function windowsNodeExecutable(
+  binDirectory: string,
+  env: Readonly<Record<string, string | undefined>>,
+): string | undefined {
+  const adjacent = join(binDirectory, 'node.exe')
+  if (existsSync(adjacent)) return adjacent
+  for (const directory of windowsPathDirectories(env)) {
+    const candidate = join(directory, 'node.exe')
+    if (existsSync(candidate)) return candidate
+  }
+  return undefined
+}
+
 /**
  * npm exposes global binaries as .cmd shims on Windows. Node cannot execute
  * those shims without a shell, while spawn(..., { shell: true }) leaves args
@@ -79,11 +92,12 @@ function resolveWindowsDsh(
     if (!existsSync(join(directory, 'dsh.cmd'))) continue
     const entry = installedDshEntry(directory)
     if (entry === undefined) continue
+    const node = windowsNodeExecutable(directory, host.env)
+    if (node === undefined) continue
     return {
-      command: host.execPath,
+      command: node,
       args: [entry, ...configuredArgs],
       sourceCheckout: false,
-      env: { ELECTRON_RUN_AS_NODE: '1' },
     }
   }
   return undefined
@@ -140,7 +154,6 @@ export function resolveLaunch(
   const configuredExecutable = executable.trim()
   const host: LaunchHost = {
     platform: overrides.platform ?? process.platform,
-    execPath: overrides.execPath ?? process.execPath,
     env: overrides.env ?? process.env,
   }
 

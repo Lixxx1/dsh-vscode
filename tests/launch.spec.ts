@@ -58,8 +58,10 @@ describe('DSH launch resolution', () => {
     const prefix = mkdtempSync(join(tmpdir(), 'dsh-vscode-windows-prefix-'))
     const packageRoot = join(prefix, 'node_modules', '@deepseek-ai', 'dsh')
     const entry = join(packageRoot, 'lib', 'bin.js')
+    const node = join(prefix, 'node.exe')
     mkdirSync(join(packageRoot, 'lib'), { recursive: true })
     writeFileSync(join(prefix, 'dsh.cmd'), '@echo off\r\n')
+    writeFileSync(node, '')
     writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({
       name: '@deepseek-ai/dsh',
       bin: { dsh: 'lib/bin.js' },
@@ -68,13 +70,36 @@ describe('DSH launch resolution', () => {
 
     expect(resolveLaunch('/not/a/source/tree', '', ['web', '--port', '0'], {
       platform: 'win32',
-      execPath: 'C:\\Program Files\\Microsoft VS Code\\Code.exe',
       env: { Path: prefix },
     })).toEqual({
-      command: 'C:\\Program Files\\Microsoft VS Code\\Code.exe',
+      command: node,
       args: [entry, 'web', '--port', '0'],
       sourceCheckout: false,
-      env: { ELECTRON_RUN_AS_NODE: '1' },
+    })
+  })
+
+  it('uses the Node runtime that npm shims would resolve from PATH', () => {
+    const prefix = mkdtempSync(join(tmpdir(), 'dsh-vscode-windows-prefix-'))
+    const nodeDirectory = mkdtempSync(join(tmpdir(), 'dsh-vscode-windows-node-'))
+    const packageRoot = join(prefix, 'node_modules', '@deepseek-ai', 'dsh')
+    const entry = join(packageRoot, 'lib', 'bin.js')
+    const node = join(nodeDirectory, 'node.exe')
+    mkdirSync(join(packageRoot, 'lib'), { recursive: true })
+    writeFileSync(join(prefix, 'dsh.cmd'), '@echo off\r\n')
+    writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({
+      name: '@deepseek-ai/dsh',
+      bin: { dsh: 'lib/bin.js' },
+    }))
+    writeFileSync(entry, '')
+    writeFileSync(node, '')
+
+    expect(resolveLaunch('/not/a/source/tree', '', ['web'], {
+      platform: 'win32',
+      env: { Path: `${prefix};${nodeDirectory}` },
+    })).toEqual({
+      command: node,
+      args: [entry, 'web'],
+      sourceCheckout: false,
     })
   })
 
@@ -82,7 +107,6 @@ describe('DSH launch resolution', () => {
     const prefix = mkdtempSync(join(tmpdir(), 'dsh-vscode-windows-missing-'))
     expect(resolveLaunch('/not/a/source/tree', '', ['web'], {
       platform: 'win32',
-      execPath: 'C:\\Program Files\\Microsoft VS Code\\Code.exe',
       env: { Path: prefix },
     })).toEqual({
       command: 'dsh.cmd',
@@ -95,8 +119,10 @@ describe('DSH launch resolution', () => {
     const prefix = mkdtempSync(join(tmpdir(), 'dsh-vscode-windows-explicit-'))
     const packageRoot = join(prefix, 'node_modules', '@deepseek-ai', 'dsh')
     const entry = join(packageRoot, 'lib', 'bin.js')
+    const node = join(prefix, 'node.exe')
     mkdirSync(join(packageRoot, 'lib'), { recursive: true })
     writeFileSync(join(prefix, 'dsh.cmd'), '@echo off\r\n')
+    writeFileSync(node, '')
     writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({
       name: '@deepseek-ai/dsh',
       bin: 'lib/bin.js',
@@ -105,13 +131,11 @@ describe('DSH launch resolution', () => {
 
     expect(resolveLaunch('/not/a/source/tree', join(prefix, 'dsh.cmd'), ['web'], {
       platform: 'win32',
-      execPath: 'C:\\Program Files\\Microsoft VS Code\\Code.exe',
       env: {},
     })).toEqual({
-      command: 'C:\\Program Files\\Microsoft VS Code\\Code.exe',
+      command: node,
       args: [entry, 'web'],
       sourceCheckout: false,
-      env: { ELECTRON_RUN_AS_NODE: '1' },
     })
   })
 })
