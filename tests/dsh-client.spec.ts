@@ -167,4 +167,45 @@ describe('DshClient queue protocol', () => {
       { method: 'session.history', payload: { sessionId: 'session-1', beforeSeq: 42, maxMessages: 100 } },
     ])
   })
+
+  it('uses the rc.8 command image envelope without breaking legacy command calls', async () => {
+    const requests: Array<{ method: string; payload: unknown }> = []
+    vi.stubGlobal('fetch', vi.fn(async (_url: URL, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body)) as { rpcId: string; method: string; payload: unknown }
+      requests.push({ method: request.method, payload: request.payload })
+      return new Response(JSON.stringify({
+        type: 'server-response', rpcId: request.rpcId,
+        result: {
+          ok: true,
+          value: { commandId: 'command-1', result: { kind: 'success' } },
+        },
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }))
+    const client = new DshClient(new URL('http://127.0.0.1:31415'))
+
+    await client.executeCommand('session-1', '/compact')
+    await client.executeCommand('session-1', '/plan inspect this', [{
+      type: 'image',
+      mediaType: 'image/png',
+      data: 'YWJj',
+      name: 'diagram.png',
+    }])
+
+    expect(requests).toEqual([
+      {
+        method: 'commands/execute',
+        payload: { args: { agentId: 'session-1', line: '/compact' } },
+      },
+      {
+        method: 'commands/execute',
+        payload: {
+          args: {
+            agentId: 'session-1',
+            line: '/plan inspect this',
+            images: [{ mediaType: 'image/png', data: 'YWJj', name: 'diagram.png' }],
+          },
+        },
+      },
+    ])
+  })
 })

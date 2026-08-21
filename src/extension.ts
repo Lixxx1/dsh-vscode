@@ -350,9 +350,20 @@ class DshChatController implements vscode.Disposable {
     if ((normalized === '' && images.length === 0) || this._state.sessionId === '') return
     const slash = this.slashRoute(normalized)
     if (slash.kind === 'command') {
-      if (images.length > 0) throw new Error('DeepSeek commands cannot include image attachments.')
-      const execution = await this.requireClient().executeCommand(this._state.sessionId, normalized)
+      const command = this._state.commands.find(item => item.name === slash.name)
+      if (images.length > 0 && command?.input?.images !== true) {
+        throw new Error(`${slash.token} does not accept image attachments; remove them first.`)
+      }
+      const usesRc8Envelope = this._state.commands.some(item => item.input?.images === true)
+      const execution = await this.requireClient().executeCommand(
+        this._state.sessionId,
+        normalized,
+        usesRc8Envelope ? images : undefined,
+      )
       if (execution === undefined) throw new Error(`DeepSeek did not recognize ${slash.token}.`)
+      if (images.length > 0 && execution.result.kind === 'error') {
+        throw new Error(execution.result.text ?? `${slash.token} could not use the attached images.`)
+      }
       return
     }
     if (slash.kind === 'unknown') throw new Error(`Unknown DeepSeek command or skill: ${slash.token}`)

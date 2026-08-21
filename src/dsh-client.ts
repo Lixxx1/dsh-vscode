@@ -28,7 +28,7 @@ export interface ModelSelection {
 export interface CommandDescriptor {
   name: string
   description: string
-  input?: { hint: string }
+  input?: { hint: string; images?: boolean }
 }
 
 export interface CommandExecution {
@@ -257,8 +257,24 @@ export class DshClient {
     return this.call('agentPreset.select', { sessionId, agentPreset }, 30_000)
   }
 
-  executeCommand(sessionId: string, line: string): Promise<CommandExecution | undefined> {
-    return this.call('commands/execute', { args: { agentId: sessionId, line } }, 300_000)
+  executeCommand(
+    sessionId: string,
+    line: string,
+    images?: readonly PromptImage[],
+  ): Promise<CommandExecution | undefined> {
+    return this.call('commands/execute', {
+      args: {
+        agentId: sessionId,
+        line,
+        ...(images === undefined ? {} : {
+          images: images.map(image => ({
+            mediaType: image.mediaType,
+            data: image.data,
+            ...(image.name === undefined ? {} : { name: image.name }),
+          })),
+        }),
+      },
+    }, 300_000)
   }
 
   dispose(): void {
