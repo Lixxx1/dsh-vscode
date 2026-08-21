@@ -109,7 +109,11 @@ function diffPage(message: ConversationMessage, view: View, cursor: Cursor): Too
   const part = diffs[index]
   if (part === undefined) return { message: { ...baseMessage(message), resultView: { card: 'diff', diffs: [] } } }
   const end = Math.min(part.text.length, cursor.offset + TOOL_OUTPUT_CHAR_LIMIT)
-  const diff = { path: part.path, [part.field]: part.text.slice(cursor.offset, end) }
+  const diff = {
+    path: part.path,
+    [part.field]: part.text.slice(cursor.offset, end),
+    ...(cursor.section === 'diff' && cursor.index === index && cursor.offset > 0 ? { continuation: true } : {}),
+  }
   const next = end < part.text.length
     ? nextCursor('diff', index, end)
     : index + 1 < diffs.length ? nextCursor('diff', index + 1) : undefined

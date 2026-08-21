@@ -34,7 +34,10 @@ describe('tool output pages', () => {
     expect(firstDiff?.newText).toBeUndefined()
 
     const second = pageToolOutput(message, first.nextCursor)
-    expect((second.message.resultView as { diffs: Array<Record<string, string>> }).diffs[0]?.oldText).toBe('a')
+    const secondDiff = (second.message.resultView as { diffs: Array<Record<string, string | boolean>> }).diffs[0]
+    expect(secondDiff?.oldText).toBe('a')
+    expect(secondDiff?.continuation).toBe(true)
+    expect(firstDiff.oldText + secondDiff?.oldText).toBe(oldText)
     expect(second.nextCursor).toBeDefined()
   })
 

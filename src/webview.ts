@@ -517,10 +517,12 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       if (!text) return;
       parent.append(node('pre', className || '', String(text)));
     }
-    function appendPrefixedPre(parent, text, prefix, className) {
+    function appendPrefixedPre(parent, text, prefix, className, continuation) {
       const value = String(text || '');
       if (!value) return;
-      parent.append(node('pre', className || '', prefix + value.replace(/\\n/g, '\\n' + prefix)));
+      const element = node('pre', className || '', (continuation ? '' : prefix) + value.replace(/\\n/g, '\\n' + prefix));
+      if (continuation) element.dataset.diffContinuation = 'true';
+      parent.append(element);
     }
     function appendMarkdownPage(parent, text) {
       const value = String(text || '');
@@ -547,12 +549,15 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
         for (const diffValue of array(view.diffs)) {
           const diff = record(diffValue); if (!diff) continue;
           const filePath = string(diff.path, 'File change');
-          if (filePath !== 'File change' && !paths.includes(filePath)) paths.push(filePath);
-          const pathRow = node('div', 'diff-path');
-          pathRow.append(filePath === 'File change' ? document.createTextNode(filePath) : fileButton(filePath, undefined, filePath));
-          body.append(pathRow);
-          if (typeof diff.oldText === 'string') appendPrefixedPre(body, diff.oldText, '- ', 'diff-old');
-          appendPrefixedPre(body, string(diff.newText), '+ ', 'diff-new');
+          const continuation = diff.continuation === true;
+          if (!continuation) {
+            if (filePath !== 'File change' && !paths.includes(filePath)) paths.push(filePath);
+            const pathRow = node('div', 'diff-path');
+            pathRow.append(filePath === 'File change' ? document.createTextNode(filePath) : fileButton(filePath, undefined, filePath));
+            body.append(pathRow);
+          }
+          if (typeof diff.oldText === 'string') appendPrefixedPre(body, diff.oldText, '- ', 'diff-old', continuation);
+          appendPrefixedPre(body, string(diff.newText), '+ ', 'diff-new', continuation);
         }
         for (const filePath of paths) {
           const actions = node('div', 'tool-actions');
@@ -621,12 +626,23 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       const loaded = toolOutputPages.get(message.id);
       if (loaded && loaded.revision !== message.deferredBodyRevision) resetDeferredOutput(message.id);
     }
+    function appendDeferredPage(parent, page, renderPage) {
+      const rendered = renderPage(page);
+      const continuation = rendered.querySelector('pre[data-diff-continuation="true"]');
+      if (continuation) {
+        const selector = continuation.classList.contains('diff-old') ? 'pre.diff-old' : 'pre.diff-new';
+        const candidates = parent.querySelectorAll(selector);
+        const target = candidates[candidates.length - 1];
+        if (target) { target.textContent += continuation.textContent; return; }
+      }
+      parent.append(rendered);
+    }
     function attachDeferredOutput(message, parent, renderPage, autoLoad, initialLabel) {
       prepareDeferredOutput(message);
       const pages = node('div'); const controls = node('div'); parent.append(pages, controls);
       const loaded = toolOutputPages.get(message.id) || { pages: [], nextCursor: undefined, revision: message.deferredBodyRevision };
       toolOutputPages.set(message.id, loaded);
-      for (const page of loaded.pages) pages.append(renderPage(page));
+      for (const page of loaded.pages) appendDeferredPage(pages, page, renderPage);
       function load(cursor) {
         if (loadingToolRequests.has(message.id)) return;
         const requestId = ++toolOutputRequestId;
@@ -641,7 +657,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       const controller = {
         revision: message.deferredBodyRevision,
         append(page, nextCursor) {
-          pages.append(renderPage(page)); loaded.pages.push(page); loaded.nextCursor = nextCursor; controller.renderControls();
+          appendDeferredPage(pages, page, renderPage); loaded.pages.push(page); loaded.nextCursor = nextCursor; controller.renderControls();
         },
         renderControls() {
           controls.replaceChildren();
