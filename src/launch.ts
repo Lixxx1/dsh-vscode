@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 export interface LaunchCommand {
@@ -13,6 +13,7 @@ export interface LaunchCommand {
 interface LaunchHost {
   platform: NodeJS.Platform
   env: Readonly<Record<string, string | undefined>>
+  cwd: string
 }
 
 const SOURCE_ROOT_PACKAGE = '@deepseek-ai/dsh-root'
@@ -30,6 +31,15 @@ function windowsPathDirectories(env: Readonly<Record<string, string | undefined>
     .split(';')
     .map(value => value.trim().replace(/^"|"$/g, ''))
     .filter(value => value !== '')
+}
+
+function executableBasename(executable: string): string {
+  return executable.split(/[\\/]/).at(-1) ?? executable
+}
+
+function explicitExecutablePath(executable: string, cwd: string): string {
+  if (isAbsolute(executable)) return executable
+  return resolve(cwd, ...executable.split(/[\\/]+/))
 }
 
 function installedDshEntry(binDirectory: string): string | undefined {
@@ -83,11 +93,14 @@ function resolveWindowsDsh(
   configuredArgs: readonly string[],
   host: LaunchHost,
 ): LaunchCommand | undefined {
-  if (executable !== '' && basename(executable).toLowerCase() !== 'dsh.cmd') return undefined
+  if (executable !== '' && executableBasename(executable).toLowerCase() !== 'dsh.cmd') return undefined
 
-  const directories = isAbsolute(executable)
-    ? [dirname(executable)]
-    : windowsPathDirectories(host.env)
+  const explicitPath = executable !== '' && /[\\/]/.test(executable)
+    ? explicitExecutablePath(executable, host.cwd)
+    : undefined
+  const directories = explicitPath === undefined
+    ? windowsPathDirectories(host.env)
+    : [dirname(explicitPath)]
   for (const directory of directories) {
     if (!existsSync(join(directory, 'dsh.cmd'))) continue
     const entry = installedDshEntry(directory)
@@ -155,6 +168,7 @@ export function resolveLaunch(
   const host: LaunchHost = {
     platform: overrides.platform ?? process.platform,
     env: overrides.env ?? process.env,
+    cwd: overrides.cwd ?? process.cwd(),
   }
 
   if (configuredExecutable !== '') {

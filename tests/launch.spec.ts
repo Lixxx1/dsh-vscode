@@ -138,4 +138,34 @@ describe('DSH launch resolution', () => {
       sourceCheckout: false,
     })
   })
+
+  it('resolves an explicitly configured relative dsh.cmd from the launch cwd', () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'dsh-vscode-windows-workspace-'))
+    const relativePrefix = join(workspace, 'tools')
+    const globalPrefix = mkdtempSync(join(tmpdir(), 'dsh-vscode-windows-global-'))
+    const relativePackage = join(relativePrefix, 'node_modules', '@deepseek-ai', 'dsh')
+    const globalPackage = join(globalPrefix, 'node_modules', '@deepseek-ai', 'dsh')
+    const relativeEntry = join(relativePackage, 'lib', 'bin.js')
+    mkdirSync(join(relativePackage, 'lib'), { recursive: true })
+    mkdirSync(join(globalPackage, 'lib'), { recursive: true })
+    for (const [prefix, packageRoot] of [[relativePrefix, relativePackage], [globalPrefix, globalPackage]]) {
+      writeFileSync(join(prefix, 'dsh.cmd'), '@echo off\r\n')
+      writeFileSync(join(prefix, 'node.exe'), '')
+      writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({
+        name: '@deepseek-ai/dsh',
+        bin: { dsh: 'lib/bin.js' },
+      }))
+      writeFileSync(join(packageRoot, 'lib', 'bin.js'), '')
+    }
+
+    expect(resolveLaunch('/not/a/source/tree', 'tools\\dsh.cmd', ['web'], {
+      platform: 'win32',
+      cwd: workspace,
+      env: { Path: globalPrefix },
+    })).toEqual({
+      command: join(relativePrefix, 'node.exe'),
+      args: [relativeEntry, 'web'],
+      sourceCheckout: false,
+    })
+  })
 })
