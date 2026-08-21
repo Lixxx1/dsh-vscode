@@ -3,6 +3,13 @@ import type { ConversationImage, ConversationMessage } from './conversation.js'
 export interface ConversationMessagesPatch {
   reset?: ConversationMessage[]
   upserts?: ConversationMessage[]
+  appends?: ConversationMessageAppend[]
+}
+
+export interface ConversationMessageAppend {
+  id: string
+  text: string
+  streaming: boolean
 }
 
 function compactToolView(value: unknown): unknown {
@@ -41,6 +48,7 @@ export function messagesPatchForWebview(patch: ConversationMessagesPatch): Conve
   return {
     ...(patch.reset === undefined ? {} : { reset: patch.reset.map(messageForWebview) }),
     ...(patch.upserts === undefined ? {} : { upserts: patch.upserts.map(messageForWebview) }),
+    ...(patch.appends === undefined ? {} : { appends: patch.appends }),
   }
 }
 
@@ -78,6 +86,22 @@ function sameMessage(left: ConversationMessage, right: ConversationMessage): boo
     && sameImages(left.images, right.images)
 }
 
+function canAppendAssistantText(left: ConversationMessage, right: ConversationMessage): boolean {
+  return left.id === right.id
+    && left.role === 'assistant'
+    && right.role === 'assistant'
+    && left.streaming === true
+    && right.text.startsWith(left.text)
+    && left.detail === right.detail
+    && left.failed === right.failed
+    && left.callView === right.callView
+    && left.resultView === right.resultView
+    && left.rawInput === right.rawInput
+    && left.rawResult === right.rawResult
+    && left.deferredBody === right.deferredBody
+    && sameImages(left.images, right.images)
+}
+
 /**
  * Produces an append/update patch for the common streaming path. History
  * insertion, removal, and reordering intentionally fall back to a reset.
@@ -93,11 +117,30 @@ export function diffConversationMessages(
   if (next.length < previous.length) return { reset: [...next] }
 
   const upserts: ConversationMessage[] = []
+  const appends: ConversationMessageAppend[] = []
   for (let index = 0; index < next.length; index += 1) {
     const message = next[index]
     if (message === undefined) continue
     const current = previous[index]
-    if (current === undefined || !sameMessage(current, message)) upserts.push(message)
+    if (current === undefined) {
+      upserts.push(message)
+      continue
+    }
+    if (sameMessage(current, message)) continue
+    if (canAppendAssistantText(current, message)) {
+      appends.push({
+        id: message.id,
+        text: message.text.slice(current.text.length),
+        streaming: message.streaming === true,
+      })
+    } else {
+      upserts.push(message)
+    }
   }
-  return upserts.length === 0 ? undefined : { upserts }
+  return upserts.length === 0 && appends.length === 0
+    ? undefined
+    : {
+        ...(upserts.length === 0 ? {} : { upserts }),
+        ...(appends.length === 0 ? {} : { appends }),
+      }
 }

@@ -11,7 +11,9 @@ describe('diffConversationMessages', () => {
     const previous = [message('tool:1', 'Tool', { role: 'tool', rawResult: 'large output' }), message('assistant:1', 'Hel', { streaming: true })]
     const next = [message('tool:1', 'Tool', { role: 'tool', rawResult: 'large output' }), message('assistant:1', 'Hello', { streaming: true })]
 
-    expect(diffConversationMessages(previous, next)).toEqual({ upserts: [next[1]] })
+    expect(diffConversationMessages(previous, next)).toEqual({
+      appends: [{ id: 'assistant:1', text: 'lo', streaming: true }],
+    })
   })
 
   it('appends new messages without resetting existing output', () => {
@@ -19,6 +21,22 @@ describe('diffConversationMessages', () => {
     const next = [...previous, message('assistant:2', 'Next', { streaming: true })]
 
     expect(diffConversationMessages(previous, next)).toEqual({ upserts: [next[1]] })
+  })
+
+  it('finishes a streaming message without resending its full text', () => {
+    const previous = [message('assistant:1', 'Complete response', { streaming: true })]
+    const next = [message('assistant:1', 'Complete response')]
+
+    expect(diffConversationMessages(previous, next)).toEqual({
+      appends: [{ id: 'assistant:1', text: '', streaming: false }],
+    })
+  })
+
+  it('falls back to an upsert when streamed text is rewritten', () => {
+    const previous = [message('assistant:1', 'Original', { streaming: true })]
+    const next = [message('assistant:1', 'Replacement', { streaming: true })]
+
+    expect(diffConversationMessages(previous, next)).toEqual({ upserts: next })
   })
 
   it('treats equivalent image projections as unchanged', () => {

@@ -109,6 +109,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     .diff-old { border-left: 2px solid var(--vscode-gitDecoration-deletedResourceForeground); }
     .diff-new { border-left: 2px solid var(--vscode-gitDecoration-addedResourceForeground); }
     .source { display: block; margin: 4px 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .source-line { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--vscode-editor-font-family); font-size: 11px; }
     .tool-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 2px; }
     .tool-action { min-height: 24px; padding: 2px 7px; border: 1px solid var(--vscode-widget-border); border-radius: 5px; color: var(--vscode-foreground); background: transparent; font-size: 11px; }
     .tool-action:hover { background: var(--vscode-toolbar-hoverBackground); }
@@ -311,6 +312,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     let renderedStatusKey = '';
     let renderedHistoryKey = '';
     let renderedTail = {};
+    let renderedChrome = {};
     const renderedMessages = new Map();
     const expandedToolIds = new Set();
     const loadingToolIds = new Set();
@@ -433,6 +435,57 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       return root;
     }
 
+    function createMarkdownStream(text) {
+      const stream = {
+        root: node('div', 'markdown'), text: '', committedOffset: 0, scanOffset: 0,
+        safeBoundary: 0, fenced: false, linePrefix: '', lineHasContent: false, tailNodes: [], marker: document.createComment('stream-end'),
+      };
+      stream.root.append(stream.marker);
+      updateMarkdownStream(stream, text, true);
+      return stream;
+    }
+    function scanMarkdownStream(stream, text) {
+      for (let index = stream.scanOffset; index < text.length; index += 1) {
+        const character = text[index];
+        if (character === '\\n') {
+          if (stream.linePrefix === String.fromCharCode(96).repeat(3)) stream.fenced = !stream.fenced;
+          else if (!stream.lineHasContent && !stream.fenced) stream.safeBoundary = index + 1;
+          stream.linePrefix = ''; stream.lineHasContent = false;
+        } else {
+          if (stream.linePrefix.length < 3) stream.linePrefix += character;
+          if (!/\\s/.test(character)) stream.lineHasContent = true;
+        }
+      }
+      stream.scanOffset = text.length;
+    }
+    function appendMarkdownNodes(parent, text, before) {
+      if (!text) return [];
+      const parsed = renderMarkdown(text); const children = [...parsed.childNodes];
+      for (const child of children) parent.insertBefore(child, before || null);
+      return children;
+    }
+    function updateMarkdownStream(stream, text, streaming) {
+      const value = String(text || '');
+      if (!value.startsWith(stream.text)) return false;
+      scanMarkdownStream(stream, value);
+      for (const child of stream.tailNodes) child.remove();
+      stream.tailNodes = [];
+      const boundary = streaming ? stream.safeBoundary : value.length;
+      if (boundary > stream.committedOffset) {
+        appendMarkdownNodes(stream.root, value.slice(stream.committedOffset, boundary), stream.marker);
+        stream.committedOffset = boundary;
+      }
+      if (streaming && boundary < value.length) {
+        const tail = value.slice(boundary);
+        stream.tailNodes = tail.length > toolOutputChunkSize
+          ? [node('p', 'streaming-plain', tail)]
+          : appendMarkdownNodes(stream.root, tail, stream.marker);
+        if (stream.tailNodes.length === 1 && !stream.tailNodes[0].isConnected) stream.root.insertBefore(stream.tailNodes[0], stream.marker);
+      }
+      stream.text = value;
+      return true;
+    }
+
     function toolTitle(message, callView, resultView) {
       return string(resultView && resultView.title) || string(callView && callView.title) || message.text || 'Tool';
     }
@@ -466,6 +519,54 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       });
       parent.append(more);
     }
+    function appendPrefixedPre(parent, text, prefix, className) {
+      const value = String(text || '');
+      if (!value) return;
+      let visible = Math.min(value.length, toolOutputChunkSize);
+      const format = () => prefix + value.slice(0, visible).replace(/\\n/g, '\\n' + prefix);
+      const pre = node('pre', className || '', format()); parent.append(pre);
+      if (visible >= value.length) return;
+      const more = node('button', 'tool-output-more'); more.type = 'button';
+      const updateLabel = () => { more.textContent = 'Show more · ' + String(visible) + ' / ' + String(value.length) + ' characters'; };
+      updateLabel();
+      more.addEventListener('click', () => {
+        visible = Math.min(value.length, visible + toolOutputChunkSize); pre.textContent = format();
+        if (visible >= value.length) more.remove(); else updateLabel();
+      });
+      parent.append(more);
+    }
+    function appendMarkdownPage(parent, text) {
+      const value = String(text || '');
+      if (!value) return;
+      let visible = Math.min(value.length, toolOutputChunkSize);
+      const content = node('div'); const more = node('button', 'tool-output-more'); more.type = 'button';
+      const renderPage = () => {
+        content.replaceChildren(renderMarkdown(value.slice(0, visible)));
+        more.textContent = 'Show more · ' + String(visible) + ' / ' + String(value.length) + ' characters';
+      };
+      renderPage(); parent.append(content);
+      if (visible < value.length) {
+        more.addEventListener('click', () => {
+          visible = Math.min(value.length, visible + toolOutputChunkSize); renderPage();
+          if (visible >= value.length) more.remove();
+        });
+        parent.append(more);
+      }
+    }
+    function appendPagedItems(parent, values, appendItem, pageSize) {
+      if (!values.length) return;
+      const container = node('div'); const more = node('button', 'tool-output-more'); more.type = 'button';
+      let visible = 0; const size = pageSize || 100;
+      const reveal = () => {
+        const end = Math.min(values.length, visible + size);
+        for (let index = visible; index < end; index += 1) appendItem(container, values[index]);
+        visible = end;
+        more.textContent = 'Show more · ' + String(visible) + ' / ' + String(values.length) + ' results';
+        if (visible >= values.length) more.remove();
+      };
+      parent.append(container); reveal();
+      if (visible < values.length) { more.addEventListener('click', reveal); parent.append(more); }
+    }
     function renderToolBody(message, callView, resultView) {
       const body = node('div', 'tool-body');
       const view = resultView || callView;
@@ -484,8 +585,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
           const pathRow = node('div', 'diff-path');
           pathRow.append(filePath === 'File change' ? document.createTextNode(filePath) : fileButton(filePath, undefined, filePath));
           body.append(pathRow);
-          if (typeof diff.oldText === 'string') appendPre(body, '- ' + diff.oldText.replace(/\\n/g, '\\n- '), 'diff-old');
-          appendPre(body, '+ ' + string(diff.newText).replace(/\\n/g, '\\n+ '), 'diff-new');
+          if (typeof diff.oldText === 'string') appendPrefixedPre(body, diff.oldText, '- ', 'diff-old');
+          appendPrefixedPre(body, string(diff.newText), '+ ', 'diff-new');
         }
         for (const filePath of paths) {
           const actions = node('div', 'tool-actions');
@@ -500,24 +601,32 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       } else if (card === 'read') {
         const filePath = string(view.path, 'File'); const title = node('div', 'result-title');
         title.append(filePath === 'File' ? document.createTextNode(filePath) : fileButton(filePath, Number(view.offset) || undefined, filePath)); body.append(title);
-        const lines = array(view.lines).map(value => { const line = record(value); return line ? String(line.number).padStart(4, ' ') + '  ' + string(line.text) : ''; }).filter(Boolean);
-        appendPre(body, lines.join('\\n') || message.rawResult);
+        const lines = array(view.lines);
+        if (lines.length) appendPagedItems(body, lines, (container, value) => {
+          const line = record(value); if (line) container.append(node('div', 'source-line', String(line.number).padStart(4, ' ') + '  ' + string(line.text)));
+        }, 200);
+        else appendPre(body, message.rawResult);
       } else if (card === 'search') {
-        if (view.shape === 'paths') for (const pathValue of array(view.paths)) {
-          const filePath = string(pathValue); const row = node('div', 'source'); if (filePath) row.append(fileButton(filePath, undefined, filePath)); body.append(row);
-        }
-        if (view.shape === 'matches') for (const fileValue of array(view.files)) {
-          const file = record(fileValue); if (!file) continue;
-          const filePath = string(file.path); const title = node('div', 'result-title'); if (filePath) title.append(fileButton(filePath, undefined, filePath)); body.append(title);
-          for (const matchValue of array(file.matches)) {
-            const match = record(matchValue); if (!match) continue; const line = Number(match.lineNumber) || undefined; const row = node('div', 'source');
-            if (filePath) row.append(fileButton(filePath, line, String(match.lineNumber) + ': ' + string(match.line))); body.append(row);
+        if (view.shape === 'paths') appendPagedItems(body, array(view.paths), (container, pathValue) => {
+          const filePath = string(pathValue); const row = node('div', 'source'); if (filePath) row.append(fileButton(filePath, undefined, filePath)); container.append(row);
+        }, 100);
+        if (view.shape === 'matches') {
+          const matches = [];
+          for (const fileValue of array(view.files)) {
+            const file = record(fileValue); if (!file) continue; const filePath = string(file.path);
+            matches.push({ kind: 'file', path: filePath });
+            for (const matchValue of array(file.matches)) matches.push({ kind: 'match', path: filePath, value: matchValue });
           }
+          appendPagedItems(body, matches, (container, entry) => {
+            if (entry.kind === 'file') { const title = node('div', 'result-title'); if (entry.path) title.append(fileButton(entry.path, undefined, entry.path)); container.append(title); return; }
+            const match = record(entry.value); if (!match) return; const line = Number(match.lineNumber) || undefined; const row = node('div', 'source');
+            if (entry.path) row.append(fileButton(entry.path, line, String(match.lineNumber) + ': ' + string(match.line))); container.append(row);
+          }, 100);
         }
         if (view.truncated === true) body.append(node('div', '', 'Showing a limited result set (' + String(view.total || '') + ' total).'));
       } else if (card === 'web') {
-        if (typeof view.answer === 'string') body.append(renderMarkdown(view.answer));
-        for (const sourceValue of array(view.sources)) { const source = record(sourceValue); if (source && typeof source.url === 'string') body.append(link(source.url, string(source.title) || source.url)); }
+        if (typeof view.answer === 'string') appendMarkdownPage(body, view.answer);
+        appendPagedItems(body, array(view.sources), (container, sourceValue) => { const source = record(sourceValue); if (source && typeof source.url === 'string') container.append(link(source.url, string(source.title) || source.url)); }, 50);
         if (typeof view.url === 'string') body.append(link(view.url, view.url));
       } else {
         const presented = contentText(view && view.content);
@@ -567,7 +676,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       head.append(node('span', 'command-name', message.text));
       head.append(node('span', 'tool-detail', message.detail || ''));
       item.append(head);
-      if (message.rawResult) item.append(node('div', 'command-result', message.rawResult));
+      if (message.rawResult) { const result = node('div', 'command-result'); appendPre(result, message.rawResult); item.append(result); }
       return item;
     }
     function renderChangedFiles(groups) {
@@ -598,26 +707,32 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       bubble.append(body); return bubble;
     }
     function renderMessage(message) {
-      if (message.role === 'tool') return renderTool(message);
-      if (message.role === 'command') return renderCommand(message);
-      if (message.role === 'notice') return node('div', 'status' + (message.failed ? ' error' : ''), message.text);
+      if (message.role === 'tool') return { message, node: renderTool(message) };
+      if (message.role === 'command') return { message, node: renderCommand(message) };
+      if (message.role === 'notice') return { message, node: node('div', 'status' + (message.failed ? ' error' : ''), message.text) };
       const item = node('article', 'message ' + message.role);
       const head = node('div', 'message-head');
       head.append(node('span', 'avatar' + (message.role === 'assistant' ? ' deepseek-mark' : ''), message.role === 'user' ? 'Y' : ''));
       head.append(node('span', '', message.role === 'user' ? 'You' : 'DeepSeek'));
-      const body = message.role === 'assistant' ? renderMarkdown(message.text) : node('div', '', message.text);
+      const markdown = message.role === 'assistant' && message.streaming === true ? createMarkdownStream(message.text) : undefined;
+      const body = message.role === 'assistant' ? (markdown ? markdown.root : renderMarkdown(message.text)) : node('div', '', message.text);
       body.classList.add('message-body');
       if (message.streaming) body.classList.add('streaming');
       appendImages(body, message.images);
-      item.append(head, body); return item;
+      item.append(head, body); return { message, node: item, ...(markdown ? { markdown } : {}) };
     }
     function messageNode(message) {
       const rendered = renderedMessages.get(message.id);
       if (rendered && rendered.message === message) return rendered.node;
+      if (rendered && rendered.markdown && message.role === 'assistant' && message.images === rendered.message.images && updateMarkdownStream(rendered.markdown, message.text, message.streaming === true)) {
+        rendered.message = message;
+        rendered.markdown.root.classList.toggle('streaming', message.streaming === true);
+        return rendered.node;
+      }
       const next = renderMessage(message);
-      if (rendered && rendered.node.isConnected) rendered.node.replaceWith(next);
-      renderedMessages.set(message.id, { message, node: next });
-      return next;
+      if (rendered && rendered.node.isConnected) rendered.node.replaceWith(next.node);
+      renderedMessages.set(message.id, next);
+      return next.node;
     }
     function reconcileMessages(messages, current) {
       if (!messages.length) {
@@ -1132,6 +1247,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       }
       if (current.phase !== 'ready') {
         elements.conversationHistory.replaceChildren(); elements.messages.replaceChildren(); elements.conversationTail.replaceChildren();
+        renderedHistoryKey = ''; renderedTail = {};
         return;
       }
 
@@ -1157,23 +1273,36 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     function render(current) {
       const nearBottom = elements.scroll.scrollHeight - elements.scroll.scrollTop - elements.scroll.clientHeight < 80;
       const preservingHistory = historyAnchor && historyAnchor.sessionId === current.sessionId;
-      state = current; elements.workspace.textContent = current.workspaceName || 'Workspace'; elements.project.title = current.cwd ? 'DeepSeek project: ' + current.cwd : 'Choose DeepSeek project';
-      elements.sessions.replaceChildren();
-      for (const session of current.sessions || []) { const option = new Option(session.title, session.id, false, session.id === current.sessionId); elements.sessions.append(option); }
-      if (!elements.sessions.childElementCount) elements.sessions.append(new Option('New conversation', ''));
-      elements.models.replaceChildren();
-      for (const model of current.models || []) { const option = new Option(model.label, JSON.stringify({ provider: model.provider, model: model.model }), false, model.selected === true); elements.models.append(option); }
-      if (!elements.models.childElementCount) elements.models.append(new Option('Default model', ''));
-      renderEfforts((current.models || []).find(model => model.selected) || (current.models || [])[0]);
-      renderPolicyState(current);
-      renderUsage(current);
-      renderJobs();
+      state = current;
+      if (renderedChrome.workspaceName !== current.workspaceName || renderedChrome.cwd !== current.cwd) {
+        elements.workspace.textContent = current.workspaceName || 'Workspace'; elements.project.title = current.cwd ? 'DeepSeek project: ' + current.cwd : 'Choose DeepSeek project';
+      }
+      if (renderedChrome.sessions !== current.sessions) {
+        elements.sessions.replaceChildren();
+        for (const session of current.sessions || []) { const option = new Option(session.title, session.id, false, session.id === current.sessionId); elements.sessions.append(option); }
+        if (!elements.sessions.childElementCount) elements.sessions.append(new Option('New conversation', ''));
+      } else if (elements.sessions.value !== current.sessionId) elements.sessions.value = current.sessionId;
+      if (renderedChrome.models !== current.models) {
+        elements.models.replaceChildren();
+        for (const model of current.models || []) { const option = new Option(model.label, JSON.stringify({ provider: model.provider, model: model.model }), false, model.selected === true); elements.models.append(option); }
+        if (!elements.models.childElementCount) elements.models.append(new Option('Default model', ''));
+        renderEfforts((current.models || []).find(model => model.selected) || (current.models || [])[0]);
+      }
+      const policyChanged = renderedChrome.agentPreset !== current.agentPreset || renderedChrome.permissions !== current.permissions || renderedChrome.plan !== current.plan || renderedChrome.running !== current.running || renderedChrome.phase !== current.phase;
+      if (policyChanged) renderPolicyState(current);
+      if (renderedChrome.usage !== current.usage) renderUsage(current);
+      if (renderedChrome.jobs !== current.jobs) renderJobs();
       renderConversation(current);
       const enabled = current.phase === 'ready' && current.routable !== false && Boolean(current.sessionId);
       elements.prompt.disabled = !enabled; elements.attach.disabled = !enabled; elements.project.disabled = current.running === true; elements.newSession.disabled = current.phase !== 'ready'; elements.sessions.disabled = current.phase !== 'ready';
       elements.models.disabled = !enabled || !(current.models || []).length; elements.efforts.disabled = !enabled || !elements.efforts.options.length || elements.efforts.value === '';
       elements.cancel.classList.toggle('hidden', current.running !== true); elements.send.title = current.running ? 'Queue message (Enter) · Steer now (Cmd/Ctrl+Enter)' : 'Send (Enter)'; updateSend(); renderQueue();
-      renderCommandMenu();
+      if (renderedChrome.commands !== current.commands || renderedChrome.skills !== current.skills || renderedChrome.permissions !== current.permissions) renderCommandMenu();
+      renderedChrome = {
+        workspaceName: current.workspaceName, cwd: current.cwd, sessions: current.sessions, models: current.models,
+        agentPreset: current.agentPreset, permissions: current.permissions, plan: current.plan, running: current.running,
+        phase: current.phase, usage: current.usage, jobs: current.jobs, commands: current.commands, skills: current.skills,
+      };
       if (preservingHistory && current.loadingHistory !== true) {
         const anchor = historyAnchor; historyAnchor = undefined;
         requestAnimationFrame(() => { elements.scroll.scrollTop = anchor.top + elements.scroll.scrollHeight - anchor.height; });
@@ -1196,6 +1325,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
         const index = indexes.get(message.id);
         if (index === undefined) { indexes.set(message.id, messages.length); messages.push(message); }
         else messages[index] = message;
+      }
+      for (const append of array(patch && patch.appends)) {
+        const index = indexes.get(append.id); const message = index === undefined ? undefined : messages[index];
+        if (!message || message.role !== 'assistant') continue;
+        messages[index] = { ...message, text: message.text + string(append.text), streaming: append.streaming === true };
       }
       return messages;
     }
