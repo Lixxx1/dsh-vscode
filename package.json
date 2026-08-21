@@ -187,6 +187,11 @@
           "default": true,
           "description": "Start DSH when the sidebar first opens."
         },
+        "deepseekHarness.reuseExistingRuntime": {
+          "type": "boolean",
+          "default": true,
+          "description": "Reuse a healthy official DSH Web runtime on 127.0.0.1:3080 before starting a child process."
+        },
         "deepseekHarness.startupTimeout": {
           "type": "number",
           "default": 60000,

@@ -32,11 +32,15 @@ Ask DeepSeek to inspect, change, and verify code without switching between your 
 
 ## 📦 Install
 
-Install the official DeepSeek Harness CLI:
+DSH Sidebar uses the official DeepSeek Harness runtime. If DSH is already running at `http://127.0.0.1:3080`, the extension verifies and reuses it instead of starting another process.
+
+Otherwise, install the CLI in the same local, WSL, SSH, or container environment where the VS Code extension runs:
 
 ```sh
 npm install -g @deepseek-ai/dsh
 ```
+
+The extension then starts an isolated DSH Web runtime for the current VS Code workspace.
 
 Then choose the extension channel that fits you:
 

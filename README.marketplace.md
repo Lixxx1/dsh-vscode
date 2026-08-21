@@ -23,11 +23,15 @@ DSH Sidebar gives you a project-aware assistant in the VS Code right sidebar, wi
 
 ## 📦 Before you start
 
-DSH Sidebar runs the official DeepSeek Harness CLI on your machine. Install it first:
+DSH Sidebar uses the official DeepSeek Harness runtime. If DSH is already running at `http://127.0.0.1:3080`, the extension verifies and reuses it instead of starting another process.
+
+Otherwise, install the CLI in the same local, WSL, SSH, or container environment where the VS Code extension runs:
 
 ```sh
 npm install -g @deepseek-ai/dsh
 ```
+
+The extension then starts an isolated DSH Web runtime for the current VS Code workspace.
 
 You need VS Code 1.100 or newer and Node.js `^22.19` or `>=24`.
 

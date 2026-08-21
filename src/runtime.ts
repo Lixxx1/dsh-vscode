@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import * as vscode from 'vscode'
 import { DEEPSEEK_API_KEY_SECRET } from './credentials.js'
 import { parseDshWebUrl, resolveLaunch, type LaunchCommand, webArgsForDshVersion } from './launch.js'
+import { DEFAULT_DSH_SERVER_URL, probeDshServer } from './runtime-endpoint.js'
 
 export type RuntimeState =
   | { kind: 'stopped' }
@@ -61,7 +62,7 @@ function readDshVersion(launch: LaunchCommand, cwd: string): Promise<string | un
   })
 }
 
-/** Owns exactly one official DSH child process for the current Extension Host. */
+/** Connects to one official DSH Web runtime, spawning and owning it only when needed. */
 export class DshRuntime implements vscode.Disposable {
   private readonly changes = new vscode.EventEmitter<RuntimeState>()
   private child: ChildProcessWithoutNullStreams | undefined
@@ -104,6 +105,7 @@ export class DshRuntime implements vscode.Disposable {
     const config = vscode.workspace.getConfiguration('deepseekHarness', workspace)
     const configuredExecutable = config.get<string>('executable', '')
     const configuredArgs = config.get<string[]>('arguments', ['web', '--host', '127.0.0.1', '--port', '0'])
+    const reuseExistingRuntime = config.get<boolean>('reuseExistingRuntime', true)
     const timeoutMs = config.get<number>('startupTimeout', 60_000)
     const pending = deferredStart()
     this.pending = pending
@@ -114,6 +116,20 @@ export class DshRuntime implements vscode.Disposable {
     let version: string | undefined
     let storedApiKey: string | undefined
     try {
+      if (reuseExistingRuntime) {
+        const existingUrl = new URL(DEFAULT_DSH_SERVER_URL)
+        this.publish({ kind: 'starting', detail: 'Looking for an existing DeepSeek Harness runtime…' })
+        if (await probeDshServer(existingUrl)) {
+          if (this.pending !== pending) return pending.promise
+          const localUri = vscode.Uri.parse(existingUrl.href)
+          this.output.appendLine(`[runtime] reusing existing DSH: ${existingUrl.href}`)
+          this.pending = undefined
+          this.publish({ kind: 'ready', localUri })
+          pending.resolve(localUri)
+          return pending.promise
+        }
+        if (this.pending !== pending) return pending.promise
+      }
       const versionLaunch = resolveLaunch(this.context.extensionUri.fsPath, configuredExecutable, ['--version'], {
         cwd: workspace.fsPath,
       })
