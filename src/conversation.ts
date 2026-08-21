@@ -15,6 +15,7 @@ export interface ConversationMessage {
   rawInput?: string
   rawResult?: string
   images?: ConversationImage[]
+  deferredBody?: boolean
 }
 
 export interface ConversationImage {

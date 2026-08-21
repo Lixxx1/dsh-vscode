@@ -5,6 +5,45 @@ export interface ConversationMessagesPatch {
   upserts?: ConversationMessage[]
 }
 
+function compactToolView(value: unknown): unknown {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const source = value as Record<string, unknown>
+  const compact: Record<string, unknown> = {}
+  if (typeof source.card === 'string') compact.card = source.card
+  if (typeof source.title === 'string') compact.title = source.title
+  return Object.keys(compact).length === 0 ? undefined : compact
+}
+
+/** Keeps completed tool cards lightweight until their body is expanded. */
+export function messageForWebview(message: ConversationMessage): ConversationMessage {
+  if (message.role !== 'tool' || message.streaming === true || message.deferredBody === true) return message
+  const hasBody = message.callView !== undefined
+    || message.resultView !== undefined
+    || message.rawInput !== undefined
+    || message.rawResult !== undefined
+    || (message.images?.length ?? 0) > 0
+  if (!hasBody) return message
+  const callView = compactToolView(message.callView)
+  const resultView = compactToolView(message.resultView)
+  return {
+    id: message.id,
+    role: message.role,
+    text: message.text,
+    ...(message.detail === undefined ? {} : { detail: message.detail }),
+    ...(message.failed === undefined ? {} : { failed: message.failed }),
+    ...(callView === undefined ? {} : { callView }),
+    ...(resultView === undefined ? {} : { resultView }),
+    deferredBody: true,
+  }
+}
+
+export function messagesPatchForWebview(patch: ConversationMessagesPatch): ConversationMessagesPatch {
+  return {
+    ...(patch.reset === undefined ? {} : { reset: patch.reset.map(messageForWebview) }),
+    ...(patch.upserts === undefined ? {} : { upserts: patch.upserts.map(messageForWebview) }),
+  }
+}
+
 function sameImage(left: ConversationImage, right: ConversationImage): boolean {
   return left.attachmentId === right.attachmentId
     && left.mediaType === right.mediaType
@@ -35,6 +74,7 @@ function sameMessage(left: ConversationMessage, right: ConversationMessage): boo
     && left.resultView === right.resultView
     && left.rawInput === right.rawInput
     && left.rawResult === right.rawResult
+    && left.deferredBody === right.deferredBody
     && sameImages(left.images, right.images)
 }
 

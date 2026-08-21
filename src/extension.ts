@@ -48,7 +48,12 @@ import type { SettingsDescription, SettingsMutation, SettingsNamespace } from '.
 import { earliestHistorySequence, mergeHistoryEntries, unseenHistoryEntries } from './history.js'
 import { routeSlashInput, type SlashRoute } from './slash-routing.js'
 import { unavailableUsageMeterState, usageMeterStateOf, type UsageMeterState } from './usage-meter.js'
-import { diffConversationMessages, type ConversationMessagesPatch } from './chat-state-patch.js'
+import {
+  diffConversationMessages,
+  messageForWebview,
+  messagesPatchForWebview,
+  type ConversationMessagesPatch,
+} from './chat-state-patch.js'
 
 let activeRuntime: DshRuntime | undefined
 
@@ -152,6 +157,17 @@ function stateUpdate(previous: ChatViewState, next: ChatViewState): ChatViewStat
   return Object.keys(patchRecord).length === 0 && messages === undefined
     ? undefined
     : { patch, ...(messages === undefined ? {} : { messages }) }
+}
+
+function stateForWebview(state: ChatViewState): ChatViewState {
+  return { ...state, messages: state.messages.map(messageForWebview) }
+}
+
+function stateUpdateForWebview(update: ChatViewStateUpdate): ChatViewStateUpdate {
+  return {
+    patch: update.patch,
+    ...(update.messages === undefined ? {} : { messages: messagesPatchForWebview(update.messages) }),
+  }
 }
 
 function initialState(cwd: string): ChatViewState {
@@ -1053,7 +1069,7 @@ class DshSurface implements vscode.Disposable {
   }
 
   private async postFullState(state: ChatViewState): Promise<void> {
-    await this.webview.postMessage({ type: 'state', state })
+    await this.webview.postMessage({ type: 'state', state: stateForWebview(state) })
     this.postedState = state
   }
 
@@ -1064,7 +1080,7 @@ class DshSurface implements vscode.Disposable {
       return
     }
     const update = stateUpdate(previous, state)
-    if (update !== undefined) await this.webview.postMessage({ type: 'state-update', update })
+    if (update !== undefined) await this.webview.postMessage({ type: 'state-update', update: stateUpdateForWebview(update) })
     this.postedState = state
   }
 
@@ -1172,6 +1188,18 @@ class DshSurface implements vscode.Disposable {
           if (typeof value.sessionId === 'string') await this.controller.selectSession(value.sessionId)
           return
         case 'load-history': await this.controller.loadOlderHistory(); return
+        case 'load-tool-output':
+          if (typeof value.messageId === 'string') {
+            const message = this.controller.state.messages.find(candidate => candidate.id === value.messageId && candidate.role === 'tool')
+            if (message !== undefined) {
+              await this.webview.postMessage({
+                type: 'tool-output',
+                sessionId: this.controller.state.sessionId,
+                message,
+              })
+            }
+          }
+          return
         case 'send':
           if (typeof value.text === 'string') {
             if (value.text.trim() === '/permission danger-full-access') {

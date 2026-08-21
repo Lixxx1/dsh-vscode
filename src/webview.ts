@@ -98,6 +98,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     .tool-detail { color: var(--vscode-descriptionForeground); font-size: 11px; }
     .tool-body { padding: 0 10px 9px 34px; min-width: 0; overflow: hidden; color: var(--vscode-descriptionForeground); }
     .tool-body pre { color: var(--vscode-foreground); }
+    .tool-output-more { margin: 5px 0 0; padding: 2px 7px; border: 1px solid var(--vscode-widget-border); border-radius: 5px; color: var(--vscode-textLink-foreground); background: transparent; font-size: 11px; }
+    .tool-output-more:hover { background: var(--vscode-toolbar-hoverBackground); }
     .command-card { margin: 7px 0 10px; padding: 8px 10px; border: 1px solid var(--vscode-widget-border); border-radius: 8px; background: color-mix(in srgb, var(--vscode-editor-background) 72%, transparent); }
     .command-card.failed { border-color: var(--vscode-errorForeground); }
     .command-head { min-width: 0; display: flex; align-items: center; gap: 7px; }
@@ -310,6 +312,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     let renderedHistoryKey = '';
     let renderedTail = {};
     const renderedMessages = new Map();
+    const expandedToolIds = new Set();
+    const loadingToolIds = new Set();
+    const toolOutputChunkSize = 20000;
 
     function node(tag, className, text) {
       const value = document.createElement(tag);
@@ -447,7 +452,20 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       }
       if (gallery.childNodes.length) parent.append(gallery);
     }
-    function appendPre(parent, text, className) { if (text) parent.append(node('pre', className || '', text)); }
+    function appendPre(parent, text, className) {
+      if (!text) return;
+      const value = String(text); let visible = Math.min(value.length, toolOutputChunkSize);
+      const pre = node('pre', className || '', value.slice(0, visible)); parent.append(pre);
+      if (visible >= value.length) return;
+      const more = node('button', 'tool-output-more'); more.type = 'button';
+      const updateLabel = () => { more.textContent = 'Show more · ' + String(visible) + ' / ' + String(value.length) + ' characters'; };
+      updateLabel();
+      more.addEventListener('click', () => {
+        visible = Math.min(value.length, visible + toolOutputChunkSize); pre.textContent = value.slice(0, visible);
+        if (visible >= value.length) more.remove(); else updateLabel();
+      });
+      parent.append(more);
+    }
     function renderToolBody(message, callView, resultView) {
       const body = node('div', 'tool-body');
       const view = resultView || callView;
@@ -503,8 +521,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
         if (typeof view.url === 'string') body.append(link(view.url, view.url));
       } else {
         const presented = contentText(view && view.content);
-        const raw = presented || message.rawResult || (view && view.rawInput !== undefined ? pretty(view.rawInput) : '') || message.rawInput || '';
-        if (raw) appendPre(body, pretty(raw));
+        const raw = presented || message.rawResult || message.rawInput || (view && view.rawInput !== undefined ? view.rawInput : '');
+        if (raw) appendPre(body, typeof raw === 'string' && raw.length > toolOutputChunkSize ? raw : pretty(raw));
         for (const locationValue of array(callView && callView.locations)) {
           const location = record(locationValue); if (!location) continue; const filePath = string(location.path); const line = Number(location.line) || undefined; const row = node('div', 'source');
           if (filePath) row.append(fileButton(filePath, line, filePath + (line ? ':' + String(line) : ''))); body.append(row);
@@ -518,12 +536,28 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       const resultView = record(message.resultView);
       const item = document.createElement('details');
       item.className = 'tool' + (message.failed ? ' failed' : '');
-      item.open = message.streaming === true || message.failed === true;
+      item.open = message.streaming === true || message.failed === true || expandedToolIds.has(message.id);
       const summary = document.createElement('summary');
       summary.append(node('span', 'tool-icon', message.streaming ? '●' : (message.failed ? '!' : '✓')));
       summary.append(node('span', 'tool-title', toolTitle(message, callView, resultView)));
       summary.append(node('span', 'tool-detail', message.detail || ''));
-      item.append(summary, renderToolBody(message, callView, resultView));
+      item.append(summary);
+      let contentInitialized = false;
+      const initializeContent = () => {
+        if (contentInitialized) return;
+        contentInitialized = true;
+        if (message.deferredBody === true) {
+          item.append(node('div', 'tool-body', 'Loading tool output…'));
+          if (!loadingToolIds.has(message.id)) {
+            loadingToolIds.add(message.id); vscode.postMessage({ type: 'load-tool-output', messageId: message.id });
+          }
+        } else item.append(renderToolBody(message, callView, resultView));
+      };
+      if (item.open) initializeContent();
+      item.addEventListener('toggle', () => {
+        if (item.open) { expandedToolIds.add(message.id); initializeContent(); }
+        else expandedToolIds.delete(message.id);
+      });
       return item;
     }
     function renderCommand(message) {
@@ -1088,7 +1122,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     function renderConversation(current) {
       if (renderedSessionId !== current.sessionId) {
         renderedSessionId = current.sessionId; renderedMessages.clear(); elements.messages.replaceChildren();
-        renderedHistoryKey = ''; renderedTail = {};
+        renderedHistoryKey = ''; renderedTail = {}; expandedToolIds.clear(); loadingToolIds.clear();
       }
       const statusKey = current.phase + '::' + current.statusText;
       if (statusKey !== renderedStatusKey) {
@@ -1236,6 +1270,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       if (!event.data) return;
       if (event.data.type === 'state') scheduleRender(event.data.state);
       if (event.data.type === 'state-update') applyStateUpdate(event.data.update);
+      if (event.data.type === 'tool-output' && state && event.data.sessionId === state.sessionId && event.data.message) {
+        loadingToolIds.delete(event.data.message.id);
+        scheduleRender({ ...state, messages: applyMessagesPatch(state.messages, { upserts: [event.data.message] }) });
+      }
       if (event.data.type === 'draft-images') { draftImages = event.data.images || []; renderAttachments(); }
       if (event.data.type === 'ide-context') { ideContext = event.data.state || { pinned: [] }; renderIdeContext(); }
       if (event.data.type === 'mention-suggestions' && event.data.requestId === mentionRequestId) {
