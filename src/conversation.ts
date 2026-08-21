@@ -16,6 +16,40 @@ export interface ConversationMessage {
   rawResult?: string
   images?: ConversationImage[]
   deferredBody?: boolean
+  deferredBodyRevision?: string
+  bodyLength?: number
+}
+
+interface AssistantStreamNode {
+  previous?: AssistantStreamNode
+  text: string
+}
+
+const assistantStreams = new WeakMap<ConversationMessage, AssistantStreamNode>()
+
+function inheritAssistantStream(source: ConversationMessage | undefined, target: ConversationMessage): void {
+  const stream = source === undefined ? undefined : assistantStreams.get(source)
+  if (stream !== undefined) assistantStreams.set(target, stream)
+}
+
+function appendAssistantStream(source: ConversationMessage | undefined, target: ConversationMessage, text: string): void {
+  const previous = source === undefined ? undefined : assistantStreams.get(source)
+  assistantStreams.set(target, { ...(previous === undefined ? {} : { previous }), text })
+}
+
+/** Returns the exact append represented by two projector snapshots without rescanning their accumulated text. */
+export function assistantStreamAppend(left: ConversationMessage, right: ConversationMessage): string | undefined {
+  const target = assistantStreams.get(left)
+  let current = assistantStreams.get(right)
+  if (current === undefined) return undefined
+  if (current === target) return left.text.length === right.text.length ? '' : undefined
+  const chunks: string[] = []
+  while (current !== undefined && current !== target) {
+    chunks.push(current.text)
+    current = current.previous
+  }
+  if (current !== target) return undefined
+  return chunks.reverse().join('')
 }
 
 export interface ConversationImage {
@@ -141,31 +175,40 @@ export class ConversationProjector {
       if (chunk?.type === 'block-end') {
         const images = imageContent(chunk.block)
         if (images.length === 0) return
-        this.set(id, {
+        const next: ConversationMessage = {
           id,
           role: 'assistant',
           text: current?.text ?? '',
           images: mergeImages(current?.images, images),
           streaming: true,
-        })
+        }
+        inheritAssistantStream(current, next)
+        this.set(id, next)
         return
       }
       if (chunk?.type !== 'text-delta' || typeof chunk.text !== 'string') return
-      this.set(id, {
+      const next: ConversationMessage = {
         id,
         role: 'assistant',
         text: `${current?.text ?? ''}${chunk.text}`,
         streaming: true,
-      })
+      }
+      appendAssistantStream(current, next, chunk.text)
+      this.set(id, next)
       return
     }
 
     if (event.type === 'assistant/message') {
       const message = record(data.message)
       const id = `assistant:${String(data.turn)}:${String(data.step)}`
+      const current = this.byId.get(id)
       const text = textContent(message?.content)
       const images = imageContent(message?.content)
-      if (text !== '' || images.length > 0) this.set(id, { id, role: 'assistant', text, ...(images.length > 0 ? { images } : {}) })
+      if (text !== '' || images.length > 0) {
+        const next: ConversationMessage = { id, role: 'assistant', text, ...(images.length > 0 ? { images } : {}) }
+        if (current !== undefined && text === current.text) inheritAssistantStream(current, next)
+        this.set(id, next)
+      }
       return
     }
 
@@ -259,7 +302,10 @@ export class ConversationProjector {
   messages(): ConversationMessage[] {
     return this.orderedIds.flatMap(id => {
       const value = this.byId.get(id)
-      return value === undefined ? [] : [{ ...value }]
+      if (value === undefined) return []
+      const copy = { ...value }
+      inheritAssistantStream(value, copy)
+      return [copy]
     })
   }
 

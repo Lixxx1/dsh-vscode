@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ConversationMessage } from '../src/conversation.js'
-import { pageToolOutput, TOOL_OUTPUT_CHAR_LIMIT, TOOL_OUTPUT_ITEM_LIMIT } from '../src/tool-output-page.js'
+import { pageConversationMessage, pageToolOutput, TOOL_OUTPUT_CHAR_LIMIT, TOOL_OUTPUT_ITEM_LIMIT } from '../src/tool-output-page.js'
 
 function tool(extra: Partial<ConversationMessage>): ConversationMessage {
   return { id: 'tool:1', role: 'tool', text: 'Tool', detail: 'Completed', ...extra }
@@ -17,6 +17,12 @@ describe('tool output pages', () => {
     const second = pageToolOutput(tool({ resultView: { card: 'terminal', output } }), first.nextCursor)
     expect((second.message.resultView as { output: string }).output).toBe('x'.repeat(37))
     expect(second.nextCursor).toBeUndefined()
+  })
+
+  it('shows terminal completion metadata only on the final page', () => {
+    const message = tool({ resultView: { card: 'terminal', output: 'x'.repeat(TOOL_OUTPUT_CHAR_LIMIT + 1), exitCode: 0 } })
+    expect((pageToolOutput(message).message.resultView as { exitCode?: number }).exitCode).toBeUndefined()
+    expect((pageToolOutput(message, pageToolOutput(message).nextCursor).message.resultView as { exitCode?: number }).exitCode).toBe(0)
   })
 
   it('pages a single large diff field without transferring the other fields', () => {
@@ -83,5 +89,36 @@ describe('tool output pages', () => {
     const firstImage = pageToolOutput(message, text.nextCursor)
     expect(firstImage.message.images?.map(image => image.attachmentId)).toEqual(['one'])
     expect(firstImage.nextCursor).toBeDefined()
+  })
+
+  it('pages long assistant and command bodies without changing their roles', () => {
+    const assistant: ConversationMessage = { id: 'assistant:1', role: 'assistant', text: 'a'.repeat(TOOL_OUTPUT_CHAR_LIMIT + 3) }
+    const assistantPage = pageConversationMessage(assistant)
+    expect(assistantPage.message).toMatchObject({ role: 'assistant', resultView: { card: 'assistant-page', plainText: true } })
+    expect(assistantPage.message.text).toHaveLength(TOOL_OUTPUT_CHAR_LIMIT)
+
+    const command: ConversationMessage = { id: 'command:1', role: 'command', text: '/compact', rawResult: 'c'.repeat(TOOL_OUTPUT_CHAR_LIMIT + 2) }
+    const commandPage = pageConversationMessage(command)
+    expect(commandPage.message.role).toBe('command')
+    expect(((commandPage.message.resultView as { content: Array<{ text: string }> }).content[0]?.text)).toHaveLength(TOOL_OUTPUT_CHAR_LIMIT)
+  })
+
+  it('keeps generic locations in bounded pages after raw output', () => {
+    const locations = Array.from({ length: TOOL_OUTPUT_ITEM_LIMIT + 2 }, (_, index) => ({ path: `src/${index}.ts`, line: index + 1 }))
+    const message = tool({ rawResult: 'done', callView: { card: 'generic', locations } })
+    const text = pageConversationMessage(message)
+    const firstLocations = pageConversationMessage(message, text.nextCursor)
+    expect(((firstLocations.message.callView as { locations: unknown[] }).locations)).toHaveLength(TOOL_OUTPUT_ITEM_LIMIT)
+    expect(firstLocations.nextCursor).toBeDefined()
+  })
+
+  it('marks split web answers as plain text so Markdown is not parsed across arbitrary boundaries', () => {
+    const page = pageConversationMessage(tool({ resultView: { card: 'web', answer: '```ts\n' + 'x'.repeat(TOOL_OUTPUT_CHAR_LIMIT) } }))
+    expect(page.message.resultView).toMatchObject({ card: 'web', plainText: true })
+  })
+
+  it('returns an image directly when a tool has no textual body', () => {
+    const page = pageConversationMessage(tool({ images: [{ attachmentId: 'only', mediaType: 'image/png', width: 1, height: 1, data: 'abc' }] }))
+    expect(page.message.images?.[0]?.attachmentId).toBe('only')
   })
 })

@@ -76,6 +76,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     .pending-steering .message-body::after { content: 'Steering…'; display: block; margin-top: 3px; color: var(--vscode-descriptionForeground); font-size: 10px; }
     .markdown > :first-child { margin-top: 0; }
     .markdown > :last-child { margin-bottom: 0; }
+    .streaming-plain { white-space: pre-wrap; overflow-wrap: anywhere; }
     .markdown p { margin: 0 0 9px; }
     .markdown h1, .markdown h2, .markdown h3 { margin: 14px 0 7px; line-height: 1.3; }
     .markdown h1 { font-size: 17px; } .markdown h2 { font-size: 15px; } .markdown h3 { font-size: 13px; }
@@ -318,6 +319,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     const loadingToolRequests = new Map();
     const toolOutputErrors = new Map();
     const toolOutputPages = new Map();
+    const deferredOutputViews = new Map();
+    const pendingMessageAppends = new Map();
     let toolOutputRequestId = 0;
     const toolOutputChunkSize = 20000;
 
@@ -441,10 +444,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     function createMarkdownStream(text) {
       const stream = {
         root: node('div', 'markdown'), text: '', committedOffset: 0, scanOffset: 0,
-        safeBoundary: 0, fenced: false, linePrefix: '', lineHasContent: false, tailNodes: [], marker: document.createComment('stream-end'),
+        safeBoundary: 0, fenced: false, linePrefix: '', lineHasContent: false, tailNode: undefined, marker: document.createComment('stream-end'),
       };
       stream.root.append(stream.marker);
-      updateMarkdownStream(stream, text, true);
+      appendMarkdownStream(stream, String(text || ''), true);
       return stream;
     }
     function scanMarkdownStream(stream, text) {
@@ -463,30 +466,32 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     }
     function appendMarkdownNodes(parent, text, before) {
       if (!text) return [];
-      const parsed = renderMarkdown(text); const children = [...parsed.childNodes];
+      const parsed = text.length > toolOutputChunkSize ? node('div', 'streaming-plain', text) : renderMarkdown(text);
+      const children = parsed.classList && parsed.classList.contains('streaming-plain') ? [parsed] : [...parsed.childNodes];
       for (const child of children) parent.insertBefore(child, before || null);
       return children;
     }
-    function updateMarkdownStream(stream, text, streaming) {
-      const value = String(text || '');
-      if (!value.startsWith(stream.text)) return false;
-      scanMarkdownStream(stream, value);
-      for (const child of stream.tailNodes) child.remove();
-      stream.tailNodes = [];
-      const boundary = streaming ? stream.safeBoundary : value.length;
+    function appendMarkdownStream(stream, delta, streaming) {
+      const previousBoundary = stream.safeBoundary;
+      stream.text += String(delta || '');
+      scanMarkdownStream(stream, stream.text);
+      const boundary = streaming ? stream.safeBoundary : stream.text.length;
       if (boundary > stream.committedOffset) {
-        appendMarkdownNodes(stream.root, value.slice(stream.committedOffset, boundary), stream.marker);
+        if (stream.tailNode) stream.tailNode.remove();
+        stream.tailNode = undefined;
+        appendMarkdownNodes(stream.root, stream.text.slice(stream.committedOffset, boundary), stream.marker);
         stream.committedOffset = boundary;
       }
-      if (streaming && boundary < value.length) {
-        const tail = value.slice(boundary);
-        stream.tailNodes = tail.length > toolOutputChunkSize
-          ? [node('p', 'streaming-plain', tail)]
-          : appendMarkdownNodes(stream.root, tail, stream.marker);
-        if (stream.tailNodes.length === 1 && !stream.tailNodes[0].isConnected) stream.root.insertBefore(stream.tailNodes[0], stream.marker);
+      if (streaming && boundary < stream.text.length) {
+        if (stream.tailNode && boundary === previousBoundary && stream.tailNode.firstChild) stream.tailNode.firstChild.appendData(String(delta || ''));
+        else {
+          if (stream.tailNode) stream.tailNode.remove();
+          stream.tailNode = node('div', 'streaming-plain'); stream.tailNode.append(document.createTextNode(stream.text.slice(boundary)));
+          stream.root.insertBefore(stream.tailNode, stream.marker);
+        }
+      } else if (stream.tailNode) {
+        stream.tailNode.remove(); stream.tailNode = undefined;
       }
-      stream.text = value;
-      return true;
     }
 
     function toolTitle(message, callView, resultView) {
@@ -510,65 +515,23 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     }
     function appendPre(parent, text, className) {
       if (!text) return;
-      const value = String(text); let visible = Math.min(value.length, toolOutputChunkSize);
-      const pre = node('pre', className || '', value.slice(0, visible)); parent.append(pre);
-      if (visible >= value.length) return;
-      const more = node('button', 'tool-output-more'); more.type = 'button';
-      const updateLabel = () => { more.textContent = 'Show more · ' + String(visible) + ' / ' + String(value.length) + ' characters'; };
-      updateLabel();
-      more.addEventListener('click', () => {
-        visible = Math.min(value.length, visible + toolOutputChunkSize); pre.textContent = value.slice(0, visible);
-        if (visible >= value.length) more.remove(); else updateLabel();
-      });
-      parent.append(more);
+      parent.append(node('pre', className || '', String(text)));
     }
     function appendPrefixedPre(parent, text, prefix, className) {
       const value = String(text || '');
       if (!value) return;
-      let visible = Math.min(value.length, toolOutputChunkSize);
-      const format = () => prefix + value.slice(0, visible).replace(/\\n/g, '\\n' + prefix);
-      const pre = node('pre', className || '', format()); parent.append(pre);
-      if (visible >= value.length) return;
-      const more = node('button', 'tool-output-more'); more.type = 'button';
-      const updateLabel = () => { more.textContent = 'Show more · ' + String(visible) + ' / ' + String(value.length) + ' characters'; };
-      updateLabel();
-      more.addEventListener('click', () => {
-        visible = Math.min(value.length, visible + toolOutputChunkSize); pre.textContent = format();
-        if (visible >= value.length) more.remove(); else updateLabel();
-      });
-      parent.append(more);
+      parent.append(node('pre', className || '', prefix + value.replace(/\\n/g, '\\n' + prefix)));
     }
     function appendMarkdownPage(parent, text) {
       const value = String(text || '');
       if (!value) return;
-      let visible = Math.min(value.length, toolOutputChunkSize);
-      const content = node('div'); const more = node('button', 'tool-output-more'); more.type = 'button';
-      const renderPage = () => {
-        content.replaceChildren(renderMarkdown(value.slice(0, visible)));
-        more.textContent = 'Show more · ' + String(visible) + ' / ' + String(value.length) + ' characters';
-      };
-      renderPage(); parent.append(content);
-      if (visible < value.length) {
-        more.addEventListener('click', () => {
-          visible = Math.min(value.length, visible + toolOutputChunkSize); renderPage();
-          if (visible >= value.length) more.remove();
-        });
-        parent.append(more);
-      }
+      parent.append(renderMarkdown(value));
     }
-    function appendPagedItems(parent, values, appendItem, pageSize) {
+    function appendItems(parent, values, appendItem) {
       if (!values.length) return;
-      const container = node('div'); const more = node('button', 'tool-output-more'); more.type = 'button';
-      let visible = 0; const size = pageSize || 100;
-      const reveal = () => {
-        const end = Math.min(values.length, visible + size);
-        for (let index = visible; index < end; index += 1) appendItem(container, values[index]);
-        visible = end;
-        more.textContent = 'Show more · ' + String(visible) + ' / ' + String(values.length) + ' results';
-        if (visible >= values.length) more.remove();
-      };
-      parent.append(container); reveal();
-      if (visible < values.length) { more.addEventListener('click', reveal); parent.append(more); }
+      const container = node('div');
+      for (const value of values) appendItem(container, value);
+      parent.append(container);
     }
     function renderToolBody(message, callView, resultView) {
       const body = node('div', 'tool-body');
@@ -605,14 +568,14 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
         const filePath = string(view.path, 'File'); const title = node('div', 'result-title');
         title.append(filePath === 'File' ? document.createTextNode(filePath) : fileButton(filePath, Number(view.offset) || undefined, filePath)); body.append(title);
         const lines = array(view.lines);
-        if (lines.length) appendPagedItems(body, lines, (container, value) => {
+        if (lines.length) appendItems(body, lines, (container, value) => {
           const line = record(value); if (line) container.append(node('div', 'source-line', String(line.number).padStart(4, ' ') + '  ' + string(line.text)));
-        }, 200);
+        });
         else appendPre(body, message.rawResult);
       } else if (card === 'search') {
-        if (view.shape === 'paths') appendPagedItems(body, array(view.paths), (container, pathValue) => {
+        if (view.shape === 'paths') appendItems(body, array(view.paths), (container, pathValue) => {
           const filePath = string(pathValue); const row = node('div', 'source'); if (filePath) row.append(fileButton(filePath, undefined, filePath)); container.append(row);
-        }, 100);
+        });
         if (view.shape === 'matches') {
           const matches = [];
           for (const fileValue of array(view.files)) {
@@ -620,16 +583,19 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
             matches.push({ kind: 'file', path: filePath });
             for (const matchValue of array(file.matches)) matches.push({ kind: 'match', path: filePath, value: matchValue });
           }
-          appendPagedItems(body, matches, (container, entry) => {
+          appendItems(body, matches, (container, entry) => {
             if (entry.kind === 'file') { const title = node('div', 'result-title'); if (entry.path) title.append(fileButton(entry.path, undefined, entry.path)); container.append(title); return; }
             const match = record(entry.value); if (!match) return; const line = Number(match.lineNumber) || undefined; const row = node('div', 'source');
             if (entry.path) row.append(fileButton(entry.path, line, String(match.lineNumber) + ': ' + string(match.line))); container.append(row);
-          }, 100);
+          });
         }
         if (view.truncated === true) body.append(node('div', '', 'Showing a limited result set (' + String(view.total || '') + ' total).'));
       } else if (card === 'web') {
-        if (typeof view.answer === 'string') appendMarkdownPage(body, view.answer);
-        appendPagedItems(body, array(view.sources), (container, sourceValue) => { const source = record(sourceValue); if (source && typeof source.url === 'string') container.append(link(source.url, string(source.title) || source.url)); }, 50);
+        if (typeof view.answer === 'string') {
+          if (view.plainText === true) body.append(node('div', 'streaming-plain', view.answer));
+          else appendMarkdownPage(body, view.answer);
+        }
+        appendItems(body, array(view.sources), (container, sourceValue) => { const source = record(sourceValue); if (source && typeof source.url === 'string') container.append(link(source.url, string(source.title) || source.url)); });
         if (typeof view.url === 'string') body.append(link(view.url, view.url));
       } else {
         const presented = contentText(view && view.content);
@@ -642,6 +608,62 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       }
       appendImages(body, message.images);
       return body;
+    }
+    function cancelDeferredRequest(messageId) {
+      const request = loadingToolRequests.get(messageId);
+      if (request) clearTimeout(request.timer);
+      loadingToolRequests.delete(messageId);
+    }
+    function resetDeferredOutput(messageId) {
+      cancelDeferredRequest(messageId); toolOutputPages.delete(messageId); toolOutputErrors.delete(messageId); deferredOutputViews.delete(messageId);
+    }
+    function prepareDeferredOutput(message) {
+      const loaded = toolOutputPages.get(message.id);
+      if (loaded && loaded.revision !== message.deferredBodyRevision) resetDeferredOutput(message.id);
+    }
+    function attachDeferredOutput(message, parent, renderPage, autoLoad, initialLabel) {
+      prepareDeferredOutput(message);
+      const pages = node('div'); const controls = node('div'); parent.append(pages, controls);
+      const loaded = toolOutputPages.get(message.id) || { pages: [], nextCursor: undefined, revision: message.deferredBodyRevision };
+      toolOutputPages.set(message.id, loaded);
+      for (const page of loaded.pages) pages.append(renderPage(page));
+      function load(cursor) {
+        if (loadingToolRequests.has(message.id)) return;
+        const requestId = ++toolOutputRequestId;
+        const timer = setTimeout(() => {
+          const pending = loadingToolRequests.get(message.id);
+          if (!pending || pending.requestId !== requestId) return;
+          loadingToolRequests.delete(message.id); toolOutputErrors.set(message.id, { message: 'Output took too long to load.', cursor }); controller.renderControls();
+        }, 15000);
+        loadingToolRequests.set(message.id, { requestId, cursor, timer }); toolOutputErrors.delete(message.id); controller.renderControls();
+        vscode.postMessage({ type: 'load-tool-output', messageId: message.id, sessionId: state && state.sessionId, requestId, ...(cursor ? { cursor } : {}) });
+      }
+      const controller = {
+        revision: message.deferredBodyRevision,
+        append(page, nextCursor) {
+          pages.append(renderPage(page)); loaded.pages.push(page); loaded.nextCursor = nextCursor; controller.renderControls();
+        },
+        renderControls() {
+          controls.replaceChildren();
+          const error = toolOutputErrors.get(message.id);
+          if (error) {
+            controls.append(node('div', 'status error', error.message));
+            const retry = node('button', 'tool-output-more', 'Retry'); retry.type = 'button'; retry.addEventListener('click', () => load(error.cursor)); controls.append(retry); return;
+          }
+          if (loadingToolRequests.has(message.id)) { controls.append(node('div', 'tool-output-loading', 'Loading output…')); return; }
+          if (loaded.pages.length === 0) {
+            if (autoLoad !== false) load(undefined);
+            else {
+              const show = node('button', 'tool-output-more', initialLabel || 'Show output'); show.type = 'button'; show.addEventListener('click', () => load(undefined)); controls.append(show);
+            }
+            return;
+          }
+          if (loaded.nextCursor) {
+            const more = node('button', 'tool-output-more', 'Show more'); more.type = 'button'; more.addEventListener('click', () => load(loaded.nextCursor)); controls.append(more);
+          }
+        },
+      };
+      deferredOutputViews.set(message.id, controller); controller.renderControls();
     }
     function renderTool(message) {
       const callView = record(message.callView);
@@ -659,34 +681,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
         if (contentInitialized) return;
         contentInitialized = true;
         if (message.deferredBody === true) {
-          const body = node('div', 'tool-body'); item.append(body);
-          const loaded = toolOutputPages.get(message.id) || { pages: [], nextCursor: undefined };
-          for (const page of loaded.pages) {
-            const callPage = record(page.callView); const resultPage = record(page.resultView);
-            body.append(renderToolBody(page, callPage, resultPage));
-          }
-          const load = cursor => {
-            if (loadingToolRequests.has(message.id)) return;
-            const requestId = ++toolOutputRequestId;
-            const timer = setTimeout(() => {
-              const pending = loadingToolRequests.get(message.id);
-              if (!pending || pending.requestId !== requestId) return;
-              loadingToolRequests.delete(message.id); toolOutputErrors.set(message.id, { message: 'Tool output took too long to load.', cursor }); renderedMessages.delete(message.id);
-              if (state) scheduleRender({ ...state, messages: [...state.messages] });
-            }, 15000);
-            loadingToolRequests.set(message.id, { requestId, cursor, timer }); toolOutputErrors.delete(message.id);
-            const loading = node('div', 'tool-output-loading', 'Loading tool output…'); body.append(loading);
-            vscode.postMessage({ type: 'load-tool-output', messageId: message.id, sessionId: state && state.sessionId, requestId, ...(cursor ? { cursor } : {}) });
-          };
-          const error = toolOutputErrors.get(message.id);
-          if (error) {
-            body.append(node('div', 'status error', error.message));
-            const retry = node('button', 'tool-output-more', 'Retry'); retry.type = 'button'; retry.addEventListener('click', () => load(error.cursor)); body.append(retry);
-          } else if (loadingToolRequests.has(message.id)) body.append(node('div', 'tool-output-loading', 'Loading tool output…'));
-          else if (loaded.pages.length === 0) load(undefined);
-          else if (loaded.nextCursor) {
-            const more = node('button', 'tool-output-more', 'Show more'); more.type = 'button'; more.addEventListener('click', () => load(loaded.nextCursor)); body.append(more);
-          }
+          const body = node('div', 'tool-body'); item.append(body); attachDeferredOutput(message, body, page => renderToolBody(page, record(page.callView), record(page.resultView)));
         } else item.append(renderToolBody(message, callView, resultView));
       };
       if (item.open) initializeContent();
@@ -703,7 +698,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       head.append(node('span', 'command-name', message.text));
       head.append(node('span', 'tool-detail', message.detail || ''));
       item.append(head);
-      if (message.rawResult) { const result = node('div', 'command-result'); appendPre(result, message.rawResult); item.append(result); }
+      if (message.deferredBody === true) {
+        const result = node('div', 'command-result'); item.append(result); attachDeferredOutput(message, result, page => renderToolBody(page, record(page.callView), record(page.resultView)), false, 'Show command output');
+      } else if (message.rawResult) { const result = node('div', 'command-result'); appendPre(result, message.rawResult); item.append(result); }
       return item;
     }
     function renderChangedFiles(groups) {
@@ -733,6 +730,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       const body = node('div', 'message-body', item.preview || 'Steering message');
       bubble.append(body); return bubble;
     }
+    function renderAssistantPage(page) {
+      const view = record(page.resultView);
+      const body = view && view.plainText === true ? node('div', 'streaming-plain', page.text) : renderMarkdown(page.text);
+      body.classList.add('assistant-page'); appendImages(body, page.images); return body;
+    }
     function renderMessage(message) {
       if (message.role === 'tool') return { message, node: renderTool(message) };
       if (message.role === 'command') return { message, node: renderCommand(message) };
@@ -742,21 +744,28 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       head.append(node('span', 'avatar' + (message.role === 'assistant' ? ' deepseek-mark' : ''), message.role === 'user' ? 'Y' : ''));
       head.append(node('span', '', message.role === 'user' ? 'You' : 'DeepSeek'));
       const markdown = message.role === 'assistant' && message.streaming === true ? createMarkdownStream(message.text) : undefined;
-      const body = message.role === 'assistant' ? (markdown ? markdown.root : renderMarkdown(message.text)) : node('div', '', message.text);
+      const body = message.role === 'assistant'
+        ? message.deferredBody === true ? node('div', 'markdown') : (markdown ? markdown.root : renderMarkdown(message.text))
+        : node('div', '', message.text);
       body.classList.add('message-body');
       if (message.streaming) body.classList.add('streaming');
-      appendImages(body, message.images);
+      if (message.deferredBody === true) attachDeferredOutput(message, body, renderAssistantPage, false, 'Show full response' + (message.bodyLength ? ' · ' + String(message.bodyLength) + ' characters' : ''));
+      else appendImages(body, message.images);
       item.append(head, body); return { message, node: item, ...(markdown ? { markdown } : {}) };
     }
     function messageNode(message) {
       const rendered = renderedMessages.get(message.id);
       if (rendered && rendered.message === message) return rendered.node;
-      if (rendered && rendered.markdown && message.role === 'assistant' && message.images === rendered.message.images && updateMarkdownStream(rendered.markdown, message.text, message.streaming === true)) {
+      if (rendered && rendered.message.deferredBodyRevision !== message.deferredBodyRevision) resetDeferredOutput(message.id);
+      const appended = pendingMessageAppends.get(message.id);
+      if (rendered && rendered.markdown && appended !== undefined && message.role === 'assistant' && message.images === rendered.message.images) {
+        pendingMessageAppends.delete(message.id); appendMarkdownStream(rendered.markdown, appended, message.streaming === true);
         rendered.message = message;
         rendered.markdown.root.classList.toggle('streaming', message.streaming === true);
         return rendered.node;
       }
       const next = renderMessage(message);
+      if (rendered) deferredOutputViews.delete(message.id);
       if (rendered && rendered.node.isConnected) rendered.node.replaceWith(next.node);
       renderedMessages.set(message.id, next);
       return next.node;
@@ -768,8 +777,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       const ids = new Set(messages.map(message => message.id));
       for (const [id, rendered] of renderedMessages) {
         if (!ids.has(id)) {
-          rendered.node.remove(); renderedMessages.delete(id); expandedToolIds.delete(id); toolOutputPages.delete(id); toolOutputErrors.delete(id);
-          const request = loadingToolRequests.get(id); if (request) clearTimeout(request.timer); loadingToolRequests.delete(id);
+          rendered.node.remove(); renderedMessages.delete(id); expandedToolIds.delete(id); resetDeferredOutput(id); pendingMessageAppends.delete(id);
         }
       }
       let cursor = elements.messages.firstChild;
@@ -1269,7 +1277,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
         renderedSessionId = current.sessionId; renderedMessages.clear(); elements.messages.replaceChildren();
         renderedHistoryKey = ''; renderedTail = {}; expandedToolIds.clear();
         for (const request of loadingToolRequests.values()) clearTimeout(request.timer);
-        loadingToolRequests.clear(); toolOutputErrors.clear(); toolOutputPages.clear();
+        loadingToolRequests.clear(); toolOutputErrors.clear(); toolOutputPages.clear(); deferredOutputViews.clear(); pendingMessageAppends.clear();
       }
       const statusKey = current.phase + '::' + current.statusText;
       if (statusKey !== renderedStatusKey) {
@@ -1350,10 +1358,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       });
     }
     function applyMessagesPatch(current, patch) {
-      if (Array.isArray(patch && patch.reset)) return patch.reset;
+      if (Array.isArray(patch && patch.reset)) { pendingMessageAppends.clear(); return patch.reset; }
       const messages = Array.isArray(current) ? [...current] : [];
       const indexes = new Map(messages.map((message, index) => [message.id, index]));
       for (const message of array(patch && patch.upserts)) {
+        pendingMessageAppends.delete(message.id);
         const index = indexes.get(message.id);
         if (index === undefined) { indexes.set(message.id, messages.length); messages.push(message); }
         else messages[index] = message;
@@ -1361,6 +1370,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       for (const append of array(patch && patch.appends)) {
         const index = indexes.get(append.id); const message = index === undefined ? undefined : messages[index];
         if (!message || message.role !== 'assistant') continue;
+        pendingMessageAppends.set(append.id, string(pendingMessageAppends.get(append.id)) + string(append.text));
         messages[index] = { ...message, text: message.text + string(append.text), streaming: append.streaming === true };
       }
       return messages;
@@ -1434,21 +1444,25 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     });
     window.addEventListener('message', event => {
       if (!event.data) return;
-      if (event.data.type === 'state') scheduleRender(event.data.state);
+      if (event.data.type === 'state') { pendingMessageAppends.clear(); scheduleRender(event.data.state); }
       if (event.data.type === 'state-update') applyStateUpdate(event.data.update);
       if (event.data.type === 'tool-output' && state && event.data.sessionId === state.sessionId && typeof event.data.messageId === 'string') {
         const request = loadingToolRequests.get(event.data.messageId);
         if (!request || request.requestId !== event.data.requestId) return;
         clearTimeout(request.timer); loadingToolRequests.delete(event.data.messageId);
         if (typeof event.data.error === 'string') {
-          toolOutputErrors.set(event.data.messageId, { message: event.data.error, cursor: request.cursor }); renderedMessages.delete(event.data.messageId);
-          scheduleRender({ ...state, messages: [...state.messages] }); return;
+          toolOutputErrors.set(event.data.messageId, { message: event.data.error, cursor: request.cursor });
+          const controller = deferredOutputViews.get(event.data.messageId); if (controller) controller.renderControls(); return;
         }
         toolOutputErrors.delete(event.data.messageId);
         if (event.data.page && event.data.page.message) {
-          const loaded = toolOutputPages.get(event.data.messageId) || { pages: [], nextCursor: undefined };
-          toolOutputPages.set(event.data.messageId, { pages: [...loaded.pages, event.data.page.message], nextCursor: event.data.page.nextCursor });
-          renderedMessages.delete(event.data.messageId); scheduleRender({ ...state, messages: [...state.messages] });
+          const controller = deferredOutputViews.get(event.data.messageId);
+          if (controller) controller.append(event.data.page.message, event.data.page.nextCursor);
+          else {
+            const message = array(state.messages).find(candidate => candidate.id === event.data.messageId);
+            const loaded = toolOutputPages.get(event.data.messageId) || { pages: [], nextCursor: undefined, revision: message && message.deferredBodyRevision };
+            loaded.pages.push(event.data.page.message); loaded.nextCursor = event.data.page.nextCursor; toolOutputPages.set(event.data.messageId, loaded);
+          }
         }
       }
       if (event.data.type === 'draft-images') { draftImages = event.data.images || []; renderAttachments(); }

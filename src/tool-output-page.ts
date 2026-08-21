@@ -16,6 +16,7 @@ interface Cursor {
 }
 
 type View = Record<string, unknown>
+const genericTextCache = new WeakMap<ConversationMessage, string>()
 
 function record(value: unknown): View | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as View : undefined
@@ -68,7 +69,7 @@ function printable(value: unknown): string {
 function baseMessage(message: ConversationMessage): ConversationMessage {
   return {
     id: message.id,
-    role: 'tool',
+    role: message.role,
     text: message.text,
     ...(message.detail === undefined ? {} : { detail: message.detail }),
     ...(message.failed === undefined ? {} : { failed: message.failed }),
@@ -86,8 +87,8 @@ function terminalPage(message: ConversationMessage, call: View | undefined, resu
       ...(call === undefined ? {} : { callView: { card: 'terminal', ...(typeof call.cwd === 'string' ? { cwd: call.cwd } : {}) } }),
       resultView: {
         card: 'terminal', output: page.value,
-        ...(typeof result?.exitCode === 'number' ? { exitCode: result.exitCode } : {}),
-        ...(typeof result?.signal === 'string' ? { signal: result.signal } : {}),
+        ...(page.nextCursor === undefined && typeof result?.exitCode === 'number' ? { exitCode: result.exitCode } : {}),
+        ...(page.nextCursor === undefined && typeof result?.signal === 'string' ? { signal: result.signal } : {}),
       },
     },
     ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }),
@@ -201,7 +202,7 @@ function webPage(message: ConversationMessage, view: View, cursor: Cursor): Tool
     const page = textPage(answer, 'answer', cursor)
     const continuation = page.nextCursor ?? (sources.length > 0 ? nextCursor('sources', 0) : undefined)
     return {
-      message: { ...baseMessage(message), resultView: { card: 'web', answer: page.value } },
+      message: { ...baseMessage(message), resultView: { card: 'web', answer: page.value, ...(answer.length > TOOL_OUTPUT_CHAR_LIMIT ? { plainText: true } : {}) } },
       ...(continuation === undefined ? {} : { nextCursor: continuation }),
     }
   }
@@ -214,9 +215,24 @@ function webPage(message: ConversationMessage, view: View, cursor: Cursor): Tool
 }
 
 function genericPage(message: ConversationMessage, view: View | undefined, cursor: Cursor): ToolOutputPage {
-  const presented = contentText(view?.content)
+  const call = record(message.callView)
+  const locations = Array.isArray(call?.locations) ? call.locations : []
+  if (cursor.section === 'locations') {
+    const end = Math.min(locations.length, cursor.index + TOOL_OUTPUT_ITEM_LIMIT)
+    return {
+      message: { ...baseMessage(message), callView: { card: 'generic', locations: locations.slice(cursor.index, end) }, resultView: { card: 'generic' } },
+      ...(end < locations.length ? { nextCursor: nextCursor('locations', end) } : {}),
+    }
+  }
+  let presented = genericTextCache.get(message)
+  if (presented === undefined) {
+    presented = contentText(view?.content)
+    genericTextCache.set(message, presented)
+  }
   const raw = presented || message.rawResult || message.rawInput || (view?.rawInput === undefined ? '' : printable(view.rawInput))
+  if (raw === '' && locations.length > 0) return genericPage(message, view, { section: 'locations', group: 0, index: 0, offset: 0 })
   const page = textPage(raw, 'raw', cursor)
+  const continuation = page.nextCursor ?? (locations.length > 0 ? nextCursor('locations', 0) : undefined)
   return {
     message: {
       ...baseMessage(message),
@@ -226,11 +242,23 @@ function genericPage(message: ConversationMessage, view: View | undefined, curso
         content: [{ text: page.value }],
       },
     },
+    ...(continuation === undefined ? {} : { nextCursor: continuation }),
+  }
+}
+
+function assistantPage(message: ConversationMessage, cursor: Cursor): ToolOutputPage {
+  const page = textPage(message.text, 'assistant', cursor)
+  return {
+    message: {
+      ...baseMessage(message),
+      text: page.value,
+      ...(message.text.length > TOOL_OUTPUT_CHAR_LIMIT ? { resultView: { card: 'assistant-page', plainText: true } } : {}),
+    },
     ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }),
   }
 }
 
-export function pageToolOutput(message: ConversationMessage, cursorValue?: string): ToolOutputPage {
+export function pageConversationMessage(message: ConversationMessage, cursorValue?: string): ToolOutputPage {
   const call = record(message.callView)
   const result = record(message.resultView)
   const view = result ?? call
@@ -240,11 +268,13 @@ export function pageToolOutput(message: ConversationMessage, cursorValue?: strin
   if (cursor.section === 'images') {
     const index = Math.min(cursor.index, Math.max(0, images.length - 1))
     return {
-      message: { ...baseMessage(message), resultView: { card: 'generic', title: 'Image output' }, ...(images[index] === undefined ? {} : { images: [images[index]] }) },
+      message: { ...baseMessage(message), ...(message.role === 'assistant' ? { text: '' } : {}), resultView: { card: 'generic', title: 'Image output' }, ...(images[index] === undefined ? {} : { images: [images[index]] }) },
       ...(index + 1 < images.length ? { nextCursor: nextCursor('images', index + 1) } : {}),
     }
   }
-  const page = card === 'terminal'
+  const page = message.role === 'assistant'
+    ? assistantPage(message, cursor)
+    : card === 'terminal'
     ? terminalPage(message, call, result, cursor)
     : card === 'diff' && view !== undefined
       ? diffPage(message, view, cursor)
@@ -255,7 +285,16 @@ export function pageToolOutput(message: ConversationMessage, cursorValue?: strin
           : card === 'web' && view !== undefined
             ? webPage(message, view, cursor)
             : genericPage(message, view, cursor)
-  return page.nextCursor !== undefined || images.length === 0
-    ? page
-    : { ...page, nextCursor: nextCursor('images', 0) }
+  if (page.nextCursor !== undefined || images.length === 0) return page
+  const pageResult = record(page.message.resultView)
+  const content = Array.isArray(pageResult?.content) ? pageResult.content : []
+  const firstContent = record(content[0])
+  const emptyGenericPage = pageResult?.card === 'generic' && content.length <= 1 && (firstContent?.text ?? '') === ''
+  if (emptyGenericPage) {
+    return pageConversationMessage(message, nextCursor('images', 0))
+  }
+  return { ...page, nextCursor: nextCursor('images', 0) }
 }
+
+/** @deprecated Use pageConversationMessage for tool, command, and assistant bodies. */
+export const pageToolOutput = pageConversationMessage

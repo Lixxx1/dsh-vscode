@@ -1,4 +1,6 @@
-import type { ConversationImage, ConversationMessage } from './conversation.js'
+import { assistantStreamAppend, type ConversationImage, type ConversationMessage } from './conversation.js'
+
+export const WEBVIEW_INLINE_CHAR_LIMIT = 20_000
 
 export interface ConversationMessagesPatch {
   reset?: ConversationMessage[]
@@ -21,26 +23,39 @@ function compactToolView(value: unknown): unknown {
   return Object.keys(compact).length === 0 ? undefined : compact
 }
 
-/** Keeps completed tool cards lightweight until their body is expanded. */
+function bodyRevision(message: ConversationMessage): string {
+  const images = (message.images ?? []).map(image => `${image.attachmentId}:${image.data?.length ?? 0}:${image.error ?? ''}`).join('|')
+  return `${message.streaming === true ? 'streaming' : 'settled'}:${message.text.length}:${message.rawInput?.length ?? 0}:${message.rawResult?.length ?? 0}:${images}`
+}
+
+/** Keeps large or structured message bodies lightweight until they are displayed. */
 export function messageForWebview(message: ConversationMessage): ConversationMessage {
-  if (message.role !== 'tool' || message.streaming === true || message.deferredBody === true) return message
-  const hasBody = message.callView !== undefined
+  if (message.deferredBody === true) return message
+  const hasToolBody = message.role === 'tool' && (message.callView !== undefined
     || message.resultView !== undefined
     || message.rawInput !== undefined
     || message.rawResult !== undefined
-    || (message.images?.length ?? 0) > 0
-  if (!hasBody) return message
+    || (message.images?.length ?? 0) > 0)
+  const hasLargeCommandBody = message.role === 'command' && (message.rawResult?.length ?? 0) > WEBVIEW_INLINE_CHAR_LIMIT
+  const hasLargeAssistantBody = message.role === 'assistant'
+    && message.streaming !== true
+    && (message.text.length > WEBVIEW_INLINE_CHAR_LIMIT || (message.images?.some(image => image.data !== undefined) ?? false))
+  if (!hasToolBody && !hasLargeCommandBody && !hasLargeAssistantBody) return message
   const callView = compactToolView(message.callView)
   const resultView = compactToolView(message.resultView)
   return {
     id: message.id,
     role: message.role,
-    text: message.text,
+    text: hasLargeAssistantBody ? '' : message.text,
     ...(message.detail === undefined ? {} : { detail: message.detail }),
     ...(message.failed === undefined ? {} : { failed: message.failed }),
     ...(callView === undefined ? {} : { callView }),
     ...(resultView === undefined ? {} : { resultView }),
     deferredBody: true,
+    deferredBodyRevision: bodyRevision(message),
+    ...(message.role === 'assistant'
+      ? { bodyLength: message.text.length }
+      : message.rawResult === undefined ? {} : { bodyLength: message.rawResult.length }),
   }
 }
 
@@ -83,15 +98,16 @@ function sameMessage(left: ConversationMessage, right: ConversationMessage): boo
     && left.rawInput === right.rawInput
     && left.rawResult === right.rawResult
     && left.deferredBody === right.deferredBody
+    && left.deferredBodyRevision === right.deferredBodyRevision
+    && left.bodyLength === right.bodyLength
     && sameImages(left.images, right.images)
 }
 
-function canAppendAssistantText(left: ConversationMessage, right: ConversationMessage): boolean {
-  return left.id === right.id
+function appendedAssistantText(left: ConversationMessage, right: ConversationMessage): string | undefined {
+  const compatible = left.id === right.id
     && left.role === 'assistant'
     && right.role === 'assistant'
     && left.streaming === true
-    && right.text.startsWith(left.text)
     && left.detail === right.detail
     && left.failed === right.failed
     && left.callView === right.callView
@@ -100,6 +116,10 @@ function canAppendAssistantText(left: ConversationMessage, right: ConversationMe
     && left.rawResult === right.rawResult
     && left.deferredBody === right.deferredBody
     && sameImages(left.images, right.images)
+  if (!compatible) return undefined
+  const projected = assistantStreamAppend(left, right)
+  if (projected !== undefined) return projected
+  return right.text.startsWith(left.text) ? right.text.slice(left.text.length) : undefined
 }
 
 /**
@@ -127,10 +147,11 @@ export function diffConversationMessages(
       continue
     }
     if (sameMessage(current, message)) continue
-    if (canAppendAssistantText(current, message)) {
+    const appendedText = appendedAssistantText(current, message)
+    if (appendedText !== undefined) {
       appends.push({
         id: message.id,
-        text: message.text.slice(current.text.length),
+        text: appendedText,
         streaming: message.streaming === true,
       })
     } else {

@@ -1,12 +1,28 @@
 import { describe, expect, it } from 'vitest'
 import { diffConversationMessages, messageForWebview, messagesPatchForWebview } from '../src/chat-state-patch.js'
-import type { ConversationMessage } from '../src/conversation.js'
+import { ConversationProjector, type ConversationMessage, type DshEvent } from '../src/conversation.js'
 
 function message(id: string, text: string, extra: Partial<ConversationMessage> = {}): ConversationMessage {
   return { id, role: 'assistant', text, ...extra }
 }
 
 describe('diffConversationMessages', () => {
+  it('uses projector deltas across batched chunks', () => {
+    const projector = new ConversationProjector()
+    const chunk = (seq: number, text: string): DshEvent => ({
+      type: 'assistant/chunk', seq, time: seq,
+      data: { turn: 1, step: 1, chunk: { type: 'text-delta', text } },
+    })
+    projector.apply(chunk(1, 'A'.repeat(50_000)))
+    const previous = projector.messages()
+    projector.apply(chunk(2, 'second'))
+    projector.apply(chunk(3, ' third'))
+
+    expect(diffConversationMessages(previous, projector.messages())).toEqual({
+      appends: [{ id: 'assistant:1:1', text: 'second third', streaming: true }],
+    })
+  })
+
   it('sends only the streaming message that changed', () => {
     const previous = [message('tool:1', 'Tool', { role: 'tool', rawResult: 'large output' }), message('assistant:1', 'Hel', { streaming: true })]
     const next = [message('tool:1', 'Tool', { role: 'tool', rawResult: 'large output' }), message('assistant:1', 'Hello', { streaming: true })]
@@ -72,6 +88,8 @@ describe('diffConversationMessages', () => {
       callView: { card: 'generic', title: 'Router status' },
       resultView: { card: 'generic', title: 'Router status' },
       deferredBody: true,
+      deferredBodyRevision: 'settled:17:16:100000:',
+      bodyLength: 100_000,
     })
   })
 
@@ -81,5 +99,26 @@ describe('diffConversationMessages', () => {
 
     expect(patch.reset?.[0]?.deferredBody).toBe(true)
     expect(patch.upserts?.[0]?.deferredBody).toBe(true)
+  })
+
+  it('defers streaming tools, large commands, and completed long responses', () => {
+    expect(messageForWebview(message('tool:running', 'Write', {
+      role: 'tool', streaming: true, rawInput: 'x'.repeat(50_000), callView: { card: 'diff', title: 'Write' },
+    })).deferredBody).toBe(true)
+
+    expect(messageForWebview(message('command:1', '/compact', {
+      role: 'command', rawResult: 'x'.repeat(50_000),
+    })).deferredBody).toBe(true)
+
+    const assistant = messageForWebview(message('assistant:large', 'x'.repeat(50_000)))
+    expect(assistant).toMatchObject({ role: 'assistant', text: '', deferredBody: true, bodyLength: 50_000 })
+  })
+
+  it('changes the deferred revision when an image finishes hydrating', () => {
+    const base = message('tool:image', 'Image', {
+      role: 'tool', images: [{ attachmentId: 'image', mediaType: 'image/png', width: 10, height: 10 }],
+    })
+    const hydrated = messageForWebview({ ...base, images: base.images?.map(image => ({ ...image, data: 'abc' })) })
+    expect(hydrated.deferredBodyRevision).not.toBe(messageForWebview(base).deferredBodyRevision)
   })
 })
