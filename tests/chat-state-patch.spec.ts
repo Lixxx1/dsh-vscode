@@ -114,6 +114,21 @@ describe('diffConversationMessages', () => {
     expect(assistant).toMatchObject({ role: 'assistant', text: '', deferredBody: true, bodyLength: 50_000 })
   })
 
+  it('keeps the streaming flag on a deferred running tool', () => {
+    const tool = messageForWebview(message('tool:running', 'Write', {
+      role: 'tool', streaming: true, detail: 'Running…', callView: { card: 'diff', title: 'Write' },
+    }))
+    expect(tool.deferredBody).toBe(true)
+    expect(tool.streaming).toBe(true)
+  })
+
+  it('keeps a short assistant answer with hydrated images inline', () => {
+    const answer = message('assistant:1', 'Here it is.', {
+      images: [{ attachmentId: 'image', mediaType: 'image/png', width: 10, height: 10, data: 'abc' }],
+    })
+    expect(messageForWebview(answer)).toBe(answer)
+  })
+
   it('changes the deferred revision when an image finishes hydrating', () => {
     const base = message('tool:image', 'Image', {
       role: 'tool', images: [{ attachmentId: 'image', mediaType: 'image/png', width: 10, height: 10 }],

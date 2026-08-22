@@ -780,8 +780,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
         rendered.markdown.root.classList.toggle('streaming', message.streaming === true);
         return rendered.node;
       }
-      const next = renderMessage(message);
       if (rendered) deferredOutputViews.delete(message.id);
+      pendingMessageAppends.delete(message.id);
+      const next = renderMessage(message);
       if (rendered && rendered.node.isConnected) rendered.node.replaceWith(next.node);
       renderedMessages.set(message.id, next);
       return next.node;

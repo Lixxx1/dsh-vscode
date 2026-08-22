@@ -400,7 +400,7 @@ class DshChatController implements vscode.Disposable {
       const execution = await this.requireClient().executeCommand(
         this._state.sessionId,
         normalized,
-        usesRc8Envelope ? images : undefined,
+        usesRc8Envelope && images.length > 0 ? images : undefined,
       )
       if (execution === undefined) throw new Error(`DeepSeek did not recognize ${slash.token}.`)
       if (images.length > 0 && execution.result.kind === 'error') {
@@ -1070,8 +1070,8 @@ class DshSurface implements vscode.Disposable {
   }
 
   private async postFullState(state: ChatViewState): Promise<void> {
-    await this.webview.postMessage({ type: 'state', state: stateForWebview(state) })
-    this.postedState = state
+    const delivered = await this.webview.postMessage({ type: 'state', state: stateForWebview(state) })
+    this.postedState = delivered ? state : undefined
   }
 
   private async postStateUpdate(state: ChatViewState): Promise<void> {
@@ -1081,7 +1081,14 @@ class DshSurface implements vscode.Disposable {
       return
     }
     const update = stateUpdate(previous, state)
-    if (update !== undefined) await this.webview.postMessage({ type: 'state-update', update: stateUpdateForWebview(update) })
+    if (update !== undefined) {
+      const delivered = await this.webview.postMessage({ type: 'state-update', update: stateUpdateForWebview(update) })
+      if (!delivered) {
+        // A dropped patch would desync every later diff; resend the full state next time.
+        this.postedState = undefined
+        return
+      }
+    }
     this.postedState = state
   }
 
@@ -1198,7 +1205,9 @@ class DshSurface implements vscode.Disposable {
               : undefined
             await this.webview.postMessage({
               type: 'tool-output',
-              sessionId,
+              // Address the reply to the requesting session so its webview does
+              // not drop a session-mismatch error and hang on the 15s timeout.
+              sessionId: requestedSessionId,
               messageId: value.messageId,
               requestId: value.requestId,
               ...(message === undefined

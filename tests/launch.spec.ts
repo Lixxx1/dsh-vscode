@@ -20,6 +20,9 @@ describe('DSH launch resolution', () => {
     expect(webArgsForDshVersion([...args, '--no-open'], '0.1.0-rc.8')).toEqual([...args, '--no-open'])
     expect(webArgsForDshVersion(['--profile', 'web', '--port', '0'], 'dsh 0.1.0-rc.8'))
       .toEqual(['--profile', 'web', '--port', '0', '--no-open'])
+    expect(webArgsForDshVersion(args, 'v0.1.0-rc.8')).toEqual([...args, '--no-open'])
+    expect(webArgsForDshVersion(args, '0.1.0-rc.8+build.5')).toEqual([...args, '--no-open'])
+    expect(webArgsForDshVersion(args, 'v0.1.0-rc.7')).toEqual(args)
   })
 
   it('finds the official source checkout and launches its real CLI entry', () => {
