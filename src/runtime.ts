@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import * as vscode from 'vscode'
 import { DEEPSEEK_API_KEY_SECRET } from './credentials.js'
-import { parseDshWebUrl, resolveLaunch, type LaunchCommand, webArgsForDshVersion } from './launch.js'
+import { findSourceRoot, parseDshWebUrl, resolveLaunch, type LaunchCommand, webArgsForDshVersion } from './launch.js'
 import {
   DEFAULT_DSH_SERVER_URL,
   DEFAULT_DSH_WEB_ARGS,
@@ -61,7 +61,9 @@ function readDshVersion(launch: LaunchCommand, cwd: string): Promise<string | un
     child.stdout.on('data', (chunk: string) => { output += chunk })
     child.stderr.on('data', (chunk: string) => { output += chunk })
     child.on('error', () => { finish() })
-    child.on('exit', code => { finish(code === 0 ? output.trim() : undefined) })
+    // 'close' (not 'exit') guarantees the stdio streams have flushed, so the
+    // version string cannot be truncated by a late stdout chunk.
+    child.on('close', code => { finish(code === 0 ? output.trim() : undefined) })
     timer = setTimeout(() => {
       child.kill()
       finish()
@@ -127,7 +129,10 @@ export class DshRuntime implements vscode.Disposable {
     let version: string | undefined
     let storedApiKey: string | undefined
     try {
-      if (shouldProbeExistingDsh(reuseExistingRuntime, configuredExecutable, hasCustomArguments)) {
+      // A nested deepseek-harness checkout is the documented empty-executable
+      // launch; an unrelated stock DSH on 3080 must not silently pre-empt it.
+      if (shouldProbeExistingDsh(reuseExistingRuntime, configuredExecutable, hasCustomArguments)
+        && findSourceRoot(this.context.extensionUri.fsPath) === undefined) {
         const existingUrl = new URL(DEFAULT_DSH_SERVER_URL)
         this.publish({ kind: 'starting', detail: 'Looking for an existing DeepSeek Harness runtime…' })
         if (await probeDshServer(existingUrl)) {

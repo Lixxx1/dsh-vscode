@@ -148,7 +148,8 @@ function resolveWindowsDsh(
 }
 
 function supportsNoOpen(version: string): boolean {
-  const match = /(?:^|\s)(\d+)\.(\d+)\.(\d+)(?:-rc\.(\d+))?(?:\s|$)/.exec(version)
+  // Tolerate a 'v' prefix and semver build metadata (e.g. 'v0.1.0-rc.8+abc').
+  const match = /(?:^|\s)v?(\d+)\.(\d+)\.(\d+)(?:-rc\.(\d+))?(?=[+\s]|$)/.exec(version)
   if (match === null) return false
   const major = Number(match[1])
   const minor = Number(match[2])

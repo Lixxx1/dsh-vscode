@@ -37,9 +37,11 @@ export function messageForWebview(message: ConversationMessage): ConversationMes
     || message.rawResult !== undefined
     || (message.images?.length ?? 0) > 0)
   const hasLargeCommandBody = message.role === 'command' && (message.rawResult?.length ?? 0) > WEBVIEW_INLINE_CHAR_LIMIT
+  // Only text length defers an assistant body: deferring on hydrated images
+  // alone would blank an already-visible short answer behind a load button.
   const hasLargeAssistantBody = message.role === 'assistant'
     && message.streaming !== true
-    && (message.text.length > WEBVIEW_INLINE_CHAR_LIMIT || (message.images?.some(image => image.data !== undefined) ?? false))
+    && message.text.length > WEBVIEW_INLINE_CHAR_LIMIT
   if (!hasToolBody && !hasLargeCommandBody && !hasLargeAssistantBody) return message
   const callView = compactToolView(message.callView)
   const resultView = compactToolView(message.resultView)
@@ -47,6 +49,7 @@ export function messageForWebview(message: ConversationMessage): ConversationMes
     id: message.id,
     role: message.role,
     text: hasLargeAssistantBody ? '' : message.text,
+    ...(message.streaming === undefined ? {} : { streaming: message.streaming }),
     ...(message.detail === undefined ? {} : { detail: message.detail }),
     ...(message.failed === undefined ? {} : { failed: message.failed }),
     ...(callView === undefined ? {} : { callView }),
