@@ -227,7 +227,13 @@ export function resolveLaunch(
       const windowsLaunch = resolveWindowsDsh(configuredExecutable, configuredArgs, host)
       if (windowsLaunch !== undefined) return windowsLaunch
       if (isWindowsShellScript(configuredExecutable)) {
-        return windowsShellFallback(configuredExecutable, configuredArgs, host.env)
+        // Settings JSON favors forward slashes, which cmd.exe mis-parses in an
+        // unquoted command token. resolve() also pins relative paths to the
+        // extension cwd instead of whatever directory cmd starts in.
+        const command = /[\\/]/.test(configuredExecutable)
+          ? explicitExecutablePath(configuredExecutable, host.cwd)
+          : configuredExecutable
+        return windowsShellFallback(command, configuredArgs, host.env)
       }
     }
     return {
@@ -261,7 +267,9 @@ export function resolveLaunch(
   if (host.platform === 'win32') {
     const windowsLaunch = resolveWindowsDsh('', configuredArgs, host)
     if (windowsLaunch !== undefined) return windowsLaunch
-    return windowsShellFallback('dsh.cmd', configuredArgs, host.env)
+    // Extensionless so cmd.exe applies PATHEXT: finds npm/pnpm/yarn dsh.cmd
+    // and also volta/scoop dsh.exe shims, which have no .cmd sibling.
+    return windowsShellFallback('dsh', configuredArgs, host.env)
   }
 
   return {

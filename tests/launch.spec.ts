@@ -113,14 +113,15 @@ describe('DSH launch resolution', () => {
     })
   })
 
-  it('routes the dsh.cmd fallback through cmd.exe when a Windows install cannot be resolved', () => {
+  it('routes the PATH fallback through cmd.exe when a Windows install cannot be resolved', () => {
     const prefix = mkdtempSync(join(tmpdir(), 'dsh-vscode-windows-missing-'))
     expect(resolveLaunch('/not/a/source/tree', '', ['web'], {
       platform: 'win32',
       env: { Path: prefix, ComSpec: 'C:\\Windows\\System32\\cmd.exe' },
     })).toEqual({
       command: 'C:\\Windows\\System32\\cmd.exe',
-      args: ['/c', 'dsh.cmd', 'web'],
+      // Extensionless: PATHEXT resolution covers dsh.cmd and volta/scoop dsh.exe.
+      args: ['/c', 'dsh', 'web'],
       sourceCheckout: false,
     })
   })
@@ -132,7 +133,20 @@ describe('DSH launch resolution', () => {
       env: { Path: prefix },
     })).toEqual({
       command: 'cmd.exe',
-      args: ['/c', 'dsh.cmd', 'web'],
+      args: ['/c', 'dsh', 'web'],
+      sourceCheckout: false,
+    })
+  })
+
+  it('resolves a relative explicit dsh.cmd against the workspace before invoking cmd.exe', () => {
+    const prefix = mkdtempSync(join(tmpdir(), 'dsh-vscode-windows-relative-'))
+    expect(resolveLaunch('/not/a/source/tree', 'tools/dsh.cmd', ['web'], {
+      platform: 'win32',
+      cwd: prefix,
+      env: { ComSpec: 'cmd.exe' },
+    })).toEqual({
+      command: 'cmd.exe',
+      args: ['/c', join(prefix, 'tools', 'dsh.cmd'), 'web'],
       sourceCheckout: false,
     })
   })
