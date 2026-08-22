@@ -113,14 +113,40 @@ describe('DSH launch resolution', () => {
     })
   })
 
-  it('keeps the dsh.cmd fallback when a Windows install cannot be resolved safely', () => {
+  it('routes the dsh.cmd fallback through cmd.exe when a Windows install cannot be resolved', () => {
     const prefix = mkdtempSync(join(tmpdir(), 'dsh-vscode-windows-missing-'))
+    expect(resolveLaunch('/not/a/source/tree', '', ['web'], {
+      platform: 'win32',
+      env: { Path: prefix, ComSpec: 'C:\\Windows\\System32\\cmd.exe' },
+    })).toEqual({
+      command: 'C:\\Windows\\System32\\cmd.exe',
+      args: ['/c', 'dsh.cmd', 'web'],
+      sourceCheckout: false,
+    })
+  })
+
+  it('defaults to cmd.exe when ComSpec is unset for the Windows fallback', () => {
+    const prefix = mkdtempSync(join(tmpdir(), 'dsh-vscode-windows-nocomspec-'))
     expect(resolveLaunch('/not/a/source/tree', '', ['web'], {
       platform: 'win32',
       env: { Path: prefix },
     })).toEqual({
-      command: 'dsh.cmd',
-      args: ['web'],
+      command: 'cmd.exe',
+      args: ['/c', 'dsh.cmd', 'web'],
+      sourceCheckout: false,
+    })
+  })
+
+  it('routes an unresolvable explicit dsh.cmd through cmd.exe on Windows', () => {
+    const prefix = mkdtempSync(join(tmpdir(), 'dsh-vscode-windows-explicit-missing-'))
+    const cmdPath = join(prefix, 'dsh.cmd')
+    writeFileSync(cmdPath, '@echo off\r\n')
+    expect(resolveLaunch('/not/a/source/tree', cmdPath, ['web'], {
+      platform: 'win32',
+      env: { ComSpec: 'cmd.exe' },
+    })).toEqual({
+      command: 'cmd.exe',
+      args: ['/c', cmdPath, 'web'],
       sourceCheckout: false,
     })
   })
