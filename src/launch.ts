@@ -37,6 +37,37 @@ function executableBasename(executable: string): string {
   return executable.split(/[\\/]/).at(-1) ?? executable
 }
 
+/** Node's spawn cannot execute .cmd/.bat shims directly on modern Windows. */
+function isWindowsShellScript(executable: string): boolean {
+  const basename = executableBasename(executable).toLowerCase()
+  return basename.endsWith('.cmd') || basename.endsWith('.bat')
+}
+
+function comSpec(env: Readonly<Record<string, string | undefined>>): string {
+  for (const [key, value] of Object.entries(env)) {
+    if (key.toLowerCase() === 'comspec' && value !== undefined && value !== '') return value
+  }
+  return 'cmd.exe'
+}
+
+/**
+ * Run a Windows .cmd/.bat shim through the command interpreter. cmd.exe /c
+ * launches the shim without spawn's direct-.cmd EINVAL and without shell:true's
+ * unescaped-argument hazard (DEP0190). Used as a last resort when the npm JS
+ * entry cannot be resolved (e.g. pnpm/yarn/volta global install layouts).
+ */
+function windowsShellFallback(
+  command: string,
+  args: readonly string[],
+  env: Readonly<Record<string, string | undefined>>,
+): LaunchCommand {
+  return {
+    command: comSpec(env),
+    args: ['/c', command, ...args],
+    sourceCheckout: false,
+  }
+}
+
 function explicitExecutablePath(executable: string, cwd: string): string {
   if (isAbsolute(executable)) return executable
   return resolve(cwd, ...executable.split(/[\\/]+/))
@@ -192,10 +223,20 @@ export function resolveLaunch(
   }
 
   if (configuredExecutable !== '') {
-    const windowsLaunch = host.platform === 'win32'
-      ? resolveWindowsDsh(configuredExecutable, configuredArgs, host)
-      : undefined
-    return windowsLaunch ?? {
+    if (host.platform === 'win32') {
+      const windowsLaunch = resolveWindowsDsh(configuredExecutable, configuredArgs, host)
+      if (windowsLaunch !== undefined) return windowsLaunch
+      if (isWindowsShellScript(configuredExecutable)) {
+        // Settings JSON favors forward slashes, which cmd.exe mis-parses in an
+        // unquoted command token. resolve() also pins relative paths to the
+        // extension cwd instead of whatever directory cmd starts in.
+        const command = /[\\/]/.test(configuredExecutable)
+          ? explicitExecutablePath(configuredExecutable, host.cwd)
+          : configuredExecutable
+        return windowsShellFallback(command, configuredArgs, host.env)
+      }
+    }
+    return {
       command: configuredExecutable,
       args: [...configuredArgs],
       sourceCheckout: false,
@@ -226,10 +267,13 @@ export function resolveLaunch(
   if (host.platform === 'win32') {
     const windowsLaunch = resolveWindowsDsh('', configuredArgs, host)
     if (windowsLaunch !== undefined) return windowsLaunch
+    // Extensionless so cmd.exe applies PATHEXT: finds npm/pnpm/yarn dsh.cmd
+    // and also volta/scoop dsh.exe shims, which have no .cmd sibling.
+    return windowsShellFallback('dsh', configuredArgs, host.env)
   }
 
   return {
-    command: host.platform === 'win32' ? 'dsh.cmd' : 'dsh',
+    command: 'dsh',
     args: [...configuredArgs],
     sourceCheckout: false,
   }

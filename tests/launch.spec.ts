@@ -113,14 +113,54 @@ describe('DSH launch resolution', () => {
     })
   })
 
-  it('keeps the dsh.cmd fallback when a Windows install cannot be resolved safely', () => {
+  it('routes the PATH fallback through cmd.exe when a Windows install cannot be resolved', () => {
     const prefix = mkdtempSync(join(tmpdir(), 'dsh-vscode-windows-missing-'))
+    expect(resolveLaunch('/not/a/source/tree', '', ['web'], {
+      platform: 'win32',
+      env: { Path: prefix, ComSpec: 'C:\\Windows\\System32\\cmd.exe' },
+    })).toEqual({
+      command: 'C:\\Windows\\System32\\cmd.exe',
+      // Extensionless: PATHEXT resolution covers dsh.cmd and volta/scoop dsh.exe.
+      args: ['/c', 'dsh', 'web'],
+      sourceCheckout: false,
+    })
+  })
+
+  it('defaults to cmd.exe when ComSpec is unset for the Windows fallback', () => {
+    const prefix = mkdtempSync(join(tmpdir(), 'dsh-vscode-windows-nocomspec-'))
     expect(resolveLaunch('/not/a/source/tree', '', ['web'], {
       platform: 'win32',
       env: { Path: prefix },
     })).toEqual({
-      command: 'dsh.cmd',
-      args: ['web'],
+      command: 'cmd.exe',
+      args: ['/c', 'dsh', 'web'],
+      sourceCheckout: false,
+    })
+  })
+
+  it('resolves a relative explicit dsh.cmd against the workspace before invoking cmd.exe', () => {
+    const prefix = mkdtempSync(join(tmpdir(), 'dsh-vscode-windows-relative-'))
+    expect(resolveLaunch('/not/a/source/tree', 'tools/dsh.cmd', ['web'], {
+      platform: 'win32',
+      cwd: prefix,
+      env: { ComSpec: 'cmd.exe' },
+    })).toEqual({
+      command: 'cmd.exe',
+      args: ['/c', join(prefix, 'tools', 'dsh.cmd'), 'web'],
+      sourceCheckout: false,
+    })
+  })
+
+  it('routes an unresolvable explicit dsh.cmd through cmd.exe on Windows', () => {
+    const prefix = mkdtempSync(join(tmpdir(), 'dsh-vscode-windows-explicit-missing-'))
+    const cmdPath = join(prefix, 'dsh.cmd')
+    writeFileSync(cmdPath, '@echo off\r\n')
+    expect(resolveLaunch('/not/a/source/tree', cmdPath, ['web'], {
+      platform: 'win32',
+      env: { ComSpec: 'cmd.exe' },
+    })).toEqual({
+      command: 'cmd.exe',
+      args: ['/c', cmdPath, 'web'],
       sourceCheckout: false,
     })
   })
