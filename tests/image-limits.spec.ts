@@ -81,12 +81,35 @@ describe('DSH image attachment limits', () => {
     )).toBe('Those images exceed the 2 KB limit for one message.')
   })
 
-  it('defers an unsupported media type to the runtime instead of guessing', () => {
+  it('leaves an unsupported media type to the runtime but still bounds the batch', () => {
+    // Whether the type is accepted is DSH's call, so a lone unadvertised file passes.
+    expect(rejectImageAttachments([], [{ mediaType: 'image/gif', bytes: 500 }], limits))
+      .toBeUndefined()
+    // It must not carry an over-limit payload past the media-independent bounds.
+    expect(rejectImageAttachments([], [{ mediaType: 'image/gif', bytes: 1001, name: 'big.gif' }], limits))
+      .toBe('`big.gif` is larger than the 1 KB limit for a single image.')
     expect(rejectImageAttachments(
       [],
-      [{ mediaType: 'image/gif', bytes: 999999 }],
+      [
+        { mediaType: 'image/gif', bytes: 900 },
+        { mediaType: 'image/png', bytes: 900 },
+        { mediaType: 'image/png', bytes: 900 },
+      ],
       limits,
-    )).toBeUndefined()
+    )).toBe('Those images exceed the 2 KB limit for one message.')
+  })
+
+  it('measures the whole draft at send time, not just the newest batch', () => {
+    // A draft picked while the projection was still in flight is re-checked on send,
+    // where nothing counts as already attached: the draft itself is the batch.
+    const draft = [
+      { mediaType: 'image/png' as const, bytes: 900 },
+      { mediaType: 'image/png' as const, bytes: 900 },
+      { mediaType: 'image/png' as const, bytes: 900 },
+    ]
+    expect(rejectImageAttachments([], draft, undefined)).toBeUndefined()
+    expect(rejectImageAttachments([], draft, limits))
+      .toBe('Those images exceed the 2 KB limit for one message.')
   })
 
   it('attaches without complaint when the runtime published no limits', () => {

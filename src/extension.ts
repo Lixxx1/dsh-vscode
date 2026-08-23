@@ -1261,6 +1261,18 @@ class DshSurface implements vscode.Disposable {
             const carriesIdeContext = slash.kind === 'prompt'
             const ideContext = carriesIdeContext ? await this.editorContext.snapshotForPrompt(value.text) : undefined
             const mode: PromptMode = value.mode === 'steer' ? 'steer' : 'queue'
+            // Limits can land after the picker ran, so the send is the last point
+            // where the whole draft can be measured against what the runtime states.
+            const rejection = rejectImageAttachments(
+              [],
+              this.draftImages.map(candidateOf),
+              this.controller.state.imageLimits,
+            )
+            if (rejection !== undefined) {
+              void vscode.window.showWarningMessage(rejection)
+              this.setPrompt(value.text)
+              return
+            }
             await this.controller.send(value.text, this.draftImages, ideContext, mode)
             this.draftImages.length = 0
             if (carriesIdeContext) this.editorContext.clearPinned()

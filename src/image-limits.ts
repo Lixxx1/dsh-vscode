@@ -63,7 +63,9 @@ export function imageSizeText(bytes: number): string {
  * the batch may be attached.
  *
  * An unsupported media type is deliberately not rejected here: DSH answers that
- * case with its own reason, and duplicating the list would let the two drift.
+ * case with its own reason, and duplicating the list would let the two drift. The
+ * count and byte bounds still apply to such a batch — they hold whatever the types,
+ * so one unadvertised file cannot carry an over-limit payload past this check.
  */
 export function rejectImageAttachments(
   attached: readonly ImageCandidate[],
@@ -71,8 +73,6 @@ export function rejectImageAttachments(
   limits: ImageAttachmentLimits | undefined,
 ): string | undefined {
   if (limits === undefined || incoming.length === 0) return undefined
-
-  if (incoming.some(image => !limits.mediaTypes.includes(image.mediaType))) return undefined
 
   if (attached.length + incoming.length > limits.maxImagesPerMessage) {
     return `DeepSeek Harness accepts at most ${String(limits.maxImagesPerMessage)} images per message.`
