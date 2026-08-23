@@ -9,7 +9,7 @@ Ask DeepSeek to inspect, change, and verify code without switching between your 
 
 👋 I built this because I wanted DSH right beside my editor. If that sounds useful to you too, give it a try! I'd love to hear how it fits into your workflow.
 
-**English** | [简体中文](README.zh.md)
+**English** | [简体中文](README.zh.md) | [日本語](README.ja.md)
 
 [Website](https://lixxx1.github.io/dsh-vscode/) · [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=lixxx1.dsh-sidebar)
 

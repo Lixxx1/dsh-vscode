@@ -9,7 +9,7 @@
 
 👋 我做这个插件，是因为自己也想让 DSH 一直待在编辑器旁边。如果这也是你喜欢的工作方式，欢迎试试看！也欢迎告诉我它用起来怎么样。
 
-[English](README.md) | **简体中文**
+[English](README.md) | **简体中文** | [日本語](README.ja.md)
 
 [项目主页](https://lixxx1.github.io/dsh-vscode/) · [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=lixxx1.dsh-sidebar)
 
