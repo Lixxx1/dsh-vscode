@@ -25,6 +25,15 @@ describe('DSH launch resolution', () => {
     expect(webArgsForDshVersion(args, 'v0.1.0-rc.7')).toEqual(args)
   })
 
+  it('keeps suppressing the browser handoff on the 0.1.1 release candidates and later', () => {
+    const args = ['web', '--host', '127.0.0.1', '--port', '0']
+    expect(webArgsForDshVersion(args, '0.1.1-rc.1')).toEqual([...args, '--no-open'])
+    expect(webArgsForDshVersion(args, '0.1.1-rc.2')).toEqual([...args, '--no-open'])
+    expect(webArgsForDshVersion(args, '0.1.1')).toEqual([...args, '--no-open'])
+    expect(webArgsForDshVersion(args, '0.2.0-rc.1')).toEqual([...args, '--no-open'])
+    expect(webArgsForDshVersion(args, '1.0.0')).toEqual([...args, '--no-open'])
+  })
+
   it('finds the official source checkout and launches its real CLI entry', () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-vscode-source-'))
     mkdirSync(join(root, 'apps', 'cli', 'src'), { recursive: true })
