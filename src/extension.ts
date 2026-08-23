@@ -37,6 +37,12 @@ import {
   type SkillDescriptor,
 } from './dsh-client.js'
 import { replaceTextPreservingIdeContext, withIdeContext, type IdeContextReference, type IdeContextSnapshot } from './ide-context.js'
+import {
+  imageLimitsOf,
+  rejectImageAttachments,
+  type ImageAttachmentLimits,
+  type ImageCandidate,
+} from './image-limits.js'
 import { jobsSnapshotOf, type JobItem } from './jobs.js'
 import { queueSnapshotOf, type QueueItemState } from './queue.js'
 import { DshRuntime, type RuntimeOwnership, type RuntimeState } from './runtime.js'
@@ -132,6 +138,7 @@ interface ChatViewState {
   skills: SkillDescriptor[]
   agentPreset: AgentPresetState
   usage: UsageMeterState
+  imageLimits: ImageAttachmentLimits | undefined
   permissions: PermissionPresetItem[]
   plan: PlanModeState
   changedFiles: ChangedFileGroup[]
@@ -189,6 +196,7 @@ function initialState(cwd: string): ChatViewState {
     skills: [],
     agentPreset: unavailableAgentPresetState(),
     usage: unavailableUsageMeterState(),
+    imageLimits: undefined,
     permissions: [],
     plan: planModeStateOf(undefined),
     changedFiles: [],
@@ -601,6 +609,7 @@ class DshChatController implements vscode.Disposable {
       skills: [],
       agentPreset: unavailableAgentPresetState(),
       usage: usageMeterStateOf(summary?.projections?.values),
+      imageLimits: imageLimitsOf(summary?.projections?.values?.imageLimits),
       permissions: permissionPresetsOf(summary?.projections?.values?.permissions),
       plan: planModeStateOf(summary?.projections?.values?.plan),
       changedFiles: this.diffReviews.rebuild(sessionId, this.cwd, events),
@@ -836,6 +845,9 @@ class DshChatController implements vscode.Disposable {
         this.publish({
           sessions: this._state.sessions.map(item => item.id === sessionId ? { ...item, title: payload.value as string } : item),
         })
+      }
+      if (payload.key === 'imageLimits' && sessionId === this._state.sessionId) {
+        this.publish({ imageLimits: imageLimitsOf(payload.value) })
       }
       if (payload.key === 'permissions' && sessionId === this._state.sessionId) {
         this.publish({ permissions: permissionPresetsOf(payload.value) })
@@ -1112,11 +1124,13 @@ class DshSurface implements vscode.Disposable {
       filters: { Images: ['png', 'jpg', 'jpeg', 'webp', 'gif'] },
     })
     if (selected === undefined) return
+
+    const incoming: Array<PromptImage & { id: string }> = []
     for (const uri of selected) {
       const mediaType = imageMediaType(uri.fsPath)
       if (mediaType === undefined) continue
       const bytes = await vscode.workspace.fs.readFile(uri)
-      this.draftImages.push({
+      incoming.push({
         id: randomUUID(),
         type: 'image',
         mediaType,
@@ -1124,6 +1138,20 @@ class DshSurface implements vscode.Disposable {
         name: path.basename(uri.fsPath),
       })
     }
+    if (incoming.length === 0) return
+
+    // Answer with the runtime's own bounds before a rejected prompt spends the upload.
+    const rejection = rejectImageAttachments(
+      this.draftImages.map(candidateOf),
+      incoming.map(candidateOf),
+      this.controller.state.imageLimits,
+    )
+    if (rejection !== undefined) {
+      void vscode.window.showWarningMessage(rejection)
+      return
+    }
+
+    this.draftImages.push(...incoming)
     await this.publishDraftImages()
   }
 
@@ -1374,6 +1402,21 @@ class DshSurface implements vscode.Disposable {
       }
     }
     void run().catch(error => { this.controller.report(error) })
+  }
+}
+
+/** Decoded byte count of a base64 payload, without materializing the bytes again. */
+function base64Bytes(data: string): number {
+  const padding = data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0
+  return Math.max(0, Math.floor(data.length / 4) * 3 - padding)
+}
+
+/** Measure a draft attachment against the runtime's published upload bounds. */
+function candidateOf(image: PromptImage & { id: string }): ImageCandidate {
+  return {
+    mediaType: image.mediaType,
+    bytes: base64Bytes(image.data),
+    ...(image.name === undefined ? {} : { name: image.name }),
   }
 }
 
