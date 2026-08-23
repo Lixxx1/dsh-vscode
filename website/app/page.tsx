@@ -308,6 +308,7 @@ export default function Home() {
         <div className="footer-links">
           <a href={githubUrl}>GitHub ↗</a>
           <a href={marketplaceUrl}>Marketplace ↗</a>
+          <a href={`${githubUrl}/blob/main/README.ja.md`}>日本語 README ↗</a>
           <a href={`${githubUrl}/blob/main/LICENSE`}>MIT</a>
         </div>
       </footer>
