@@ -416,7 +416,6 @@ class DshChatController implements vscode.Disposable {
       }
       return
     }
-    if (slash.kind === 'unknown') throw new Error(`Unknown DeepSeek command or skill: ${slash.token}`)
     await this.requireClient().prompt(
       this._state.sessionId,
       slash.kind === 'skill' || ideContext === undefined ? normalized : withIdeContext(normalized, ideContext),
