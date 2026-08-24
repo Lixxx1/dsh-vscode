@@ -21,11 +21,11 @@ describe('slash input routing', () => {
     })
   })
 
-  it('rejects unknown slash tokens without affecting ordinary prompts', () => {
-    expect(routeSlashInput('/not-installed', commands, skills)).toEqual({
-      kind: 'unknown',
-      token: '/not-installed',
-    })
+  it('keeps unknown slash-prefixed text in the ordinary prompt path', () => {
+    expect(routeSlashInput('/not-installed', commands, skills)).toEqual({ kind: 'prompt' })
+    expect(routeSlashInput('/* pasted comment */', commands, skills)).toEqual({ kind: 'prompt' })
+    expect(routeSlashInput('// pasted comment', commands, skills)).toEqual({ kind: 'prompt' })
+    expect(routeSlashInput('/api/users', commands, skills)).toEqual({ kind: 'prompt' })
     expect(routeSlashInput('explain this file', commands, skills)).toEqual({ kind: 'prompt' })
   })
 
