@@ -1361,7 +1361,13 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
         renderedHistoryKey = historyKey; elements.conversationHistory.replaceChildren();
         if (current.hasMoreHistory || current.loadingHistory) {
           const loader = node('div', 'history-loader'); const button = node('button', 'history-button', current.loadingHistory ? 'Loading earlier messages…' : 'Load earlier messages'); button.type = 'button'; button.disabled = current.loadingHistory === true;
-          button.addEventListener('click', () => { historyAnchor = { sessionId: current.sessionId, height: elements.scroll.scrollHeight, top: elements.scroll.scrollTop }; button.disabled = true; button.textContent = 'Loading earlier messages…'; vscode.postMessage({ type: 'load-history' }); }); loader.append(button); elements.conversationHistory.append(loader);
+          button.addEventListener('click', () => {
+            detachConversationTail();
+            historyAnchor = { sessionId: current.sessionId, height: elements.scroll.scrollHeight, top: elements.scroll.scrollTop };
+            button.disabled = true; button.textContent = 'Loading earlier messages…';
+            vscode.postMessage({ type: 'load-history' });
+          });
+          loader.append(button); elements.conversationHistory.append(loader);
         }
       }
       reconcileMessages(array(current.messages), current);

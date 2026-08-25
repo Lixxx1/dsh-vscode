@@ -25,4 +25,17 @@ describe('chat webview', () => {
     expect(script).toContain("pendingMessageAppends.set(append.id")
     expect(script).toContain("target.textContent += continuation.textContent")
   })
+
+  it('detaches tail following before loading earlier history', () => {
+    const webview = { cspSource: 'vscode-webview:' } as vscode.Webview
+    const mark = { toString: () => 'vscode-resource:/deepseek.svg' } as vscode.Uri
+    const script = /<script nonce="[^"]+">([\s\S]*?)<\/script>/.exec(chatHtml(webview, mark))?.[1] ?? ''
+    const historyClick = script.indexOf("button.addEventListener('click'")
+    const detachTail = script.indexOf('detachConversationTail();', historyClick)
+    const requestHistory = script.indexOf("vscode.postMessage({ type: 'load-history' })", historyClick)
+
+    expect(historyClick).toBeGreaterThanOrEqual(0)
+    expect(detachTail).toBeGreaterThan(historyClick)
+    expect(detachTail).toBeLessThan(requestHistory)
+  })
 })
