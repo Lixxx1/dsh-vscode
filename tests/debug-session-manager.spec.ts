@@ -64,4 +64,21 @@ describe('debug session ownership', () => {
     expect(owned.size).toBe(0)
     manager.dispose()
   })
+
+  it('returns a completed snapshot when a short launch terminates before start resolves', () => {
+    const manager = new DebugSessionManager()
+    const completed = session('short-task')
+    const owned = (manager as unknown as { owned: Map<string, unknown> }).owned
+    owned.set('short-task', {
+      session: completed,
+      workspace: 'file:///workspace/one',
+      state: { ...initialDebugSessionState(), phase: 'terminated' },
+    })
+
+    expect(manager.completeLaunch(true)).toMatchObject({
+      sessionId: 'short-task',
+      phase: 'terminated',
+    })
+    manager.dispose()
+  })
 })

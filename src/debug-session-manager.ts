@@ -56,7 +56,7 @@ export class DebugSessionManager implements vscode.Disposable {
   completeLaunch(started: boolean): DebugSessionSnapshot | undefined {
     this.pendingWorkspace = undefined
     if (!started) return undefined
-    return this.snapshot()
+    return this.snapshot() ?? this.latestSnapshot()
   }
 
   cancelLaunch(): void {
