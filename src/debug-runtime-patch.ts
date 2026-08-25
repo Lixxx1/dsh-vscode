@@ -17,7 +17,9 @@ export function supportsDebugRuntime(version: string | undefined): boolean {
   const minor = Number(match[2])
   const patch = Number(match[3])
   const rc = match[4] === undefined ? undefined : Number(match[4])
-  if (major > 0 || minor > 1 || patch > 0) return true
+  if (major !== 0) return major > 0
+  if (minor !== 1) return minor > 1
+  if (patch !== 0) return patch > 0
   return rc === undefined || rc >= 8
 }
 
