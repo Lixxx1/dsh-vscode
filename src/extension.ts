@@ -1606,6 +1606,45 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.restart', async () => {
     await controller.restart().catch(error => { void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error)) })
   }))
+  if (workspace !== undefined) {
+    let autonomousDebugging = vscode.workspace
+      .getConfiguration('deepseekHarness', workspace.uri)
+      .get<boolean>('autonomousDebugging', false)
+    let debugRestartTimer: NodeJS.Timeout | undefined
+    let debugRestartTask = Promise.resolve()
+    context.subscriptions.push(
+      vscode.workspace.onDidChangeConfiguration(event => {
+        if (!event.affectsConfiguration('deepseekHarness.autonomousDebugging', workspace.uri)) return
+        const enabled = vscode.workspace
+          .getConfiguration('deepseekHarness', workspace.uri)
+          .get<boolean>('autonomousDebugging', false)
+        if (enabled === autonomousDebugging) return
+        autonomousDebugging = enabled
+
+        if (debugRestartTimer !== undefined) clearTimeout(debugRestartTimer)
+        debugRestartTimer = setTimeout(() => {
+          debugRestartTimer = undefined
+          if (runtime.state.kind === 'stopped') {
+            output.appendLine(`[debug] Autonomous debugging ${enabled ? 'enabled' : 'disabled'}; it will apply the next time DSH starts.`)
+            return
+          }
+          debugRestartTask = debugRestartTask
+            .catch(() => undefined)
+            .then(async () => {
+              output.appendLine(`[debug] Autonomous debugging ${enabled ? 'enabled' : 'disabled'}; restarting DSH to apply the change.`)
+              await controller.restart()
+              void vscode.window.showInformationMessage(`VS Code debugging ${enabled ? 'enabled' : 'disabled'}. DeepSeek Harness restarted.`)
+            })
+            .catch(error => {
+              const message = error instanceof Error ? error.message : String(error)
+              output.appendLine(`[debug] Failed to restart DSH after the setting changed: ${message}`)
+              void vscode.window.showErrorMessage(`Could not apply the VS Code debugging setting: ${message}`)
+            })
+        }, 200)
+      }),
+      { dispose: () => { if (debugRestartTimer !== undefined) clearTimeout(debugRestartTimer) } },
+    )
+  }
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.managePlugins', async () => {
     await pluginManager.show().catch(error => {
       const message = error instanceof Error ? error.message : String(error)
