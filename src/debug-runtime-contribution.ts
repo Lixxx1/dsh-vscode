@@ -3,8 +3,10 @@ import { mkdir, unlink, writeFile } from 'node:fs/promises'
 import * as path from 'node:path'
 import * as vscode from 'vscode'
 import { DebugMcpServer, type DebugMcpLogger } from './debug-mcp-server.js'
+import { DebugTools } from './debug-tools.js'
+import type { DebugSessionManager } from './debug-session-manager.js'
 import { debugRuntimePatch, injectDebugRuntimePatch, supportsDebugRuntime } from './debug-runtime-patch.js'
-import type { DebugToolHandler } from './debug-mcp-server.js'
+import { debugWorkspaceForPath } from './debug-workspace.js'
 import type { RuntimeLaunchContext, RuntimeLaunchContributor, RuntimeLaunchPreparation } from './runtime-launch.js'
 
 const DEBUG_TOKEN_ENV = 'DSH_VSCODE_DEBUG_TOKEN'
@@ -21,19 +23,32 @@ async function removeFile(filePath: string): Promise<void> {
 export class DebugRuntimeContribution implements RuntimeLaunchContributor {
   constructor(
     private readonly context: vscode.ExtensionContext,
-    private readonly workspace: vscode.WorkspaceFolder,
-    private readonly tools: DebugToolHandler,
+    private readonly sessions: DebugSessionManager,
     private readonly logger?: DebugMcpLogger,
   ) {}
 
-  async prepare(_launch: RuntimeLaunchContext): Promise<RuntimeLaunchPreparation | undefined> {
+  async prepare(launch: RuntimeLaunchContext): Promise<RuntimeLaunchPreparation | undefined> {
+    const workspace = debugWorkspaceForPath(vscode.workspace.workspaceFolders ?? [], launch.workspacePath)
+    if (workspace === undefined) throw new Error('The selected DeepSeek project is not an open VS Code workspace folder.')
     const enabled = vscode.workspace
-      .getConfiguration('deepseekHarness', this.workspace.uri)
+      .getConfiguration('deepseekHarness', workspace.uri)
       .get<boolean>('autonomousDebugging', false)
     if (!enabled) return undefined
 
-    const bridge = new DebugMcpServer(this.tools, this.logger)
+    const tools = new DebugTools(this.sessions, workspace)
+    const bridge = new DebugMcpServer(tools, this.logger)
     let patchPath: string | undefined
+    const dispose = async (): Promise<void> => {
+      try {
+        await bridge.dispose()
+      } finally {
+        try {
+          if (patchPath !== undefined) await removeFile(patchPath)
+        } finally {
+          tools.dispose()
+        }
+      }
+    }
     try {
       const endpoint = await bridge.start()
       const storage = this.context.storageUri ?? this.context.globalStorageUri
@@ -49,14 +64,10 @@ export class DebugRuntimeContribution implements RuntimeLaunchContributor {
           }
           return injectDebugRuntimePatch(args, finalPatchPath)
         },
-        dispose: async () => {
-          await bridge.dispose()
-          await removeFile(finalPatchPath)
-        },
+        dispose,
       }
     } catch (error) {
-      await bridge.dispose()
-      if (patchPath !== undefined) await removeFile(patchPath)
+      await dispose()
       throw error
     }
   }

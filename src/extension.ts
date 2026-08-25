@@ -22,7 +22,6 @@ import { DEEPSEEK_API_KEY_SECRET, normalizeDeepSeekApiKey } from './credentials.
 import { DiffReviewManager, type ChangedFileGroup } from './diff-review.js'
 import { DebugRuntimeContribution } from './debug-runtime-contribution.js'
 import { DebugSessionManager } from './debug-session-manager.js'
-import { DebugTools } from './debug-tools.js'
 import { DirtyFileGuard } from './dirty-file-guard.js'
 import { EditorContextBridge } from './editor-context-bridge.js'
 import {
@@ -1549,12 +1548,9 @@ export function activate(context: vscode.ExtensionContext): void {
   const workspace = vscode.workspace.workspaceFolders?.[0]
   const output = vscode.window.createOutputChannel('DeepSeek Harness', { log: true })
   const debugSessions = workspace === undefined ? undefined : new DebugSessionManager()
-  const debugTools = workspace === undefined || debugSessions === undefined
+  const debugRuntime = workspace === undefined || debugSessions === undefined
     ? undefined
-    : new DebugTools(debugSessions, workspace)
-  const debugRuntime = workspace === undefined || debugTools === undefined
-    ? undefined
-    : new DebugRuntimeContribution(context, workspace, debugTools, output)
+    : new DebugRuntimeContribution(context, debugSessions, output)
   const runtime = new DshRuntime(context, output, debugRuntime)
   activeRuntime = runtime
 
@@ -1576,7 +1572,6 @@ export function activate(context: vscode.ExtensionContext): void {
     diffReviews,
     editorContext,
     provider,
-    ...(debugTools === undefined ? [] : [debugTools]),
     ...(debugSessions === undefined ? [] : [debugSessions]),
   )
   context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider('dsh-diff', diffReviews))
@@ -1607,19 +1602,15 @@ export function activate(context: vscode.ExtensionContext): void {
     await controller.restart().catch(error => { void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error)) })
   }))
   if (workspace !== undefined) {
-    let autonomousDebugging = vscode.workspace
-      .getConfiguration('deepseekHarness', workspace.uri)
-      .get<boolean>('autonomousDebugging', false)
     let debugRestartTimer: NodeJS.Timeout | undefined
     let debugRestartTask = Promise.resolve()
     context.subscriptions.push(
       vscode.workspace.onDidChangeConfiguration(event => {
-        if (!event.affectsConfiguration('deepseekHarness.autonomousDebugging', workspace.uri)) return
+        const currentWorkspace = controller.cwd === '' ? workspace.uri : vscode.Uri.file(controller.cwd)
+        if (!event.affectsConfiguration('deepseekHarness.autonomousDebugging', currentWorkspace)) return
         const enabled = vscode.workspace
-          .getConfiguration('deepseekHarness', workspace.uri)
+          .getConfiguration('deepseekHarness', currentWorkspace)
           .get<boolean>('autonomousDebugging', false)
-        if (enabled === autonomousDebugging) return
-        autonomousDebugging = enabled
 
         if (debugRestartTimer !== undefined) clearTimeout(debugRestartTimer)
         debugRestartTimer = setTimeout(() => {
@@ -1690,7 +1681,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.showOutput', () => { output.show(true) }))
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.openInBrowser', async () => {
     try {
-      const uri = await runtime.start()
+      const uri = await runtime.start(controller.cwd === '' ? undefined : vscode.Uri.file(controller.cwd))
       await vscode.env.openExternal(await vscode.env.asExternalUri(uri))
     } catch (error) {
       void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error))
