@@ -77,6 +77,51 @@ export class DebugSessionManager implements vscode.Disposable {
     }
   }
 
+  latestSnapshot(): DebugSessionSnapshot | undefined {
+    const owned = [...this.owned.values()].at(-1)
+    if (owned === undefined) return undefined
+    return {
+      sessionId: owned.session.id,
+      name: owned.session.name,
+      type: owned.session.type,
+      ...owned.state,
+    }
+  }
+
+  async waitForLaunchSettlement(timeoutMs: number): Promise<DebugSessionSnapshot | undefined> {
+    const settled = (): DebugSessionSnapshot | undefined => {
+      const stopped = [...this.owned.values()].find(item => item.state.phase === 'stopped')
+      if (stopped !== undefined) {
+        return {
+          sessionId: stopped.session.id,
+          name: stopped.session.name,
+          type: stopped.session.type,
+          ...stopped.state,
+        }
+      }
+      const running = [...this.owned.values()].some(item => item.state.phase !== 'terminated')
+      return running ? undefined : this.latestSnapshot()
+    }
+    const current = settled()
+    if (current !== undefined) return current
+
+    return await new Promise<DebugSessionSnapshot | undefined>(resolve => {
+      let finished = false
+      const finish = (snapshot: DebugSessionSnapshot | undefined): void => {
+        if (finished) return
+        finished = true
+        clearTimeout(timer)
+        subscription.dispose()
+        resolve(snapshot)
+      }
+      const subscription = this.onDidChangeState(() => {
+        const snapshot = settled()
+        if (snapshot !== undefined) finish(snapshot)
+      })
+      const timer = setTimeout(() => { finish(this.snapshot() ?? this.latestSnapshot()) }, timeoutMs)
+    })
+  }
+
   snapshots(): DebugSessionSnapshot[] {
     return [...this.owned.values()]
       .filter(item => item.state.phase !== 'terminated')

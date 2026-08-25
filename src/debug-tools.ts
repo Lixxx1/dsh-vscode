@@ -2,7 +2,7 @@ import * as path from 'node:path'
 import { realpath } from 'node:fs/promises'
 import * as vscode from 'vscode'
 import { DebugSessionManager, type DebugSessionSnapshot } from './debug-session-manager.js'
-import { compactDebugText, debugVariableValue, launchConfigurationNames, type DebugVariableValue } from './debug-values.js'
+import { compactDebugText, debugVariableValue, isRuntimeInternalSource, launchConfigurationNames, type DebugVariableValue } from './debug-values.js'
 
 type DebugControlAction = 'continue' | 'pause' | 'next' | 'stepIn' | 'stepOut' | 'stop'
 type DebugBreakpointAction = 'add' | 'remove' | 'list'
@@ -23,7 +23,7 @@ export interface DebugControlInput {
 }
 
 export interface DebugStartResult {
-  readonly status: 'started' | 'selection-required'
+  readonly status: 'started' | 'completed' | 'selection-required'
   readonly configurations?: readonly string[]
   readonly session?: DebugSessionSnapshot
 }
@@ -126,7 +126,8 @@ export class DebugTools implements vscode.Disposable {
       const session = this.sessions.completeLaunch(started)
       if (!started) throw new Error(`VS Code could not start the "${configuration}" debug configuration.`)
       if (session === undefined) throw new Error('VS Code started debugging, but the session was not observed by the DeepSeek bridge.')
-      return { status: 'started', session }
+      const current = await this.sessions.waitForLaunchSettlement(500) ?? session
+      return { status: current.phase === 'terminated' ? 'completed' : 'started', session: current }
     } catch (error) {
       this.sessions.cancelLaunch()
       throw error
@@ -197,16 +198,25 @@ export class DebugTools implements vscode.Disposable {
   async context(): Promise<DebugContextResult> {
     const snapshot = this.sessions.snapshot()
     const session = this.sessions.session(snapshot?.sessionId)
-    if (snapshot === undefined || session === undefined) throw new Error('No DeepSeek debug session is active.')
+    if (snapshot === undefined || session === undefined) {
+      const latest = this.sessions.latestSnapshot()
+      if (latest?.phase === 'terminated') return { session: latest, frames: [], scopes: [], truncated: false }
+      throw new Error('No DeepSeek debug session has been launched.')
+    }
     if (snapshot.phase !== 'stopped') {
       throw new Error(`The debug session is ${snapshot.phase}; pause it or wait for a breakpoint before reading context.`)
     }
     const threadId = await this.threadId(session, snapshot)
-    const stackResponse = record(await session.customRequest('stackTrace', { threadId, startFrame: 0, levels: 8 }))
+    const stackResponse = record(await session.customRequest('stackTrace', { threadId, startFrame: 0, levels: 24 }))
     const rawFrames = Array.isArray(stackResponse?.stackFrames) ? stackResponse.stackFrames : []
+    const visibleFrames = rawFrames.filter(rawFrame => {
+      const frame = record(rawFrame)
+      const source = record(frame?.source)
+      return !isRuntimeInternalSource(nonEmptyString(source?.path))
+    })
     const frames: DebugStackFrameView[] = []
     const frameIds: number[] = []
-    for (const rawFrame of rawFrames.slice(0, 8)) {
+    for (const rawFrame of visibleFrames.slice(0, 8)) {
       const frame = record(rawFrame)
       const id = integer(frame?.id)
       const line = integer(frame?.line)
@@ -268,7 +278,7 @@ export class DebugTools implements vscode.Disposable {
       session: this.sessions.snapshot(snapshot.sessionId) ?? snapshot,
       frames,
       scopes,
-      truncated: rawFrames.length > frames.length || variableCount >= 24,
+      truncated: visibleFrames.length > frames.length || variableCount >= 24,
     }
   }
 

@@ -125,7 +125,7 @@ export class DebugMcpServer implements AsyncDisposable {
 
   private registerTools(): void {
     this.mcp.registerTool('debug_start', {
-      description: 'Start the current VS Code project under its existing launch.json debugger. Use this autonomously when a bug depends on runtime state, a value becomes wrong before the failure, or execution hangs. If multiple configurations are returned, call again with one configuration name.',
+      description: 'Start the current VS Code project under its existing launch.json debugger. Use this autonomously when a bug depends on runtime state, a value becomes wrong before the failure, or execution hangs. If multiple configurations are returned, call again with one configuration name. A completed status means the program exited before it could pause and does not require debug_context.',
       inputSchema: {
         configuration: z.string().trim().min(1).optional().describe('Existing launch.json configuration name. Omit when the workspace has exactly one configuration.'),
       },
@@ -149,7 +149,7 @@ export class DebugMcpServer implements AsyncDisposable {
     }, async input => textResult(await this.tools.control(input)))
 
     this.mcp.registerTool('debug_context', {
-      description: 'Read the current paused VS Code debugger context: stop reason, source location, compact stack, and bounded local variables. Call after a breakpoint, pause, or step before deciding how to edit the code.',
+      description: 'Read the current paused VS Code debugger context: stop reason, source location, compact application stack, and bounded local variables. Call after a breakpoint, pause, or step before deciding how to edit the code. If the program already finished, this returns its terminated session without treating normal completion as an error.',
       inputSchema: {},
       annotations: { readOnlyHint: true, openWorldHint: false },
     }, async () => textResult(await this.tools.context()))

@@ -12,6 +12,14 @@ export function compactDebugText(value: string, maxChars = 240): string {
   return normalized.length <= maxChars ? normalized : `${normalized.slice(0, Math.max(0, maxChars - 1))}…`
 }
 
+export function isRuntimeInternalSource(value: string | undefined): boolean {
+  if (value === undefined) return false
+  const normalized = value.replace(/\\/g, '/').toLowerCase()
+  return normalized.startsWith('<node_internals>/')
+    || normalized.startsWith('node:internal/')
+    || normalized.includes('/node:internal/')
+}
+
 export function debugVariableValue(
   name: string,
   value: string,

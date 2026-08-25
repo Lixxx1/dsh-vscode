@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { compactDebugText, debugVariableValue, launchConfigurationNames } from '../src/debug-values.ts'
+import { compactDebugText, debugVariableValue, isRuntimeInternalSource, launchConfigurationNames } from '../src/debug-values.ts'
 
 describe('debug tool values', () => {
   it('selects only named static launch and attach configurations', () => {
@@ -26,5 +26,11 @@ describe('debug tool values', () => {
   it('keeps debugger output single-line and bounded', () => {
     expect(compactDebugText('one\n\ttwo', 20)).toBe('one two')
     expect(compactDebugText('1234567890', 6)).toBe('12345…')
+  })
+
+  it('recognizes Node runtime frames that should stay out of agent context', () => {
+    expect(isRuntimeInternalSource('<node_internals>/internal/modules/cjs/loader')).toBe(true)
+    expect(isRuntimeInternalSource('node:internal/modules/run_main')).toBe(true)
+    expect(isRuntimeInternalSource('/workspace/src/index.js')).toBe(false)
   })
 })
