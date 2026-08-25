@@ -46,6 +46,9 @@ export class DebugSessionManager implements vscode.Disposable {
   beginLaunch(folder: vscode.WorkspaceFolder): void {
     if (this.pendingWorkspace !== undefined) throw new Error('A DeepSeek debug launch is already starting.')
     if (this.preferredSession() !== undefined) throw new Error('Stop the current DeepSeek debug session before starting another one.')
+    for (const [sessionId, owned] of this.owned) {
+      if (owned.state.phase === 'terminated') this.owned.delete(sessionId)
+    }
     this.pendingWorkspace = workspaceKey(folder)
   }
 
@@ -121,7 +124,6 @@ export class DebugSessionManager implements vscode.Disposable {
     if (owned === undefined) return
     owned.state = { phase: 'terminated', stopEpoch: owned.state.stopEpoch, threads: {} }
     this.publish(owned)
-    this.owned.delete(session.id)
   }
 
   private acceptMessage(session: vscode.DebugSession, message: unknown): void {
