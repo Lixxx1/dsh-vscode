@@ -85,6 +85,7 @@ export class DshRuntime implements vscode.Disposable {
   private stdoutBuffer = ''
   private stopping = false
   private launchPreparation: RuntimeLaunchPreparation | undefined
+  private launchPreparationRelease: Promise<void> | undefined
   private _state: RuntimeState = { kind: 'stopped' }
 
   readonly onDidChangeState = this.changes.event
@@ -108,6 +109,7 @@ export class DshRuntime implements vscode.Disposable {
     if (this._state.kind === 'ready') return this._state.localUri
     if (this.pending !== undefined) return this.pending.promise
     if (this.child !== undefined) await this.stop()
+    await this.releaseLaunchPreparation()
 
     const workspace = workspaceUri === undefined
       ? vscode.workspace.workspaceFolders?.[0]?.uri
@@ -279,12 +281,26 @@ export class DshRuntime implements vscode.Disposable {
   }
 
   private async releaseLaunchPreparation(): Promise<void> {
+    if (this.launchPreparationRelease !== undefined) {
+      await this.launchPreparationRelease
+      return
+    }
     const preparation = this.launchPreparation
     this.launchPreparation = undefined
+    if (preparation === undefined) return
+
+    const release = (async () => {
+      try {
+        await preparation.dispose?.()
+      } catch (error) {
+        this.output.appendLine(`[runtime] launch contribution cleanup failed: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    })()
+    this.launchPreparationRelease = release
     try {
-      await preparation?.dispose?.()
-    } catch (error) {
-      this.output.appendLine(`[runtime] launch contribution cleanup failed: ${error instanceof Error ? error.message : String(error)}`)
+      await release
+    } finally {
+      if (this.launchPreparationRelease === release) this.launchPreparationRelease = undefined
     }
   }
 
