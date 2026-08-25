@@ -51,17 +51,51 @@ describe('debug session state', () => {
 
     expect(oneContinued.phase).toBe('stopped')
     expect(oneContinued.threads).toEqual({ 1: 'running', 2: 'stopped' })
+    expect(oneContinued.currentThreadId).toBe(2)
   })
 
-  it('marks execution controls running even when an adapter omits continued events', () => {
+  it('marks execution controls running after a successful response even when an adapter omits continued events', () => {
     const stopped = reduceDebugAdapterMessage(initialDebugSessionState(), {
       type: 'event', event: 'stopped', body: { reason: 'breakpoint', threadId: 4 },
     })
     const requested = reduceDebugAdapterMessage(stopped, {
       type: 'request', command: 'next', arguments: { threadId: 4 },
     })
+    expect(requested).toBe(stopped)
+    const accepted = reduceDebugAdapterMessage(requested, {
+      type: 'response', command: 'next', request_seq: 12, success: true,
+    })
 
-    expect(requested).toEqual({ phase: 'running', stopEpoch: 1, threads: { 4: 'running' } })
+    expect(accepted).toEqual({ phase: 'running', stopEpoch: 1, threads: { 4: 'running' } })
+  })
+
+  it('keeps stopped state when an execution request fails', () => {
+    const stopped = reduceDebugAdapterMessage(initialDebugSessionState(), {
+      type: 'event', event: 'stopped', body: { reason: 'breakpoint', threadId: 4 },
+    })
+    const failed = reduceDebugAdapterMessage(stopped, {
+      type: 'response', command: 'next', request_seq: 12, success: false,
+    })
+
+    expect(failed).toBe(stopped)
+  })
+
+  it('treats an omitted allThreadsContinued flag as thread-local', () => {
+    const first = reduceDebugAdapterMessage(initialDebugSessionState(), {
+      type: 'event', event: 'stopped', body: { reason: 'pause', threadId: 1 },
+    })
+    const second = reduceDebugAdapterMessage(first, {
+      type: 'event', event: 'stopped', body: { reason: 'pause', threadId: 2 },
+    })
+    const continued = reduceDebugAdapterMessage(second, {
+      type: 'event', event: 'continued', body: { threadId: 2 },
+    })
+
+    expect(continued).toMatchObject({
+      phase: 'stopped',
+      currentThreadId: 1,
+      threads: { 1: 'stopped', 2: 'running' },
+    })
   })
 
   it('treats exited and terminated as terminal states', () => {

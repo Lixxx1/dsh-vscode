@@ -40,13 +40,20 @@ function markRunning(
   } else if (threadId !== undefined) {
     threads[String(threadId)] = 'running'
   }
+  const phase = phaseForThreads(threads)
+  const currentThreadId = phase === 'stopped'
+    ? (state.currentThreadId !== undefined && threads[String(state.currentThreadId)] === 'stopped'
+        ? state.currentThreadId
+        : Object.entries(threads).find(([, threadPhase]) => threadPhase === 'stopped')?.[0])
+    : undefined
+  const normalizedThreadId = typeof currentThreadId === 'string' ? Number(currentThreadId) : currentThreadId
   return {
-    phase: phaseForThreads(threads),
+    phase,
     stopEpoch: state.stopEpoch,
     threads,
-    ...(phaseForThreads(threads) === 'stopped' ? {
-      ...(state.currentThreadId === undefined ? {} : { currentThreadId: state.currentThreadId }),
-      ...(state.stopReason === undefined ? {} : { stopReason: state.stopReason }),
+    ...(phase === 'stopped' ? {
+      ...(normalizedThreadId === undefined ? {} : { currentThreadId: normalizedThreadId }),
+      ...(normalizedThreadId !== state.currentThreadId || state.stopReason === undefined ? {} : { stopReason: state.stopReason }),
     } : {}),
   }
 }
@@ -56,14 +63,17 @@ export function reduceDebugAdapterMessage(state: DebugSessionState, message: unk
   const envelope = record(message)
   if (envelope === undefined) return state
 
-  if (envelope.type === 'request') {
+  if (envelope.type === 'response') {
     const command = string(envelope.command)
-    if (command === 'continue' || command === 'next' || command === 'stepIn' || command === 'stepOut' || command === 'restart') {
-      const arguments_ = record(envelope.arguments)
-      return markRunning(state, number(arguments_?.threadId), command === 'restart')
+    if (envelope.success === true
+      && (command === 'continue' || command === 'next' || command === 'stepIn' || command === 'stepOut' || command === 'restart')) {
+      const body = record(envelope.body)
+      return markRunning(state, state.currentThreadId, command === 'restart' || body?.allThreadsContinued === true)
     }
     return state
   }
+
+  if (envelope.type === 'request') return state
 
   if (envelope.type !== 'event') return state
   const event = string(envelope.event)
@@ -93,7 +103,7 @@ export function reduceDebugAdapterMessage(state: DebugSessionState, message: unk
   }
 
   if (event === 'continued') {
-    return markRunning(state, number(body?.threadId), body?.allThreadsContinued !== false)
+    return markRunning(state, number(body?.threadId), body?.allThreadsContinued === true)
   }
 
   if (event === 'terminated' || event === 'exited') {
