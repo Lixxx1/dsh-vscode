@@ -1,4 +1,5 @@
 import * as path from 'node:path'
+import { realpath } from 'node:fs/promises'
 import * as vscode from 'vscode'
 import { DebugSessionManager, type DebugSessionSnapshot } from './debug-session-manager.js'
 import { compactDebugText, debugVariableValue, launchConfigurationNames, type DebugVariableValue } from './debug-values.js'
@@ -7,14 +8,14 @@ type DebugControlAction = 'continue' | 'pause' | 'next' | 'stepIn' | 'stepOut' |
 type DebugBreakpointAction = 'add' | 'remove' | 'list'
 
 export interface DebugStartInput {
-  readonly configuration?: string
+  readonly configuration?: string | undefined
 }
 
 export interface DebugBreakpointInput {
   readonly action: DebugBreakpointAction
-  readonly path?: string
-  readonly line?: number
-  readonly breakpointId?: string
+  readonly path?: string | undefined
+  readonly line?: number | undefined
+  readonly breakpointId?: string | undefined
 }
 
 export interface DebugControlInput {
@@ -155,6 +156,11 @@ export class DebugTools implements vscode.Disposable {
     try {
       const stat = await vscode.workspace.fs.stat(uri)
       if ((stat.type & vscode.FileType.File) === 0) throw new Error('not a file')
+      const [realWorkspacePath, realFilePath] = await Promise.all([
+        realpath(this.workspace.uri.fsPath),
+        realpath(absolutePath),
+      ])
+      if (!isInside(realWorkspacePath, realFilePath)) throw new Error('outside workspace')
     } catch {
       throw new Error(`Cannot add a breakpoint because ${relativePath(this.workspace.uri.fsPath, absolutePath)} is not a file.`)
     }

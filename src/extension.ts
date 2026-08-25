@@ -20,6 +20,9 @@ import {
 } from './collaboration-state.js'
 import { DEEPSEEK_API_KEY_SECRET, normalizeDeepSeekApiKey } from './credentials.js'
 import { DiffReviewManager, type ChangedFileGroup } from './diff-review.js'
+import { DebugRuntimeContribution } from './debug-runtime-contribution.js'
+import { DebugSessionManager } from './debug-session-manager.js'
+import { DebugTools } from './debug-tools.js'
 import { DirtyFileGuard } from './dirty-file-guard.js'
 import { EditorContextBridge } from './editor-context-bridge.js'
 import {
@@ -1545,7 +1548,14 @@ async function chooseProblem(editorContext: EditorContextBridge, args: readonly 
 export function activate(context: vscode.ExtensionContext): void {
   const workspace = vscode.workspace.workspaceFolders?.[0]
   const output = vscode.window.createOutputChannel('DeepSeek Harness', { log: true })
-  const runtime = new DshRuntime(context, output)
+  const debugSessions = workspace === undefined ? undefined : new DebugSessionManager()
+  const debugTools = workspace === undefined || debugSessions === undefined
+    ? undefined
+    : new DebugTools(debugSessions, workspace)
+  const debugRuntime = workspace === undefined || debugTools === undefined
+    ? undefined
+    : new DebugRuntimeContribution(context, workspace, debugTools, output)
+  const runtime = new DshRuntime(context, output, debugRuntime)
   activeRuntime = runtime
 
   if (workspace === undefined) {
@@ -1559,7 +1569,16 @@ export function activate(context: vscode.ExtensionContext): void {
   const provider = new DshViewProvider(controller, output, editorContext, context.extensionUri)
   const panels = new Set<{ panel: vscode.WebviewPanel; surface: DshSurface }>()
 
-  context.subscriptions.push(output, runtime, controller, diffReviews, editorContext, provider)
+  context.subscriptions.push(
+    output,
+    runtime,
+    controller,
+    diffReviews,
+    editorContext,
+    provider,
+    ...(debugTools === undefined ? [] : [debugTools]),
+    ...(debugSessions === undefined ? [] : [debugSessions]),
+  )
   context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider('dsh-diff', diffReviews))
   context.subscriptions.push(runtime.onDidChangeState(state => { controller.observeRuntime(state) }))
   context.subscriptions.push(vscode.window.registerWebviewViewProvider(
