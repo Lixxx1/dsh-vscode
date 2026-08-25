@@ -8,6 +8,7 @@ import {
 
 interface OwnedDebugSession {
   readonly session: vscode.DebugSession
+  readonly workspace: string
   state: DebugSessionState
 }
 
@@ -157,11 +158,35 @@ export class DebugSessionManager implements vscode.Disposable {
     })
   }
 
+  async stopOwnedSessions(folder: vscode.WorkspaceFolder): Promise<void> {
+    const workspace = workspaceKey(folder)
+    if (workspace === undefined) return
+    if (this.pendingWorkspace === workspace) this.pendingWorkspace = undefined
+    const selected = [...this.owned.values()].filter(owned => owned.workspace === workspace)
+    const selectedIds = new Set(selected.map(owned => owned.session.id))
+    const active = selected.filter(owned => owned.state.phase !== 'terminated')
+    const activeIds = new Set(active.map(owned => owned.session.id))
+    const roots = active.filter(owned => {
+      const parentId = owned.session.parentSession?.id
+      return parentId === undefined || !activeIds.has(parentId)
+    })
+    // Detach before awaiting VS Code so late child-session events cannot be
+    // adopted by a bridge that is already shutting down.
+    for (const sessionId of selectedIds) this.owned.delete(sessionId)
+    const results = await Promise.allSettled(roots.map(async owned => { await vscode.debug.stopDebugging(owned.session) }))
+    const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+    if (failures.length > 0) {
+      const detail = failures.map(result => result.reason instanceof Error ? result.reason.message : String(result.reason)).join('; ')
+      throw new Error(`Could not stop every DeepSeek debug session: ${detail}`)
+    }
+  }
+
   private acceptStartedSession(session: vscode.DebugSession): void {
-    const parentOwned = session.parentSession !== undefined && this.owned.has(session.parentSession.id)
+    const parent = session.parentSession === undefined ? undefined : this.owned.get(session.parentSession.id)
+    const parentOwned = parent !== undefined
     const pendingMatch = this.pendingWorkspace !== undefined && workspaceKey(session.workspaceFolder) === this.pendingWorkspace
     if (!parentOwned && !pendingMatch) return
-    this.ensureOwned(session)
+    this.ensureOwned(session, parent?.workspace ?? this.pendingWorkspace)
   }
 
   private acceptTerminatedSession(session: vscode.DebugSession): void {
@@ -172,20 +197,23 @@ export class DebugSessionManager implements vscode.Disposable {
   }
 
   private acceptMessage(session: vscode.DebugSession, message: unknown): void {
-    const parentOwned = session.parentSession !== undefined && this.owned.has(session.parentSession.id)
+    const parent = session.parentSession === undefined ? undefined : this.owned.get(session.parentSession.id)
+    const parentOwned = parent !== undefined
     const pendingMatch = this.pendingWorkspace !== undefined && workspaceKey(session.workspaceFolder) === this.pendingWorkspace
     if (!this.owned.has(session.id) && !parentOwned && !pendingMatch) return
-    const owned = this.ensureOwned(session)
+    const existing = this.owned.get(session.id)
+    const owned = existing ?? this.ensureOwned(session, parent?.workspace ?? this.pendingWorkspace)
     const next = reduceDebugAdapterMessage(owned.state, message)
     if (next === owned.state) return
     owned.state = next
     this.publish(owned)
   }
 
-  private ensureOwned(session: vscode.DebugSession): OwnedDebugSession {
+  private ensureOwned(session: vscode.DebugSession, workspace?: string): OwnedDebugSession {
     const existing = this.owned.get(session.id)
     if (existing !== undefined) return existing
-    const owned = { session, state: initialDebugSessionState() }
+    if (workspace === undefined) throw new Error('Cannot own a debug session without its launch workspace.')
+    const owned = { session, workspace, state: initialDebugSessionState() }
     this.owned.set(session.id, owned)
     this.publish(owned)
     return owned

@@ -43,9 +43,13 @@ export class DebugRuntimeContribution implements RuntimeLaunchContributor {
         await bridge.dispose()
       } finally {
         try {
-          if (patchPath !== undefined) await removeFile(patchPath)
+          await this.sessions.stopOwnedSessions(workspace)
         } finally {
-          tools.dispose()
+          try {
+            if (patchPath !== undefined) await removeFile(patchPath)
+          } finally {
+            tools.dispose()
+          }
         }
       }
     }
