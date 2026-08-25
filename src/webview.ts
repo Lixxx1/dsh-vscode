@@ -47,7 +47,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     .job-duration { grid-column: 3; grid-row: 1 / 3; align-self: center; color: var(--vscode-descriptionForeground); font: 10px var(--vscode-editor-font-family); }
     .icon-button:focus-visible, select:focus-visible, textarea:focus-visible, input:focus-visible, button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
     svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
-    .scroll { min-width: 0; min-height: 0; overflow-x: hidden; overflow-y: auto; scrollbar-color: var(--vscode-scrollbarSlider-background) transparent; }
+    .scroll { min-width: 0; min-height: 0; overflow-x: hidden; overflow-y: auto; overflow-anchor: none; scrollbar-color: var(--vscode-scrollbarSlider-background) transparent; }
     .conversation { width: 100%; min-width: 0; max-width: 760px; margin: 0 auto; padding: 12px 14px 30px; overflow: hidden; }
     .conversation-slot, .messages { display: contents; }
     .history-loader { display: flex; justify-content: center; padding: 1px 0 9px; }
@@ -309,6 +309,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     let historyAnchor;
     let renderFrame;
     let pendingRenderState;
+    let followConversationTail = true;
+    let tailScrollFrame;
     let renderedSessionId;
     let renderedStatusKey = '';
     let renderedHistoryKey = '';
@@ -323,6 +325,34 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     const pendingMessageAppends = new Map();
     let toolOutputRequestId = 0;
     const toolOutputChunkSize = 20000;
+
+    function conversationNearBottom() {
+      return elements.scroll.scrollHeight - elements.scroll.scrollTop - elements.scroll.clientHeight < 80;
+    }
+    function scheduleTailScroll(force) {
+      if (force) followConversationTail = true;
+      if ((!followConversationTail && !force) || historyAnchor || tailScrollFrame !== undefined) return;
+      tailScrollFrame = requestAnimationFrame(() => {
+        tailScrollFrame = undefined;
+        if (!historyAnchor && followConversationTail) elements.scroll.scrollTop = elements.scroll.scrollHeight;
+      });
+    }
+    function detachConversationTail() {
+      followConversationTail = false;
+      if (tailScrollFrame !== undefined) {
+        cancelAnimationFrame(tailScrollFrame);
+        tailScrollFrame = undefined;
+      }
+    }
+    function synchronizeConversationTail() {
+      if (historyAnchor) return;
+      if (conversationNearBottom()) followConversationTail = true;
+      else detachConversationTail();
+    }
+    elements.scroll.addEventListener('scroll', synchronizeConversationTail, { passive: true });
+    const conversationResizeObserver = new ResizeObserver(() => scheduleTailScroll(false));
+    conversationResizeObserver.observe(elements.conversation);
+    conversationResizeObserver.observe(elements.scroll);
 
     function node(tag, className, text) {
       const value = document.createElement(tag);
@@ -783,7 +813,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       if (rendered) deferredOutputViews.delete(message.id);
       pendingMessageAppends.delete(message.id);
       const next = renderMessage(message);
-      if (rendered && rendered.node.isConnected) rendered.node.replaceWith(next.node);
+      // reconcileMessages owns node placement. Replacing a connected node here
+      // invalidates its cursor before insertBefore can finish reconciling the list.
       renderedMessages.set(message.id, next);
       return next.node;
     }
@@ -1292,6 +1323,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     function renderConversation(current) {
       if (renderedSessionId !== current.sessionId) {
         renderedSessionId = current.sessionId; renderedMessages.clear(); elements.messages.replaceChildren();
+        followConversationTail = true;
         renderedHistoryKey = ''; renderedTail = {}; expandedToolIds.clear();
         for (const request of loadingToolRequests.values()) clearTimeout(request.timer);
         loadingToolRequests.clear(); toolOutputErrors.clear(); toolOutputPages.clear(); deferredOutputViews.clear(); pendingMessageAppends.clear();
@@ -1313,7 +1345,13 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
         renderedHistoryKey = historyKey; elements.conversationHistory.replaceChildren();
         if (current.hasMoreHistory || current.loadingHistory) {
           const loader = node('div', 'history-loader'); const button = node('button', 'history-button', current.loadingHistory ? 'Loading earlier messages…' : 'Load earlier messages'); button.type = 'button'; button.disabled = current.loadingHistory === true;
-          button.addEventListener('click', () => { historyAnchor = { sessionId: current.sessionId, height: elements.scroll.scrollHeight, top: elements.scroll.scrollTop }; button.disabled = true; button.textContent = 'Loading earlier messages…'; vscode.postMessage({ type: 'load-history' }); }); loader.append(button); elements.conversationHistory.append(loader);
+          button.addEventListener('click', () => {
+            detachConversationTail();
+            historyAnchor = { sessionId: current.sessionId, height: elements.scroll.scrollHeight, top: elements.scroll.scrollTop };
+            button.disabled = true; button.textContent = 'Loading earlier messages…';
+            vscode.postMessage({ type: 'load-history' });
+          });
+          loader.append(button); elements.conversationHistory.append(loader);
         }
       }
       reconcileMessages(array(current.messages), current);
@@ -1328,7 +1366,6 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       }
     }
     function render(current) {
-      const nearBottom = elements.scroll.scrollHeight - elements.scroll.scrollTop - elements.scroll.clientHeight < 80;
       const preservingHistory = historyAnchor && historyAnchor.sessionId === current.sessionId;
       state = current;
       if (renderedChrome.workspaceName !== current.workspaceName || renderedChrome.cwd !== current.cwd) {
@@ -1363,7 +1400,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       if (preservingHistory && current.loadingHistory !== true) {
         const anchor = historyAnchor; historyAnchor = undefined;
         requestAnimationFrame(() => { elements.scroll.scrollTop = anchor.top + elements.scroll.scrollHeight - anchor.height; });
-      } else if (!preservingHistory && (nearBottom || current.approval || current.question)) requestAnimationFrame(() => { elements.scroll.scrollTop = elements.scroll.scrollHeight; });
+      } else if (!preservingHistory) scheduleTailScroll(Boolean(current.approval || current.question));
     }
     function scheduleRender(current) {
       state = current; pendingRenderState = current;

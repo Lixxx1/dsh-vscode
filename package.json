@@ -195,6 +195,12 @@
           "default": true,
           "description": "Reuse a healthy official DSH Web runtime on 127.0.0.1:3080 when no custom executable or arguments are configured."
         },
+        "deepseekHarness.autonomousDebugging": {
+          "type": "boolean",
+          "scope": "resource",
+          "default": false,
+          "markdownDescription": "Expose the current workspace's native VS Code debugger to DSH as autonomous tools. When enabled, the extension starts a managed DSH runtime instead of reusing an external runtime."
+        },
         "deepseekHarness.startupTimeout": {
           "type": "number",
           "scope": "resource",
@@ -207,10 +213,11 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "vscode:prepublish": "npm run build",
+    "build": "tsc -p tsconfig.json --noEmit && node scripts/build.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --config vitest.config.ts",
-    "check": "tsc -p tsconfig.json --noEmit && vitest run --config vitest.config.ts && tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit && vitest run --config vitest.config.ts && node scripts/build.mjs",
     "package": "vsce package --readme-path README.marketplace.md --out dsh-vscode.vsix",
     "publish:marketplace": "vsce publish --readme-path README.marketplace.md"
   },
@@ -218,7 +225,10 @@
     "@types/node": "^22.20.0",
     "@types/vscode": "^1.100.0",
     "@vscode/vsce": "^3.6.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "esbuild": "^0.25.12",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.8"
+    "vitest": "^4.1.8",
+    "zod": "^3.25.76"
   }
 }

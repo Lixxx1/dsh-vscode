@@ -20,6 +20,8 @@ import {
 } from './collaboration-state.js'
 import { DEEPSEEK_API_KEY_SECRET, normalizeDeepSeekApiKey } from './credentials.js'
 import { DiffReviewManager, type ChangedFileGroup } from './diff-review.js'
+import { DebugRuntimeContribution } from './debug-runtime-contribution.js'
+import { DebugSessionManager } from './debug-session-manager.js'
 import { DirtyFileGuard } from './dirty-file-guard.js'
 import { EditorContextBridge } from './editor-context-bridge.js'
 import {
@@ -1544,7 +1546,11 @@ async function chooseProblem(editorContext: EditorContextBridge, args: readonly 
 export function activate(context: vscode.ExtensionContext): void {
   const workspace = vscode.workspace.workspaceFolders?.[0]
   const output = vscode.window.createOutputChannel('DeepSeek Harness', { log: true })
-  const runtime = new DshRuntime(context, output)
+  const debugSessions = workspace === undefined ? undefined : new DebugSessionManager()
+  const debugRuntime = workspace === undefined || debugSessions === undefined
+    ? undefined
+    : new DebugRuntimeContribution(context, debugSessions, output)
+  const runtime = new DshRuntime(context, output, debugRuntime)
   activeRuntime = runtime
 
   if (workspace === undefined) {
@@ -1558,7 +1564,15 @@ export function activate(context: vscode.ExtensionContext): void {
   const provider = new DshViewProvider(controller, output, editorContext, context.extensionUri)
   const panels = new Set<{ panel: vscode.WebviewPanel; surface: DshSurface }>()
 
-  context.subscriptions.push(output, runtime, controller, diffReviews, editorContext, provider)
+  context.subscriptions.push(
+    output,
+    runtime,
+    controller,
+    diffReviews,
+    editorContext,
+    provider,
+    ...(debugSessions === undefined ? [] : [debugSessions]),
+  )
   context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider('dsh-diff', diffReviews))
   context.subscriptions.push(runtime.onDidChangeState(state => { controller.observeRuntime(state) }))
   context.subscriptions.push(vscode.window.registerWebviewViewProvider(
@@ -1586,6 +1600,41 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.restart', async () => {
     await controller.restart().catch(error => { void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error)) })
   }))
+  if (workspace !== undefined) {
+    let debugRestartTimer: NodeJS.Timeout | undefined
+    let debugRestartTask = Promise.resolve()
+    context.subscriptions.push(
+      vscode.workspace.onDidChangeConfiguration(event => {
+        const currentWorkspace = controller.cwd === '' ? workspace.uri : vscode.Uri.file(controller.cwd)
+        if (!event.affectsConfiguration('deepseekHarness.autonomousDebugging', currentWorkspace)) return
+        const enabled = vscode.workspace
+          .getConfiguration('deepseekHarness', currentWorkspace)
+          .get<boolean>('autonomousDebugging', false)
+
+        if (debugRestartTimer !== undefined) clearTimeout(debugRestartTimer)
+        debugRestartTimer = setTimeout(() => {
+          debugRestartTimer = undefined
+          if (runtime.state.kind === 'stopped') {
+            output.appendLine(`[debug] Autonomous debugging ${enabled ? 'enabled' : 'disabled'}; it will apply the next time DSH starts.`)
+            return
+          }
+          debugRestartTask = debugRestartTask
+            .catch(() => undefined)
+            .then(async () => {
+              output.appendLine(`[debug] Autonomous debugging ${enabled ? 'enabled' : 'disabled'}; restarting DSH to apply the change.`)
+              await controller.restart()
+              void vscode.window.showInformationMessage(`VS Code debugging ${enabled ? 'enabled' : 'disabled'}. DeepSeek Harness restarted.`)
+            })
+            .catch(error => {
+              const message = error instanceof Error ? error.message : String(error)
+              output.appendLine(`[debug] Failed to restart DSH after the setting changed: ${message}`)
+              void vscode.window.showErrorMessage(`Could not apply the VS Code debugging setting: ${message}`)
+            })
+        }, 200)
+      }),
+      { dispose: () => { if (debugRestartTimer !== undefined) clearTimeout(debugRestartTimer) } },
+    )
+  }
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.managePlugins', async () => {
     await pluginManager.show().catch(error => {
       const message = error instanceof Error ? error.message : String(error)
@@ -1631,7 +1680,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.showOutput', () => { output.show(true) }))
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.openInBrowser', async () => {
     try {
-      const uri = await runtime.start()
+      const uri = await runtime.start(controller.cwd === '' ? undefined : vscode.Uri.file(controller.cwd))
       await vscode.env.openExternal(await vscode.env.asExternalUri(uri))
     } catch (error) {
       void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error))

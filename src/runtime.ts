@@ -8,6 +8,11 @@ import {
   probeDshServer,
   shouldProbeExistingDsh,
 } from './runtime-endpoint.js'
+import {
+  applyRuntimeLaunchPreparation,
+  type RuntimeLaunchContributor,
+  type RuntimeLaunchPreparation,
+} from './runtime-launch.js'
 
 export type RuntimeOwnership = 'external' | 'managed'
 
@@ -79,6 +84,8 @@ export class DshRuntime implements vscode.Disposable {
   private startupTimer: NodeJS.Timeout | undefined
   private stdoutBuffer = ''
   private stopping = false
+  private launchPreparation: RuntimeLaunchPreparation | undefined
+  private launchPreparationRelease: Promise<void> | undefined
   private _state: RuntimeState = { kind: 'stopped' }
 
   readonly onDidChangeState = this.changes.event
@@ -86,6 +93,7 @@ export class DshRuntime implements vscode.Disposable {
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly output: vscode.OutputChannel,
+    private readonly launchContributor?: RuntimeLaunchContributor,
   ) {}
 
   get state(): RuntimeState {
@@ -101,6 +109,7 @@ export class DshRuntime implements vscode.Disposable {
     if (this._state.kind === 'ready') return this._state.localUri
     if (this.pending !== undefined) return this.pending.promise
     if (this.child !== undefined) await this.stop()
+    await this.releaseLaunchPreparation()
 
     const workspace = workspaceUri === undefined
       ? vscode.workspace.workspaceFolders?.[0]?.uri
@@ -129,9 +138,21 @@ export class DshRuntime implements vscode.Disposable {
     let version: string | undefined
     let storedApiKey: string | undefined
     try {
+      const launchPreparation = await this.launchContributor?.prepare({
+        workspacePath: workspace.fsPath,
+        configuredExecutable,
+        configuredArguments: configuredArgs,
+      })
+      if (this.pending !== pending) {
+        await launchPreparation?.dispose?.()
+        return pending.promise
+      }
+      this.launchPreparation = launchPreparation
+
       // A nested deepseek-harness checkout is the documented empty-executable
       // launch; an unrelated stock DSH on 3080 must not silently pre-empt it.
-      if (shouldProbeExistingDsh(reuseExistingRuntime, configuredExecutable, hasCustomArguments)
+      if (launchPreparation === undefined
+        && shouldProbeExistingDsh(reuseExistingRuntime, configuredExecutable, hasCustomArguments)
         && findSourceRoot(this.context.extensionUri.fsPath) === undefined) {
         const existingUrl = new URL(DEFAULT_DSH_SERVER_URL)
         this.publish({ kind: 'starting', detail: 'Looking for an existing DeepSeek Harness runtime…' })
@@ -151,7 +172,8 @@ export class DshRuntime implements vscode.Disposable {
       })
       version = await readDshVersion(versionLaunch, workspace.fsPath)
       if (this.pending !== pending) return pending.promise
-      const args = webArgsForDshVersion(configuredArgs, version)
+      const versionedArgs = webArgsForDshVersion(configuredArgs, version)
+      const args = applyRuntimeLaunchPreparation(versionedArgs, version, launchPreparation)
       launch = resolveLaunch(this.context.extensionUri.fsPath, configuredExecutable, args, {
         cwd: workspace.fsPath,
       })
@@ -181,6 +203,7 @@ export class DshRuntime implements vscode.Disposable {
           NO_COLOR: '1',
           ...(storedApiKey === undefined ? {} : { DEEPSEEK_API_KEY: storedApiKey }),
           ...launch.env,
+          ...this.launchPreparation?.environment,
         },
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
@@ -202,6 +225,7 @@ export class DshRuntime implements vscode.Disposable {
     child.on('exit', (code, signal) => {
       this.clearStartupTimer()
       this.child = undefined
+      void this.releaseLaunchPreparation()
       const detail = `DSH exited (${signal ?? `code ${String(code)}`}).`
       this.output.appendLine(`[runtime] ${detail}`)
       if (this.stopping) {
@@ -252,7 +276,32 @@ export class DshRuntime implements vscode.Disposable {
     this.pending = undefined
     this.clearStartupTimer()
     this.publish({ kind: 'failed', message: error.message })
+    void this.releaseLaunchPreparation()
     pending.reject(error)
+  }
+
+  private async releaseLaunchPreparation(): Promise<void> {
+    if (this.launchPreparationRelease !== undefined) {
+      await this.launchPreparationRelease
+      return
+    }
+    const preparation = this.launchPreparation
+    this.launchPreparation = undefined
+    if (preparation === undefined) return
+
+    const release = (async () => {
+      try {
+        await preparation.dispose?.()
+      } catch (error) {
+        this.output.appendLine(`[runtime] launch contribution cleanup failed: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    })()
+    this.launchPreparationRelease = release
+    try {
+      await release
+    } finally {
+      if (this.launchPreparationRelease === release) this.launchPreparationRelease = undefined
+    }
   }
 
   private clearStartupTimer(): void {
@@ -275,6 +324,7 @@ export class DshRuntime implements vscode.Disposable {
     this.pending = undefined
     pending?.reject(new Error('DSH runtime stopped.'))
     if (child === undefined || child.exitCode !== null) {
+      await this.releaseLaunchPreparation()
       this.publish({ kind: 'stopped' })
       return
     }
@@ -295,6 +345,7 @@ export class DshRuntime implements vscode.Disposable {
       }, 4_000)
       if (!child.kill('SIGTERM')) finish()
     })
+    await this.releaseLaunchPreparation()
     this.publish({ kind: 'stopped' })
   }
 
