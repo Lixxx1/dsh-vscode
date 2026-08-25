@@ -337,7 +337,35 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
         if (!historyAnchor && followConversationTail) elements.scroll.scrollTop = elements.scroll.scrollHeight;
       });
     }
-    elements.scroll.addEventListener('scroll', () => { followConversationTail = conversationNearBottom(); }, { passive: true });
+    function detachConversationTail() {
+      followConversationTail = false;
+      if (tailScrollFrame !== undefined) {
+        cancelAnimationFrame(tailScrollFrame);
+        tailScrollFrame = undefined;
+      }
+    }
+    function followConversationTailIfReached() {
+      if (!conversationNearBottom()) return;
+      followConversationTail = true;
+      scheduleTailScroll(false);
+    }
+    elements.scroll.addEventListener('wheel', event => {
+      if (event.deltaY < 0) detachConversationTail();
+      else if (event.deltaY > 0) requestAnimationFrame(followConversationTailIfReached);
+    }, { passive: true });
+    elements.scroll.addEventListener('pointerdown', event => {
+      const bounds = elements.scroll.getBoundingClientRect();
+      const scrollbarWidth = Math.max(16, elements.scroll.offsetWidth - elements.scroll.clientWidth);
+      if (event.clientX < bounds.right - scrollbarWidth) return;
+      detachConversationTail();
+      const finish = () => {
+        window.removeEventListener('pointerup', finish);
+        window.removeEventListener('pointercancel', finish);
+        followConversationTailIfReached();
+      };
+      window.addEventListener('pointerup', finish);
+      window.addEventListener('pointercancel', finish);
+    }, { passive: true });
     const conversationResizeObserver = new ResizeObserver(() => scheduleTailScroll(false));
     conversationResizeObserver.observe(elements.conversation);
     conversationResizeObserver.observe(elements.scroll);
@@ -801,7 +829,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       if (rendered) deferredOutputViews.delete(message.id);
       pendingMessageAppends.delete(message.id);
       const next = renderMessage(message);
-      if (rendered && rendered.node.isConnected) rendered.node.replaceWith(next.node);
+      // reconcileMessages owns node placement. Replacing a connected node here
+      // invalidates its cursor before insertBefore can finish reconciling the list.
       renderedMessages.set(message.id, next);
       return next.node;
     }

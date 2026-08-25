@@ -21,6 +21,7 @@ describe('chat webview', () => {
     expect(script).toContain('controller.append(event.data.page.message')
     expect(script).not.toContain('renderedMessages.delete(event.data.messageId)')
     expect(script).not.toContain('value.startsWith(stream.text)')
+    expect(script).not.toContain('rendered.node.replaceWith')
     expect(script).toContain("pendingMessageAppends.set(append.id")
     expect(script).toContain("target.textContent += continuation.textContent")
   })
