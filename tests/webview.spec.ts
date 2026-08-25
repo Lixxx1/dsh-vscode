@@ -38,4 +38,14 @@ describe('chat webview', () => {
     expect(detachTail).toBeGreaterThan(historyClick)
     expect(detachTail).toBeLessThan(requestHistory)
   })
+
+  it('updates tail following from every scroll source', () => {
+    const webview = { cspSource: 'vscode-webview:' } as vscode.Webview
+    const mark = { toString: () => 'vscode-resource:/deepseek.svg' } as vscode.Uri
+    const script = /<script nonce="[^"]+">([\s\S]*?)<\/script>/.exec(chatHtml(webview, mark))?.[1] ?? ''
+
+    expect(script).toContain("elements.scroll.addEventListener('scroll', synchronizeConversationTail")
+    expect(script).toContain('if (conversationNearBottom()) followConversationTail = true;')
+    expect(script).not.toContain("elements.scroll.addEventListener('wheel'")
+  })
 })

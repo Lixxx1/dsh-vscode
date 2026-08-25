@@ -344,28 +344,12 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
         tailScrollFrame = undefined;
       }
     }
-    function followConversationTailIfReached() {
-      if (!conversationNearBottom()) return;
-      followConversationTail = true;
-      scheduleTailScroll(false);
+    function synchronizeConversationTail() {
+      if (historyAnchor) return;
+      if (conversationNearBottom()) followConversationTail = true;
+      else detachConversationTail();
     }
-    elements.scroll.addEventListener('wheel', event => {
-      if (event.deltaY < 0) detachConversationTail();
-      else if (event.deltaY > 0) requestAnimationFrame(followConversationTailIfReached);
-    }, { passive: true });
-    elements.scroll.addEventListener('pointerdown', event => {
-      const bounds = elements.scroll.getBoundingClientRect();
-      const scrollbarWidth = Math.max(16, elements.scroll.offsetWidth - elements.scroll.clientWidth);
-      if (event.clientX < bounds.right - scrollbarWidth) return;
-      detachConversationTail();
-      const finish = () => {
-        window.removeEventListener('pointerup', finish);
-        window.removeEventListener('pointercancel', finish);
-        followConversationTailIfReached();
-      };
-      window.addEventListener('pointerup', finish);
-      window.addEventListener('pointercancel', finish);
-    }, { passive: true });
+    elements.scroll.addEventListener('scroll', synchronizeConversationTail, { passive: true });
     const conversationResizeObserver = new ResizeObserver(() => scheduleTailScroll(false));
     conversationResizeObserver.observe(elements.conversation);
     conversationResizeObserver.observe(elements.scroll);
