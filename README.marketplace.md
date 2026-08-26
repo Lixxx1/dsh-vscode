@@ -15,6 +15,7 @@ DSH Sidebar gives you a project-aware assistant in the VS Code right sidebar, wi
 
 ## ✨ What you can do
 
+- **Autonomous VS Code debugging.** Let DeepSeek launch the current project from `.vscode/launch.json`, manage breakpoints, step through execution, and inspect stack frames and local variables using VS Code's native debugger.
 - **Work with the official DSH runtime.** Sessions, streaming responses, tool calls, approvals, and follow-up questions stay inside VS Code.
 - **Bring in editor context.** The active file and selected code can travel with your prompt. Use `@file` or `@folder` to add more context.
 - **Control each session.** Switch Permission and Plan modes, choose Model and Reasoning Effort, and steer a task while it is running.
@@ -39,6 +40,14 @@ You need VS Code 1.100 or newer and Node.js `^22.19` or `>=24`.
 4. Choose a Permission mode, Model, and Reasoning Effort, then send your first task.
 
 Use the Shield menu for Permission and Plan modes, `/` for official DSH commands, `@` for files and folders, and the plugins button to manage runtime extensions.
+
+### Autonomous debugging
+
+Enable **DeepSeek Harness: Autonomous Debugging** in VS Code Settings and add a debug configuration to `.vscode/launch.json`.
+
+DeepSeek can then start the debugger, set breakpoints, step through execution, inspect runtime values, fix the code, and verify the result directly from the sidebar.
+
+Requires DeepSeek Harness `0.1.0-rc.8` or newer.
 
 ## 💬 Feedback
 

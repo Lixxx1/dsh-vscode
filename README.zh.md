@@ -24,6 +24,7 @@
 
 ## ✨ 功能
 
+- **自主调用 VS Code 原生调试器。** DeepSeek 可以通过当前项目的 `.vscode/launch.json` 启动调试、管理断点、单步执行，并读取调用栈和局部变量。
 - **在 VS Code 中使用官方 DSH。** 会话、流式回复、工具调用、审批和追问都通过官方 DSH runtime 运行。
 - **自动结合编辑器上下文。** 当前文件、选中的代码以及 `@file`、`@folder` 引用会随消息一起发送。
 - **随时控制运行中的任务。** 切换 Permission 和 Plan 模式，分别选择模型和推理强度，也可以在任务运行时调整方向。
@@ -68,6 +69,14 @@ pnpm run package
 3. 点击钥匙按钮配置 `DEEPSEEK_API_KEY`。
 4. 选择 Permission 模式、Model 和 Reasoning Effort，然后开始工作。Shield 菜单用于切换 Permission 和 Plan 模式，输入 `/` 使用 DSH 官方命令，输入 `@` 添加文件或文件夹。
 5. 点击侧边栏标题栏中的插件按钮，搜索、安装、查看或移除社区 runtime 插件。
+
+### 自主调试
+
+在 VS Code 设置中启用 **DeepSeek Harness: Autonomous Debugging**，并在 `.vscode/launch.json` 中添加调试配置。
+
+之后，DeepSeek 就能直接从侧边栏启动调试器、设置断点、单步执行、检查运行时变量、修复代码并验证结果。
+
+需要 DeepSeek Harness `0.1.0-rc.8` 或更新版本。
 
 💬 如果哪里用着不顺手，或者你有想加的功能，欢迎来 [Issue](https://github.com/Lixxx1/dsh-vscode/issues) 里聊聊，也欢迎直接提 PR！
 

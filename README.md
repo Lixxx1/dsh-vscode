@@ -24,6 +24,7 @@ Ask DeepSeek to inspect, change, and verify code without switching between your 
 
 ## ✨ Features
 
+- **Autonomous VS Code debugging.** Let DeepSeek launch the current project from `.vscode/launch.json`, manage breakpoints, step through execution, and inspect stack frames and local variables using VS Code's native debugger.
 - **Official DSH inside VS Code.** Sessions, streaming responses, tool calls, approvals, and follow-up questions run through the official DSH runtime.
 - **Project-aware editor context.** The active file, selected code, and `@file` or `@folder` references travel with your prompt.
 - **Session controls where you need them.** Switch Permission and Plan modes, choose Model and Reasoning Effort, or steer an active task.
@@ -68,6 +69,14 @@ Installing community runtime plugins also requires `pnpm` on your PATH.
 3. Use the key button to configure `DEEPSEEK_API_KEY`.
 4. Choose the Permission mode, Model, and Reasoning Effort, then start working. Use the Shield menu for Permission and Plan modes, `/` for official DSH commands, and `@` to add files or folders.
 5. Use the plugins button in the sidebar title to search, install, inspect, or remove community runtime plugins.
+
+### Autonomous debugging
+
+Enable **DeepSeek Harness: Autonomous Debugging** in VS Code Settings and add a debug configuration to `.vscode/launch.json`.
+
+DeepSeek can then start the debugger, set breakpoints, step through execution, inspect runtime values, fix the code, and verify the result directly from the sidebar.
+
+Requires DeepSeek Harness `0.1.0-rc.8` or newer.
 
 💬 Found a rough edge or have an idea for what should come next? [Open an issue](https://github.com/Lixxx1/dsh-vscode/issues). I read every piece of feedback, and contributions are welcome too.
 
