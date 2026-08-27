@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import * as vscode from 'vscode'
 import type { DshEvent } from './conversation.js'
 import type { HistoryEntry } from './dsh-client.js'
+import { comparableFilePath } from './file-path.js'
 
 export interface ChangedFileItem {
   path: string
@@ -433,7 +434,11 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
   }
 
   private validateCurrentFile(review: ReviewFile, expected: string | null): void {
-    const dirty = vscode.workspace.textDocuments.some(document => document.isDirty && path.resolve(document.uri.fsPath) === review.absolutePath)
+    const reviewPath = comparableFilePath(review.absolutePath)
+    const dirty = vscode.workspace.textDocuments.some(document =>
+      document.isDirty
+      && comparableFilePath(path.resolve(document.uri.fsPath)) === reviewPath,
+    )
     if (dirty) throw new Error(`Cannot revert ${review.displayPath}: it has unsaved VS Code changes.`)
     const current = readImage(review.absolutePath)
     if (current === undefined) throw new Error(`Cannot safely read ${review.displayPath} before reverting.`)

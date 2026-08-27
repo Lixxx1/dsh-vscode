@@ -124,7 +124,8 @@ function resolveWindowsDsh(
   configuredArgs: readonly string[],
   host: LaunchHost,
 ): LaunchCommand | undefined {
-  if (executable !== '' && executableBasename(executable).toLowerCase() !== 'dsh.cmd') return undefined
+  const basename = executableBasename(executable).toLowerCase()
+  if (executable !== '' && basename !== 'dsh' && basename !== 'dsh.cmd') return undefined
 
   const explicitPath = executable !== '' && /[\\/]/.test(executable)
     ? explicitExecutablePath(executable, host.cwd)
@@ -235,6 +236,9 @@ export function resolveLaunch(
           ? explicitExecutablePath(configuredExecutable, host.cwd)
           : configuredExecutable
         return windowsShellFallback(command, configuredArgs, host.env)
+      }
+      if (configuredExecutable.toLowerCase() === 'dsh') {
+        return windowsShellFallback('dsh', configuredArgs, host.env)
       }
     }
     return {

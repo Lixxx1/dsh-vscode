@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import * as vscode from 'vscode'
 import { resolveLaunch } from './launch.js'
+import { terminateProcessTree } from './process-tree.js'
 import {
   COMMUNITY_REGISTRY_URL,
   parseCommunityRuntimePlugins,
@@ -545,7 +546,7 @@ export class DshPluginManager {
       child.stderr.on('data', append)
       const cancellation = token.onCancellationRequested(() => {
         cancelled = true
-        child.kill('SIGTERM')
+        terminateProcessTree(child)
       })
       child.once('error', (error) => {
         if (settled) return
