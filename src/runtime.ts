@@ -57,6 +57,7 @@ function readDshVersion(launch: LaunchCommand, cwd: string): Promise<string | un
         env: { ...process.env, NO_COLOR: '1', ...launch.env },
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
+        windowsVerbatimArguments: launch.windowsVerbatimArguments,
       })
     } catch {
       finish()
@@ -208,6 +209,7 @@ export class DshRuntime implements vscode.Disposable {
         },
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
+        windowsVerbatimArguments: launch.windowsVerbatimArguments,
       })
     } catch (error) {
       this.failStart(error instanceof Error ? error : new Error(String(error)), pending)

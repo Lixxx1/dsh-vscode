@@ -536,6 +536,7 @@ export class DshPluginManager {
         env: { ...process.env, NO_COLOR: '1', ...launch.env },
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
+        windowsVerbatimArguments: launch.windowsVerbatimArguments,
       })
       const append = (chunk: Buffer | string): void => {
         const text = String(chunk)

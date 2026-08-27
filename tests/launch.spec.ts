@@ -1,6 +1,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { spawnSync } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
 import { findSourceRoot, parseDshWebUrl, resolveLaunch, webArgsForDshVersion } from '../src/launch.ts'
 
@@ -82,8 +83,9 @@ describe('DSH launch resolution', () => {
       env: { ComSpec: 'C:\\Windows\\System32\\cmd.exe' },
     })).toEqual({
       command: 'C:\\Windows\\System32\\cmd.exe',
-      args: ['/c', 'dsh', 'web'],
+      args: ['/d', '/s', '/c', '"dsh ^"web^""'],
       sourceCheckout: false,
+      windowsVerbatimArguments: true,
     })
   })
 
@@ -109,6 +111,86 @@ describe('DSH launch resolution', () => {
       args: [entry, 'web'],
       sourceCheckout: false,
     })
+  })
+
+  it('preserves the first PATH match instead of skipping an earlier dsh.exe', () => {
+    const nativePrefix = mkdtempSync(join(tmpdir(), 'dsh-vscode-windows-native-'))
+    const npmPrefix = mkdtempSync(join(tmpdir(), 'dsh-vscode-windows-npm-'))
+    const native = join(nativePrefix, 'dsh.exe')
+    const packageRoot = join(npmPrefix, 'node_modules', '@deepseek-ai', 'dsh')
+    mkdirSync(join(packageRoot, 'lib'), { recursive: true })
+    writeFileSync(native, '')
+    writeFileSync(join(npmPrefix, 'dsh.cmd'), '@echo off\r\n')
+    writeFileSync(join(npmPrefix, 'node.exe'), '')
+    writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({
+      name: '@deepseek-ai/dsh',
+      bin: { dsh: 'lib/bin.js' },
+    }))
+    writeFileSync(join(packageRoot, 'lib', 'bin.js'), '')
+
+    expect(resolveLaunch('/not/a/source/tree', 'dsh', ['web'], {
+      platform: 'win32',
+      env: { Path: `${nativePrefix};${npmPrefix}`, PATHEXT: '.EXE;.CMD' },
+    })).toEqual({
+      command: native,
+      args: ['web'],
+      sourceCheckout: false,
+    })
+  })
+
+  it('resolves the current directory before PATH like cmd.exe', () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'dsh-vscode-windows-cwd-'))
+    const pathPrefix = mkdtempSync(join(tmpdir(), 'dsh-vscode-windows-path-'))
+    const local = join(workspace, 'dsh.exe')
+    writeFileSync(local, '')
+    writeFileSync(join(pathPrefix, 'dsh.exe'), '')
+
+    expect(resolveLaunch('/not/a/source/tree', 'dsh', ['web'], {
+      platform: 'win32',
+      cwd: workspace,
+      env: { Path: pathPrefix, PATHEXT: '.EXE' },
+    })).toEqual({
+      command: local,
+      args: ['web'],
+      sourceCheckout: false,
+    })
+  })
+
+  it('rejects newline injection before building a cmd.exe fallback', () => {
+    expect(() => resolveLaunch('/not/a/source/tree', 'dsh', ['safe\r\necho injected'], {
+      platform: 'win32',
+      env: { Path: '', ComSpec: 'cmd.exe' },
+    })).toThrow('cannot contain NUL or newline')
+  })
+
+  it.runIf(process.platform === 'win32')('preserves cmd.exe metacharacters as literal arguments', () => {
+    const prefix = mkdtempSync(join(tmpdir(), 'dsh-vscode-windows-shell-'))
+    const shim = join(prefix, 'dsh.cmd')
+    const capture = join(prefix, 'capture.cjs')
+    writeFileSync(capture, 'process.stdout.write(JSON.stringify(process.argv.slice(2)))\n')
+    writeFileSync(shim, `@echo off\r\n"${process.execPath}" "%~dp0capture.cjs" %*\r\n`)
+    const unsafeLooking = [
+      'space value',
+      'value&echo SHOULD_NOT_RUN',
+      'pipe|findstr x',
+      'left<missing.txt',
+      'right>captured.txt',
+      '(group)',
+      'caret^value',
+    ]
+    const launch = resolveLaunch('/not/a/source/tree', shim, unsafeLooking, {
+      platform: 'win32',
+      env: process.env,
+    })
+    const result = spawnSync(launch.command, launch.args, {
+      encoding: 'utf8',
+      windowsHide: true,
+      windowsVerbatimArguments: launch.windowsVerbatimArguments,
+    })
+
+    expect(result.error).toBeUndefined()
+    expect(result.status, result.stderr).toBe(0)
+    expect(JSON.parse(result.stdout)).toEqual(unsafeLooking)
   })
 
   it('launches an npm-installed DSH entry directly on Windows', () => {
@@ -167,9 +249,9 @@ describe('DSH launch resolution', () => {
       env: { Path: prefix, ComSpec: 'C:\\Windows\\System32\\cmd.exe' },
     })).toEqual({
       command: 'C:\\Windows\\System32\\cmd.exe',
-      // Extensionless: PATHEXT resolution covers dsh.cmd and volta/scoop dsh.exe.
-      args: ['/c', 'dsh', 'web'],
+      args: ['/d', '/s', '/c', '"dsh ^"web^""'],
       sourceCheckout: false,
+      windowsVerbatimArguments: true,
     })
   })
 
@@ -180,8 +262,9 @@ describe('DSH launch resolution', () => {
       env: { Path: prefix },
     })).toEqual({
       command: 'cmd.exe',
-      args: ['/c', 'dsh', 'web'],
+      args: ['/d', '/s', '/c', '"dsh ^"web^""'],
       sourceCheckout: false,
+      windowsVerbatimArguments: true,
     })
   })
 
@@ -193,8 +276,9 @@ describe('DSH launch resolution', () => {
       env: { ComSpec: 'cmd.exe' },
     })).toEqual({
       command: 'cmd.exe',
-      args: ['/c', join(prefix, 'tools', 'dsh.cmd'), 'web'],
+      args: ['/d', '/s', '/c', `"${join(prefix, 'tools', 'dsh.cmd')} ^"web^""`],
       sourceCheckout: false,
+      windowsVerbatimArguments: true,
     })
   })
 
@@ -207,8 +291,9 @@ describe('DSH launch resolution', () => {
       env: { ComSpec: 'cmd.exe' },
     })).toEqual({
       command: 'cmd.exe',
-      args: ['/c', cmdPath, 'web'],
+      args: ['/d', '/s', '/c', `"${cmdPath} ^"web^""`],
       sourceCheckout: false,
+      windowsVerbatimArguments: true,
     })
   })
 

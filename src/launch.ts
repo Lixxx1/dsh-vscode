@@ -1,6 +1,6 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 export interface LaunchCommand {
@@ -8,6 +8,7 @@ export interface LaunchCommand {
   args: string[]
   sourceCheckout: boolean
   env?: Readonly<Record<string, string>>
+  windowsVerbatimArguments?: boolean
 }
 
 interface LaunchHost {
@@ -33,6 +34,24 @@ function windowsPathDirectories(env: Readonly<Record<string, string | undefined>
     .filter(value => value !== '')
 }
 
+function environmentValue(
+  env: Readonly<Record<string, string | undefined>>,
+  name: string,
+): string | undefined {
+  for (const [key, value] of Object.entries(env)) {
+    if (key.toLowerCase() === name.toLowerCase()) return value
+  }
+  return undefined
+}
+
+function windowsPathExtensions(env: Readonly<Record<string, string | undefined>>): string[] {
+  const configured = environmentValue(env, 'PATHEXT')
+    ?.split(';')
+    .map(value => value.trim())
+    .filter(value => value !== '')
+  return configured !== undefined && configured.length > 0 ? configured : ['.COM', '.EXE', '.BAT', '.CMD']
+}
+
 function executableBasename(executable: string): string {
   return executable.split(/[\\/]/).at(-1) ?? executable
 }
@@ -44,33 +63,96 @@ function isWindowsShellScript(executable: string): boolean {
 }
 
 function comSpec(env: Readonly<Record<string, string | undefined>>): string {
-  for (const [key, value] of Object.entries(env)) {
-    if (key.toLowerCase() === 'comspec' && value !== undefined && value !== '') return value
+  return environmentValue(env, 'ComSpec') || 'cmd.exe'
+}
+
+const WINDOWS_CMD_META = /([()\][%!^"`<>&|;, *?])/g
+
+function safeWindowsShellValue(value: string): string {
+  if (/[\0\r\n]/.test(value)) {
+    throw new Error('Windows shell commands and arguments cannot contain NUL or newline characters.')
   }
-  return 'cmd.exe'
+  return value
+}
+
+function escapeWindowsShellCommand(value: string): string {
+  return safeWindowsShellValue(value).replace(WINDOWS_CMD_META, '^$1')
+}
+
+function escapeWindowsShellArgument(value: string, doubleEscapeMeta: boolean): string {
+  let escaped = safeWindowsShellValue(value)
+  // Match CommandLineToArgvW quoting before cmd.exe consumes its own syntax.
+  escaped = escaped.replace(/(?=(\\+?)?)\1"/g, '$1$1\\"')
+  escaped = escaped.replace(/(?=(\\+?)?)\1$/g, '$1$1')
+  escaped = `"${escaped}"`.replace(WINDOWS_CMD_META, '^$1')
+  return doubleEscapeMeta ? escaped.replace(WINDOWS_CMD_META, '^$1') : escaped
 }
 
 /**
- * Run a Windows .cmd/.bat shim through the command interpreter. cmd.exe /c
- * launches the shim without spawn's direct-.cmd EINVAL and without shell:true's
- * unescaped-argument hazard (DEP0190). Used as a last resort when the npm JS
- * entry cannot be resolved (e.g. pnpm/yarn/volta global install layouts).
+ * Run a Windows .cmd/.bat shim through cmd.exe with every token pre-escaped.
+ * windowsVerbatimArguments prevents Node from quoting the already encoded
+ * command a second time. Used only when a shell-free executable or npm JS
+ * entry cannot be resolved.
  */
 function windowsShellFallback(
   command: string,
   args: readonly string[],
   env: Readonly<Record<string, string | undefined>>,
 ): LaunchCommand {
+  const doubleEscapeMeta = /node_modules[\\/]\.bin[\\/][^\\/]+\.cmd$/i.test(command)
+  const shellCommand = [
+    escapeWindowsShellCommand(command),
+    ...args.map(value => escapeWindowsShellArgument(value, doubleEscapeMeta)),
+  ].join(' ')
   return {
     command: comSpec(env),
-    args: ['/c', command, ...args],
+    args: ['/d', '/s', '/c', `"${shellCommand}"`],
     sourceCheckout: false,
+    windowsVerbatimArguments: true,
   }
 }
 
 function explicitExecutablePath(executable: string, cwd: string): string {
   if (isAbsolute(executable)) return executable
   return resolve(cwd, ...executable.split(/[\\/]+/))
+}
+
+function existingWindowsFile(directory: string, fileName: string): string | undefined {
+  try {
+    const entry = readdirSync(directory).find(value => value.toLowerCase() === fileName.toLowerCase())
+    if (entry === undefined) return undefined
+    const candidate = join(directory, entry)
+    return statSync(candidate).isFile() ? candidate : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** Resolve exactly the command Windows would pick from PATH and PATHEXT. */
+function resolveWindowsPathCommand(executable: string, host: LaunchHost): string | undefined {
+  const hasDirectory = /[\\/]/.test(executable)
+  const explicitPath = hasDirectory ? explicitExecutablePath(executable, host.cwd) : undefined
+  const searchDirectories = [
+    ...(environmentValue(host.env, 'NoDefaultCurrentDirectoryInExePath') === undefined ? [host.cwd] : []),
+    ...windowsPathDirectories(host.env),
+  ]
+  const directories = explicitPath === undefined
+    ? searchDirectories.filter((value, index, values) => (
+        values.findIndex(candidate => candidate.toLowerCase() === value.toLowerCase()) === index
+      ))
+    : [dirname(explicitPath)]
+  const name = executableBasename(explicitPath ?? executable)
+  const names = extname(name) === ''
+    ? windowsPathExtensions(host.env).map(extension => `${name}${extension.startsWith('.') ? extension : `.${extension}`}`)
+    : [name]
+
+  for (const directory of directories) {
+    for (const candidate of names) {
+      const match = existingWindowsFile(directory, candidate)
+      if (match !== undefined) return match
+    }
+  }
+  return undefined
 }
 
 function installedDshEntry(binDirectory: string): string | undefined {
@@ -127,25 +209,31 @@ function resolveWindowsDsh(
   const basename = executableBasename(executable).toLowerCase()
   if (executable !== '' && basename !== 'dsh' && basename !== 'dsh.cmd') return undefined
 
-  const explicitPath = executable !== '' && /[\\/]/.test(executable)
-    ? explicitExecutablePath(executable, host.cwd)
-    : undefined
-  const directories = explicitPath === undefined
-    ? windowsPathDirectories(host.env)
-    : [dirname(explicitPath)]
-  for (const directory of directories) {
-    if (!existsSync(join(directory, 'dsh.cmd'))) continue
-    const entry = installedDshEntry(directory)
-    if (entry === undefined) continue
-    const node = windowsNodeExecutable(directory, host.env)
-    if (node === undefined) continue
-    return {
-      command: node,
-      args: [entry, ...configuredArgs],
-      sourceCheckout: false,
+  const requested = executable === '' ? 'dsh' : executable
+  const match = resolveWindowsPathCommand(requested, host)
+  if (match !== undefined) {
+    if (!isWindowsShellScript(match)) {
+      return { command: match, args: [...configuredArgs], sourceCheckout: false }
     }
+    if (match.toLowerCase().endsWith('.cmd')) {
+      const directory = dirname(match)
+      const entry = installedDshEntry(directory)
+      const node = entry === undefined ? undefined : windowsNodeExecutable(directory, host.env)
+      if (entry !== undefined && node !== undefined) {
+        return {
+          command: node,
+          args: [entry, ...configuredArgs],
+          sourceCheckout: false,
+        }
+      }
+    }
+    return windowsShellFallback(match, configuredArgs, host.env)
   }
-  return undefined
+
+  const fallback = /[\\/]/.test(requested)
+    ? explicitExecutablePath(requested, host.cwd)
+    : requested
+  return windowsShellFallback(fallback, configuredArgs, host.env)
 }
 
 function supportsNoOpen(version: string): boolean {
@@ -229,16 +317,10 @@ export function resolveLaunch(
       const windowsLaunch = resolveWindowsDsh(configuredExecutable, configuredArgs, host)
       if (windowsLaunch !== undefined) return windowsLaunch
       if (isWindowsShellScript(configuredExecutable)) {
-        // Settings JSON favors forward slashes, which cmd.exe mis-parses in an
-        // unquoted command token. resolve() also pins relative paths to the
-        // extension cwd instead of whatever directory cmd starts in.
         const command = /[\\/]/.test(configuredExecutable)
           ? explicitExecutablePath(configuredExecutable, host.cwd)
           : configuredExecutable
         return windowsShellFallback(command, configuredArgs, host.env)
-      }
-      if (configuredExecutable.toLowerCase() === 'dsh') {
-        return windowsShellFallback('dsh', configuredArgs, host.env)
       }
     }
     return {
@@ -272,9 +354,6 @@ export function resolveLaunch(
   if (host.platform === 'win32') {
     const windowsLaunch = resolveWindowsDsh('', configuredArgs, host)
     if (windowsLaunch !== undefined) return windowsLaunch
-    // Extensionless so cmd.exe applies PATHEXT: finds npm/pnpm/yarn dsh.cmd
-    // and also volta/scoop dsh.exe shims, which have no .cmd sibling.
-    return windowsShellFallback('dsh', configuredArgs, host.env)
   }
 
   return {
