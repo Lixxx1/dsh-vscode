@@ -61,7 +61,7 @@ describe('DSH launch resolution', () => {
   })
 
   it('honors an explicit executable without adding a mock or wrapper mode', () => {
-    expect(resolveLaunch('/not/a/source/tree', '/opt/dsh', ['web'])).toEqual({
+    expect(resolveLaunch('/not/a/source/tree', '/opt/dsh', ['web'], { platform: 'linux' })).toEqual({
       command: '/opt/dsh',
       args: ['web'],
       sourceCheckout: false,
