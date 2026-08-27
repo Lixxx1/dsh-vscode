@@ -62,6 +62,12 @@ function isWindowsShellScript(executable: string): boolean {
   return basename.endsWith('.cmd') || basename.endsWith('.bat')
 }
 
+/** CreateProcess can launch these formats without consulting cmd.exe. */
+function isWindowsNativeExecutable(executable: string): boolean {
+  const extension = extname(executableBasename(executable)).toLowerCase()
+  return extension === '.exe' || extension === '.com'
+}
+
 function comSpec(env: Readonly<Record<string, string | undefined>>): string {
   return environmentValue(env, 'ComSpec') || 'cmd.exe'
 }
@@ -212,7 +218,7 @@ function resolveWindowsDsh(
   const requested = executable === '' ? 'dsh' : executable
   const match = resolveWindowsPathCommand(requested, host)
   if (match !== undefined) {
-    if (!isWindowsShellScript(match)) {
+    if (isWindowsNativeExecutable(match)) {
       return { command: match, args: [...configuredArgs], sourceCheckout: false }
     }
     if (match.toLowerCase().endsWith('.cmd')) {

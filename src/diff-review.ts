@@ -125,9 +125,10 @@ function groupedDiffs(cwd: string, diffs: readonly FileDiff[], turn: number): Ma
   for (const diff of diffs) {
     const absolutePath = projectPath(cwd, diff.path)
     if (absolutePath === undefined) continue
-    const existing = grouped.get(absolutePath)
+    const key = comparableFilePath(absolutePath)
+    const existing = grouped.get(key)
     if (existing === undefined) {
-      grouped.set(absolutePath, {
+      grouped.set(key, {
         absolutePath,
         displayPath: path.relative(cwd, absolutePath) || path.basename(absolutePath),
         diffs: [diff],
@@ -229,12 +230,14 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
     if (failedResult(event)) return false
 
     const results = groupedDiffs(cwd, diffsOf(view, 'result'), turn)
-    const absolutePaths = new Set([...(pending?.keys() ?? []), ...results.keys()])
+    const fileKeys = new Set([...(pending?.keys() ?? []), ...results.keys()])
     let updated = false
-    for (const absolutePath of absolutePaths) {
-      const callFile = pending?.get(absolutePath)
-      const resultFile = results.get(absolutePath)
-      const displayPath = resultFile?.displayPath ?? callFile?.displayPath ?? path.relative(cwd, absolutePath)
+    for (const fileKey of fileKeys) {
+      const callFile = pending?.get(fileKey)
+      const resultFile = results.get(fileKey)
+      const absolutePath = callFile?.absolutePath ?? resultFile?.absolutePath
+      if (absolutePath === undefined) continue
+      const displayPath = callFile?.displayPath ?? resultFile?.displayPath ?? path.relative(cwd, absolutePath)
       const fileTurn = resultFile?.turn ?? callFile?.turn ?? turn
       const diffs = resultFile?.diffs ?? callFile?.diffs ?? []
       const after = replay ? undefined : readImage(absolutePath)
@@ -329,8 +332,9 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
     if (reviews.length === 0) throw new Error('No completed DeepSeek changes are available to revert.')
     const byFile = new Map<string, ReviewFile[]>()
     for (const review of reviews) {
-      const existing = byFile.get(review.absolutePath)
-      if (existing === undefined) byFile.set(review.absolutePath, [review])
+      const key = comparableFilePath(review.absolutePath)
+      const existing = byFile.get(key)
+      if (existing === undefined) byFile.set(key, [review])
       else existing.push(review)
     }
     const validated = [...byFile.values()].map(series => this.validateRevertSeries(series))
@@ -351,8 +355,9 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
     if (turns === undefined) this.reviews.set(sessionId, turns = new Map())
     let files = turns.get(incoming.turn)
     if (files === undefined) turns.set(incoming.turn, files = new Map())
-    const existing = files.get(incoming.absolutePath)
-    if (existing === undefined) files.set(incoming.absolutePath, incoming)
+    const key = comparableFilePath(incoming.absolutePath)
+    const existing = files.get(key)
+    if (existing === undefined) files.set(key, incoming)
     else existing.snapshots.push(...incoming.snapshots)
   }
 
@@ -374,11 +379,12 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
   private findReview(sessionId: string, cwd: string, value: string, turn?: number): ReviewFile | undefined {
     const absolutePath = projectPath(cwd, value)
     if (absolutePath === undefined) return undefined
+    const key = comparableFilePath(absolutePath)
     const turns = this.reviews.get(sessionId)
-    if (turn !== undefined) return turns?.get(turn)?.get(absolutePath)
+    if (turn !== undefined) return turns?.get(turn)?.get(key)
     return [...(turns?.entries() ?? [])]
       .sort(([left], [right]) => right - left)
-      .map(([, files]) => files.get(absolutePath))
+      .map(([, files]) => files.get(key))
       .find((review): review is ReviewFile => review !== undefined)
   }
 
@@ -387,7 +393,7 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
   }
 
   private reviewKey(review: ReviewFile): string {
-    return `${String(review.turn)}:${review.absolutePath}`
+    return `${String(review.turn)}:${comparableFilePath(review.absolutePath)}`
   }
 
   private markDismissed(sessionId: string, review: ReviewFile): void {
@@ -400,7 +406,7 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
     this.markDismissed(sessionId, review)
     const turns = this.reviews.get(sessionId)
     const files = turns?.get(review.turn)
-    files?.delete(review.absolutePath)
+    files?.delete(comparableFilePath(review.absolutePath))
     if (files?.size === 0) turns?.delete(review.turn)
     if (turns?.size === 0) this.reviews.delete(sessionId)
   }

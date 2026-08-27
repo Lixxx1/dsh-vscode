@@ -1,10 +1,22 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import { win32 as windowsPath } from 'node:path'
 
 type KillableProcess = Pick<ChildProcess, 'pid' | 'exitCode' | 'signalCode' | 'kill'>
 
 interface ProcessTreeHost {
   platform: NodeJS.Platform
   spawnProcess: typeof spawn
+  env: Readonly<Record<string, string | undefined>>
+}
+
+function environmentValue(
+  env: Readonly<Record<string, string | undefined>>,
+  name: string,
+): string | undefined {
+  for (const [key, value] of Object.entries(env)) {
+    if (key.toLowerCase() === name.toLowerCase()) return value
+  }
+  return undefined
 }
 
 /**
@@ -23,6 +35,7 @@ export function terminateProcessTree(
   if (platform !== 'win32' || child.pid === undefined) return child.kill(signal)
 
   const spawnProcess = overrides.spawnProcess ?? spawn
+  const env = overrides.env ?? process.env
   let fellBack = false
   const fallback = (): void => {
     if (fellBack || child.exitCode !== null || child.signalCode !== null) return
@@ -30,9 +43,16 @@ export function terminateProcessTree(
     child.kill('SIGKILL')
   }
 
+  const systemRoot = environmentValue(env, 'SystemRoot') || environmentValue(env, 'windir')
+  if (systemRoot === undefined) {
+    fallback()
+    return fellBack
+  }
+  const taskkillExecutable = windowsPath.join(systemRoot, 'System32', 'taskkill.exe')
+
   try {
     const taskkill = spawnProcess(
-      'taskkill.exe',
+      taskkillExecutable,
       ['/PID', String(child.pid), '/T', '/F'],
       { stdio: 'ignore', windowsHide: true },
     )

@@ -138,6 +138,24 @@ describe('DSH launch resolution', () => {
     })
   })
 
+  it('routes non-native PATHEXT matches through cmd.exe', () => {
+    const prefix = mkdtempSync(join(tmpdir(), 'dsh-vscode-windows-script-'))
+    const script = join(prefix, 'dsh.js')
+    writeFileSync(script, '')
+
+    const launch = resolveLaunch('/not/a/source/tree', 'dsh', ['web'], {
+      platform: 'win32',
+      env: { Path: prefix, PATHEXT: '.JS;.EXE', ComSpec: 'C:\\Windows\\System32\\cmd.exe' },
+    })
+
+    expect(launch).toEqual({
+      command: 'C:\\Windows\\System32\\cmd.exe',
+      args: ['/d', '/s', '/c', `"${script} ^"web^""`],
+      sourceCheckout: false,
+      windowsVerbatimArguments: true,
+    })
+  })
+
   it('resolves the current directory before PATH like cmd.exe', () => {
     const workspace = mkdtempSync(join(tmpdir(), 'dsh-vscode-windows-cwd-'))
     const pathPrefix = mkdtempSync(join(tmpdir(), 'dsh-vscode-windows-path-'))

@@ -131,6 +131,36 @@ describe('DiffReviewManager', () => {
     expect(fs.readFileSync(filePath, 'utf8')).toBe('const value = 1\n')
   })
 
+  it.runIf(process.platform === 'win32' || process.platform === 'darwin')(
+    'treats differently cased diff paths as the same file',
+    () => {
+      const cwd = temporaryWorkspace()
+      const filePath = path.join(cwd, 'CaseFile.ts')
+      fs.writeFileSync(filePath, 'before\n')
+      const manager = new DiffReviewManager()
+      const callId = 'case-insensitive-path'
+      const call = event('tool/call', 1, { turn: 1, callId, name: 'edit' })
+      const result = event('tool/result', 2, {
+        turn: 1,
+        message: { source: { kind: 'tool', callId }, content: [] },
+      })
+      const view = (forValue: 'call' | 'result', fileName: string) => ({
+        for: forValue,
+        view: { card: 'diff', diffs: [{ path: fileName, oldText: 'before', newText: 'after' }] },
+      })
+
+      manager.accept('session-case', cwd, call, view('call', 'CaseFile.ts'))
+      fs.writeFileSync(filePath, 'after\n')
+      expect(manager.accept('session-case', cwd, result, view('result', 'casefile.ts'))).toBe(true)
+      expect(manager.changedFiles('session-case')).toEqual([{
+        turn: 1,
+        files: [{ path: 'CaseFile.ts', additions: 1, deletions: 1, canRevert: true }],
+      }])
+      expect(manager.revertFile('session-case', cwd, 'casefile.ts', 1)).toEqual([])
+      expect(fs.readFileSync(filePath, 'utf8')).toBe('before\n')
+    },
+  )
+
   it('prepends older review history without losing reversible live snapshots', () => {
     const cwd = temporaryWorkspace()
     const filePath = path.join(cwd, 'current.ts')

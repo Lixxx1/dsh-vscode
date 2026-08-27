@@ -26,9 +26,10 @@ describe('process tree termination', () => {
     expect(terminateProcessTree(process, 'SIGTERM', {
       platform: 'win32',
       spawnProcess: spawnProcess as never,
+      env: { SystemRoot: 'C:\\Windows' },
     })).toBe(true)
     expect(spawnProcess).toHaveBeenCalledWith(
-      'taskkill.exe',
+      'C:\\Windows\\System32\\taskkill.exe',
       ['/PID', '1234', '/T', '/F'],
       { stdio: 'ignore', windowsHide: true },
     )
@@ -42,9 +43,23 @@ describe('process tree termination', () => {
     terminateProcessTree(process, 'SIGTERM', {
       platform: 'win32',
       spawnProcess: spawnProcess as never,
+      env: { windir: 'C:\\Windows' },
     })
 
     taskkill.emit('close', 1)
+    expect(process.kill).toHaveBeenCalledWith('SIGKILL')
+  })
+
+  it('does not search the current directory when the Windows system root is unavailable', () => {
+    const process = child()
+    const spawnProcess = vi.fn()
+
+    expect(terminateProcessTree(process, 'SIGTERM', {
+      platform: 'win32',
+      spawnProcess: spawnProcess as never,
+      env: {},
+    })).toBe(true)
+    expect(spawnProcess).not.toHaveBeenCalled()
     expect(process.kill).toHaveBeenCalledWith('SIGKILL')
   })
 })
