@@ -510,15 +510,17 @@ export class DshPluginManager {
   }
 
   private async runOfficialPluginCommand(args: readonly string[], title: string): Promise<void> {
-    const workspace = vscode.workspace.workspaceFolders?.[0]?.uri
+    const defaultWorkspace = vscode.workspace.workspaceFolders?.[0]?.uri
+    const cwd = this.controller.cwd || defaultWorkspace?.fsPath || process.cwd()
+    const workspace = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(cwd))?.uri ?? defaultWorkspace
     const config = vscode.workspace.getConfiguration('deepseekHarness', workspace)
     const executable = config.get<string>('executable', '')
     const launch = resolveLaunch(
       this.context.extensionUri.fsPath,
       executable,
       ['plugin', '--profile', 'web', ...args],
+      { cwd },
     )
-    const cwd = this.controller.cwd || workspace?.fsPath || process.cwd()
     const rendered = [launch.command, ...launch.args].map(part => JSON.stringify(part)).join(' ')
     this.output.appendLine(`[plugins] cwd: ${cwd}`)
     this.output.appendLine(`[plugins] launch: ${rendered}`)

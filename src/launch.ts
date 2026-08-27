@@ -66,7 +66,7 @@ function comSpec(env: Readonly<Record<string, string | undefined>>): string {
   return environmentValue(env, 'ComSpec') || 'cmd.exe'
 }
 
-const WINDOWS_CMD_META = /([()\][%!^"`<>&|;, *?])/g
+const WINDOWS_CMD_META = /([()\][%!^"`<>&|;, *?\t])/g
 
 function safeWindowsShellValue(value: string): string {
   if (/[\0\r\n]/.test(value)) {

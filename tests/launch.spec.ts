@@ -171,6 +171,7 @@ describe('DSH launch resolution', () => {
     writeFileSync(shim, `@echo off\r\n"${process.execPath}" "%~dp0capture.cjs" %*\r\n`)
     const unsafeLooking = [
       'space value',
+      'tab\tvalue',
       'value&echo SHOULD_NOT_RUN',
       'pipe|findstr x',
       'left<missing.txt',
