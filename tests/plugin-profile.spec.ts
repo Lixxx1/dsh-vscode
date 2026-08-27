@@ -1,6 +1,6 @@
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, parse } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   findAddedPlugin,
@@ -13,9 +13,12 @@ import {
 
 describe('DSH web profile plugins', () => {
   it('resolves the official DSH home convention', () => {
-    expect(resolveDshHome({}, '/Users/example')).toBe('/Users/example/.dsh')
-    expect(resolveDshHome({ DSH_HOME: '~/custom-dsh' }, '/Users/example')).toBe('/Users/example/custom-dsh')
-    expect(resolveDshHome({ DSH_HOME: '/tmp/dsh-home' }, '/Users/example')).toBe('/tmp/dsh-home')
+    const root = parse(process.cwd()).root
+    const userHome = join(root, 'Users', 'example')
+    const configuredHome = join(root, 'tmp', 'dsh-home')
+    expect(resolveDshHome({}, userHome)).toBe(join(userHome, '.dsh'))
+    expect(resolveDshHome({ DSH_HOME: '~/custom-dsh' }, userHome)).toBe(join(userHome, 'custom-dsh'))
+    expect(resolveDshHome({ DSH_HOME: configuredHome }, userHome)).toBe(configuredHome)
   })
 
   it('reads dependencies and marks only declared profile bundles as active candidates', () => {

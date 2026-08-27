@@ -44,6 +44,7 @@ describe('DiffReviewManager', () => {
 
   it('rebuilds changed files from official DSH diff views and opens a native diff', async () => {
     const manager = new DiffReviewManager()
+    const displayPath = path.join('src', 'app.ts')
     const changed = manager.rebuild('session-1', '/workspace', [
       {
         event: event('tool/call', 1, { turn: 1, step: 1, callId: 'call-1', name: 'edit', arguments: '{}' }),
@@ -68,13 +69,13 @@ describe('DiffReviewManager', () => {
       },
     ])
 
-    expect(changed).toEqual([{ turn: 1, files: [{ path: 'src/app.ts', additions: 1, deletions: 1, canRevert: false }] }])
+    expect(changed).toEqual([{ turn: 1, files: [{ path: displayPath, additions: 1, deletions: 1, canRevert: false }] }])
     await manager.reviewFile('session-1', '/workspace', 'src/app.ts')
     expect(mocks.executeCommand).toHaveBeenCalledWith(
       'vscode.diff',
       expect.objectContaining({ scheme: 'dsh-diff', authority: 'before' }),
       expect.objectContaining({ scheme: 'dsh-diff', authority: 'after' }),
-      'src/app.ts — DeepSeek changes (Turn 1)',
+      `${displayPath} — DeepSeek changes (Turn 1)`,
       { preview: true },
     )
   })
@@ -123,11 +124,80 @@ describe('DiffReviewManager', () => {
     expect(manager.accept('session-live', cwd, result, resultView)).toBe(true)
     expect(manager.changedFiles('session-live')).toEqual([{
       turn: 2,
-      files: [{ path: 'src/app.ts', additions: 1, deletions: 1, canRevert: true }],
+      files: [{ path: path.join('src', 'app.ts'), additions: 1, deletions: 1, canRevert: true }],
     }])
 
     expect(manager.revertFile('session-live', cwd, 'src/app.ts', 2)).toEqual([])
     expect(fs.readFileSync(filePath, 'utf8')).toBe('const value = 1\n')
+  })
+
+  it('treats differently cased aliases as the same file on a case-insensitive filesystem', () => {
+    const cwd = temporaryWorkspace()
+    const filePath = path.join(cwd, 'CaseFile.ts')
+    fs.writeFileSync(filePath, 'before\n')
+    if (!fs.existsSync(path.join(cwd, 'casefile.ts'))) return
+    const manager = new DiffReviewManager()
+    const callId = 'case-insensitive-path'
+    const call = event('tool/call', 1, { turn: 1, callId, name: 'edit' })
+    const result = event('tool/result', 2, {
+      turn: 1,
+      message: { source: { kind: 'tool', callId }, content: [] },
+    })
+    const view = (forValue: 'call' | 'result', fileName: string) => ({
+      for: forValue,
+      view: { card: 'diff', diffs: [{ path: fileName, oldText: 'before', newText: 'after' }] },
+    })
+
+    manager.accept('session-case', cwd, call, view('call', 'CaseFile.ts'))
+    fs.writeFileSync(filePath, 'after\n')
+    expect(manager.accept('session-case', cwd, result, view('result', 'casefile.ts'))).toBe(true)
+    expect(manager.changedFiles('session-case')).toEqual([{
+      turn: 1,
+      files: [{ path: 'CaseFile.ts', additions: 1, deletions: 1, canRevert: true }],
+    }])
+    expect(manager.revertFile('session-case', cwd, 'casefile.ts', 1)).toEqual([])
+    expect(fs.readFileSync(filePath, 'utf8')).toBe('before\n')
+  })
+
+  it('keeps differently cased files separate on a case-sensitive filesystem', () => {
+    const cwd = temporaryWorkspace()
+    const upperPath = path.join(cwd, 'App.ts')
+    const lowerPath = path.join(cwd, 'app.ts')
+    fs.writeFileSync(upperPath, 'upper-before\n')
+    fs.writeFileSync(lowerPath, 'lower-before\n')
+    if (fs.readFileSync(upperPath, 'utf8') !== 'upper-before\n') return
+
+    const manager = new DiffReviewManager()
+    const callId = 'case-sensitive-paths'
+    const diffs = [
+      { path: 'App.ts', oldText: 'upper-before', newText: 'upper-after' },
+      { path: 'app.ts', oldText: 'lower-before', newText: 'lower-after' },
+    ]
+    manager.accept(
+      'session-sensitive',
+      cwd,
+      event('tool/call', 1, { turn: 1, callId, name: 'edit' }),
+      { for: 'call', view: { card: 'diff', diffs } },
+    )
+    fs.writeFileSync(upperPath, 'upper-after\n')
+    fs.writeFileSync(lowerPath, 'lower-after\n')
+    expect(manager.accept(
+      'session-sensitive',
+      cwd,
+      event('tool/result', 2, { turn: 1, message: { source: { kind: 'tool', callId }, content: [] } }),
+      { for: 'result', view: { card: 'diff', diffs } },
+    )).toBe(true)
+
+    expect(manager.changedFiles('session-sensitive')).toEqual([{
+      turn: 1,
+      files: [
+        { path: 'App.ts', additions: 1, deletions: 1, canRevert: true },
+        { path: 'app.ts', additions: 1, deletions: 1, canRevert: true },
+      ],
+    }])
+    expect(manager.revertAll('session-sensitive')).toEqual([])
+    expect(fs.readFileSync(upperPath, 'utf8')).toBe('upper-before\n')
+    expect(fs.readFileSync(lowerPath, 'utf8')).toBe('lower-before\n')
   })
 
   it('prepends older review history without losing reversible live snapshots', () => {

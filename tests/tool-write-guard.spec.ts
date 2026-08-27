@@ -1,3 +1,4 @@
+import * as path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { DshEvent } from '../src/conversation.js'
 import { absoluteToolPaths, toolWriteIntents } from '../src/tool-write-guard.js'
@@ -42,9 +43,12 @@ describe('toolWriteIntents', () => {
 
 describe('absoluteToolPaths', () => {
   it('resolves relative paths and preserves absolute paths', () => {
-    expect(absoluteToolPaths('/workspace/project', ['src/app.ts', '/shared/config.ts'])).toEqual([
-      '/workspace/project/src/app.ts',
-      '/shared/config.ts',
+    const root = path.parse(process.cwd()).root
+    const cwd = path.join(root, 'workspace', 'project')
+    const absolute = path.join(root, 'shared', 'config.ts')
+    expect(absoluteToolPaths(cwd, ['src/app.ts', absolute])).toEqual([
+      path.join(cwd, 'src', 'app.ts'),
+      absolute,
     ])
   })
 })

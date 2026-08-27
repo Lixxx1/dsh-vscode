@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import * as vscode from 'vscode'
 import { resolveLaunch } from './launch.js'
+import { terminateProcessTree } from './process-tree.js'
 import {
   COMMUNITY_REGISTRY_URL,
   parseCommunityRuntimePlugins,
@@ -509,15 +510,17 @@ export class DshPluginManager {
   }
 
   private async runOfficialPluginCommand(args: readonly string[], title: string): Promise<void> {
-    const workspace = vscode.workspace.workspaceFolders?.[0]?.uri
+    const defaultWorkspace = vscode.workspace.workspaceFolders?.[0]?.uri
+    const cwd = this.controller.cwd || defaultWorkspace?.fsPath || process.cwd()
+    const workspace = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(cwd))?.uri ?? defaultWorkspace
     const config = vscode.workspace.getConfiguration('deepseekHarness', workspace)
     const executable = config.get<string>('executable', '')
     const launch = resolveLaunch(
       this.context.extensionUri.fsPath,
       executable,
       ['plugin', '--profile', 'web', ...args],
+      { cwd },
     )
-    const cwd = this.controller.cwd || workspace?.fsPath || process.cwd()
     const rendered = [launch.command, ...launch.args].map(part => JSON.stringify(part)).join(' ')
     this.output.appendLine(`[plugins] cwd: ${cwd}`)
     this.output.appendLine(`[plugins] launch: ${rendered}`)
@@ -535,6 +538,7 @@ export class DshPluginManager {
         env: { ...process.env, NO_COLOR: '1', ...launch.env },
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
+        windowsVerbatimArguments: launch.windowsVerbatimArguments,
       })
       const append = (chunk: Buffer | string): void => {
         const text = String(chunk)
@@ -545,7 +549,7 @@ export class DshPluginManager {
       child.stderr.on('data', append)
       const cancellation = token.onCancellationRequested(() => {
         cancelled = true
-        child.kill('SIGTERM')
+        terminateProcessTree(child)
       })
       child.once('error', (error) => {
         if (settled) return

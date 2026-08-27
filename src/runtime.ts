@@ -13,6 +13,7 @@ import {
   type RuntimeLaunchContributor,
   type RuntimeLaunchPreparation,
 } from './runtime-launch.js'
+import { terminateProcessTree } from './process-tree.js'
 
 export type RuntimeOwnership = 'external' | 'managed'
 
@@ -56,6 +57,7 @@ function readDshVersion(launch: LaunchCommand, cwd: string): Promise<string | un
         env: { ...process.env, NO_COLOR: '1', ...launch.env },
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
+        windowsVerbatimArguments: launch.windowsVerbatimArguments,
       })
     } catch {
       finish()
@@ -70,7 +72,7 @@ function readDshVersion(launch: LaunchCommand, cwd: string): Promise<string | un
     // version string cannot be truncated by a late stdout chunk.
     child.on('close', code => { finish(code === 0 ? output.trim() : undefined) })
     timer = setTimeout(() => {
-      child.kill()
+      terminateProcessTree(child)
       finish()
     }, 5_000)
   })
@@ -207,6 +209,7 @@ export class DshRuntime implements vscode.Disposable {
         },
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
+        windowsVerbatimArguments: launch.windowsVerbatimArguments,
       })
     } catch (error) {
       this.failStart(error instanceof Error ? error : new Error(String(error)), pending)
@@ -340,10 +343,10 @@ export class DshRuntime implements vscode.Disposable {
       }
       child.once('exit', finish)
       forceTimer = setTimeout(() => {
-        child.kill('SIGKILL')
+        terminateProcessTree(child, 'SIGKILL')
         finish()
       }, 4_000)
-      if (!child.kill('SIGTERM')) finish()
+      if (!terminateProcessTree(child)) finish()
     })
     await this.releaseLaunchPreparation()
     this.publish({ kind: 'stopped' })
