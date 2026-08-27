@@ -177,6 +177,11 @@ describe('DSH launch resolution', () => {
       'right>captured.txt',
       '(group)',
       'caret^value',
+      'percent%PATH%value',
+      'bang!value',
+      'quote"value',
+      'trailing\\',
+      '',
     ]
     const launch = resolveLaunch('/not/a/source/tree', shim, unsafeLooking, {
       platform: 'win32',
