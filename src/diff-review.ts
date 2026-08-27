@@ -229,11 +229,16 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
     this.pending.delete(key)
     if (failedResult(event)) return false
 
+    // A newly created file may not have had a realpath during tool/call. Resolve
+    // pending entries again now that tool/result has made the path observable.
+    const currentPending = pending === undefined
+      ? undefined
+      : new Map([...pending.values()].map(file => [comparableFilePath(file.absolutePath), file]))
     const results = groupedDiffs(cwd, diffsOf(view, 'result'), turn)
-    const fileKeys = new Set([...(pending?.keys() ?? []), ...results.keys()])
+    const fileKeys = new Set([...(currentPending?.keys() ?? []), ...results.keys()])
     let updated = false
     for (const fileKey of fileKeys) {
-      const callFile = pending?.get(fileKey)
+      const callFile = currentPending?.get(fileKey)
       const resultFile = results.get(fileKey)
       const absolutePath = callFile?.absolutePath ?? resultFile?.absolutePath
       if (absolutePath === undefined) continue

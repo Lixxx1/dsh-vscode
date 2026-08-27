@@ -1,7 +1,14 @@
+import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-/** Normalize filesystem paths using the host filesystem's case semantics. */
-export function comparableFilePath(filePath: string, platform: NodeJS.Platform = process.platform): string {
+/** Resolve an existing path to its filesystem identity without guessing case semantics. */
+export function comparableFilePath(filePath: string): string {
   const normalized = path.normalize(filePath)
-  return platform === 'darwin' || platform === 'win32' ? normalized.toLowerCase() : normalized
+  try {
+    return path.normalize(fs.realpathSync.native(normalized))
+  } catch {
+    // Missing paths have no filesystem identity yet. Preserve their spelling so
+    // case-sensitive volumes never merge two distinct future files.
+    return normalized
+  }
 }
