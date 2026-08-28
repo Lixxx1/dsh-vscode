@@ -13,6 +13,15 @@ describe('chat webview', () => {
     expect(() => new Function(script ?? '')).not.toThrow()
   })
 
+  it('offers a compact GitHub star action in the conversation toolbar', () => {
+    const webview = { cspSource: 'vscode-webview:' } as vscode.Webview
+    const mark = { toString: () => 'vscode-resource:/deepseek.svg' } as vscode.Uri
+    const html = chatHtml(webview, mark)
+
+    expect(html).toContain('aria-label="Star dsh-vscode on GitHub"')
+    expect(html).toContain("href: 'https://github.com/Lixxx1/dsh-vscode'")
+  })
+
   it('uses append-only output and streaming paths', () => {
     const webview = { cspSource: 'vscode-webview:' } as vscode.Webview
     const mark = { toString: () => 'vscode-resource:/deepseek.svg' } as vscode.Uri
