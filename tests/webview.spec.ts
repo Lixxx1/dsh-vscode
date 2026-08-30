@@ -22,6 +22,18 @@ describe('chat webview', () => {
     expect(html).toContain("href: 'https://github.com/Lixxx1/dsh-vscode'")
   })
 
+  it('offers actionable setup states instead of a generic reconnect loop', () => {
+    const webview = { cspSource: 'vscode-webview:' } as vscode.Webview
+    const mark = { toString: () => 'vscode-resource:/deepseek.svg' } as vscode.Uri
+    const html = chatHtml(webview, mark)
+
+    expect(html).toContain('Open a project to get started')
+    expect(html).toContain("type: 'open-workspace'")
+    expect(html).toContain('Install DeepSeek Harness')
+    expect(html).toContain('https://github.com/deepseek-ai/deepseek-harness')
+    expect(html).toContain("type: 'configure-api-key'")
+  })
+
   it('uses append-only output and streaming paths', () => {
     const webview = { cspSource: 'vscode-webview:' } as vscode.Webview
     const mark = { toString: () => 'vscode-resource:/deepseek.svg' } as vscode.Uri

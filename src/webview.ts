@@ -136,6 +136,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     .status, .interaction { margin: 10px 0; padding: 11px; border: 1px solid var(--vscode-widget-border); border-radius: 8px; overflow-wrap: anywhere; background: var(--vscode-editor-background); }
     .status { color: var(--vscode-descriptionForeground); border: 0; background: var(--vscode-textBlockQuote-background); }
     .status.error { color: var(--vscode-errorForeground); }
+    .status.setup { padding: 15px; color: var(--vscode-foreground); border: 1px solid var(--vscode-widget-border); border-radius: 10px; background: var(--vscode-editor-background); }
+    .setup-title { margin-bottom: 4px; font-weight: 600; }
+    .setup-detail { color: var(--vscode-descriptionForeground); }
     .interaction-title { margin-bottom: 4px; font-weight: 600; }
     .interaction-detail, .question-detail { color: var(--vscode-descriptionForeground); font-size: 12px; }
     .actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
@@ -839,12 +842,30 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       while (cursor) { const next = cursor.nextSibling; cursor.remove(); cursor = next; }
     }
     function renderStatus(current) {
-      const box = node('div', 'status' + (current.phase === 'error' ? ' error' : ''), current.statusText || 'Starting DeepSeek Harness…');
+      const setup = current.setup;
+      const box = node('div', 'status' + (setup ? ' setup' : (current.phase === 'error' ? ' error' : '')));
+      if (setup === 'workspace') {
+        box.append(node('div', 'setup-title', 'Open a project to get started'), node('div', 'setup-detail', 'DeepSeek Harness works inside a trusted VS Code project folder.'));
+      } else if (setup === 'dsh') {
+        box.append(node('div', 'setup-title', 'Install DeepSeek Harness'), node('div', 'setup-detail', current.statusText || 'The dsh executable was not found.'));
+      } else if (setup === 'api-key') {
+        box.append(node('div', 'setup-title', 'Configure your DeepSeek API key'), node('div', 'setup-detail', current.statusText || 'DeepSeek Harness needs an API key before it can run tasks.'));
+      } else {
+        box.append(document.createTextNode(current.statusText || 'Starting DeepSeek Harness…'));
+      }
       if (current.phase === 'error') {
         const actions = node('div', 'actions');
-        const retry = node('button', 'secondary', 'Reconnect'); const output = node('button', 'secondary', 'Show output');
-        retry.addEventListener('click', () => vscode.postMessage({ type: 'restart' })); output.addEventListener('click', () => vscode.postMessage({ type: 'output' }));
-        actions.append(retry, output); box.append(actions);
+        if (setup === 'workspace') {
+          const open = node('button', 'primary', 'Open Project'); open.addEventListener('click', () => vscode.postMessage({ type: 'open-workspace' })); actions.append(open);
+        } else if (setup === 'dsh') {
+          const install = node('button', 'primary', 'View Installation'); install.addEventListener('click', () => vscode.postMessage({ type: 'open-link', href: 'https://github.com/deepseek-ai/deepseek-harness' })); actions.append(install);
+        } else if (setup === 'api-key') {
+          const configure = node('button', 'primary', 'Configure API Key'); configure.addEventListener('click', () => vscode.postMessage({ type: 'configure-api-key' })); actions.append(configure);
+        } else {
+          const retry = node('button', 'secondary', 'Reconnect'); retry.addEventListener('click', () => vscode.postMessage({ type: 'restart' })); actions.append(retry);
+        }
+        if (setup !== 'workspace') { const output = node('button', 'secondary', 'Show Output'); output.addEventListener('click', () => vscode.postMessage({ type: 'output' })); actions.append(output); }
+        box.append(actions);
       }
       return box;
     }
@@ -1330,7 +1351,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
         for (const request of loadingToolRequests.values()) clearTimeout(request.timer);
         loadingToolRequests.clear(); toolOutputErrors.clear(); toolOutputPages.clear(); deferredOutputViews.clear(); pendingMessageAppends.clear();
       }
-      const statusKey = current.phase + '::' + current.statusText;
+      const statusKey = current.phase + '::' + current.statusText + '::' + current.setup;
       if (statusKey !== renderedStatusKey) {
         renderedStatusKey = statusKey;
         elements.conversationStatus.replaceChildren();

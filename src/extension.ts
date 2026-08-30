@@ -54,6 +54,7 @@ import { chatHtml } from './webview.js'
 import { DshPluginManager } from './plugin-manager.js'
 import type { PluginInventorySnapshot } from './plugin-profile.js'
 import type { SettingsDescription, SettingsMutation, SettingsNamespace } from './runtime-settings.js'
+import { setupKindFor, type SetupKind } from './setup-state.js'
 import { earliestHistorySequence, mergeHistoryEntries, unseenHistoryEntries } from './history.js'
 import { routeSlashInput, type SlashRoute } from './slash-routing.js'
 import { unavailableUsageMeterState, usageMeterStateOf, type UsageMeterState } from './usage-meter.js'
@@ -126,6 +127,7 @@ interface WorkspacePick extends vscode.QuickPickItem {
 interface ChatViewState {
   phase: 'loading' | 'ready' | 'error'
   statusText: string
+  setup: SetupKind
   workspaceName: string
   cwd: string
   sessions: SessionItem[]
@@ -182,15 +184,16 @@ function stateUpdateForWebview(update: ChatViewStateUpdate): ChatViewStateUpdate
 
 function initialState(cwd: string): ChatViewState {
   return {
-    phase: 'loading',
-    statusText: 'Starting the official DeepSeek Harness runtime…',
+    phase: cwd === '' ? 'error' : 'loading',
+    statusText: cwd === '' ? 'Open a project folder to start using DeepSeek Harness.' : 'Starting the official DeepSeek Harness runtime…',
+    setup: setupKindFor(cwd, cwd === '' ? 'error' : 'loading', ''),
     workspaceName: path.basename(cwd),
     cwd,
     sessions: [],
     sessionId: '',
     messages: [],
     running: false,
-    routable: true,
+    routable: cwd !== '',
     models: [],
     approval: null,
     question: null,
@@ -260,10 +263,14 @@ class DshChatController implements vscode.Disposable {
   }
 
   observeRuntime(state: RuntimeState): void {
-    if (state.kind === 'starting') this.publish({ phase: 'loading', statusText: state.detail })
-    if (state.kind === 'failed') this.publish({ phase: 'error', statusText: state.message })
+    if (state.kind === 'starting') this.publish({ phase: 'loading', statusText: state.detail, setup: null })
+    if (state.kind === 'failed') this.publish({
+      phase: 'error',
+      statusText: state.message,
+      setup: setupKindFor(this.cwd, 'error', state.message),
+    })
     if (state.kind === 'stopped' && this._state.phase === 'ready') {
-      this.publish({ phase: 'error', statusText: 'DeepSeek Harness stopped.' })
+      this.publish({ phase: 'error', statusText: 'DeepSeek Harness stopped.', setup: null })
     }
   }
 
@@ -279,12 +286,14 @@ class DshChatController implements vscode.Disposable {
     this.jobsBySession.clear()
     this.historyEntries = []
     this.publish({
-      phase: 'loading',
-      statusText: 'Starting the official DeepSeek Harness runtime…',
+      phase: this.cwd === '' ? 'error' : 'loading',
+      statusText: this.cwd === '' ? 'Open a project folder to start using DeepSeek Harness.' : 'Starting the official DeepSeek Harness runtime…',
+      setup: this.cwd === '' ? 'workspace' : null,
       messages: [],
       sessions: [],
       sessionId: '',
       running: false,
+      routable: this.cwd !== '',
       models: [],
       approval: null,
       question: null,
@@ -300,6 +309,7 @@ class DshChatController implements vscode.Disposable {
       hasMoreHistory: false,
       loadingHistory: false,
     })
+    if (this.cwd === '') return
     try {
       const uri = await this.runtime.start(this.cwd === '' ? undefined : vscode.Uri.file(this.cwd))
       if (generation !== this.generation) return
@@ -325,7 +335,7 @@ class DshChatController implements vscode.Disposable {
       if (generation !== this.generation) return
       const message = error instanceof Error ? error.message : String(error)
       this.output.appendLine(`[chat] ${message}`)
-      this.publish({ phase: 'error', statusText: message })
+      this.publish({ phase: 'error', statusText: message, setup: setupKindFor(this.cwd, 'error', message) })
     }
   }
 
@@ -601,6 +611,7 @@ class DshChatController implements vscode.Disposable {
     this.publish({
       phase: 'ready',
       statusText: '',
+      setup: null,
       sessionId,
       messages: this.projectedMessages(),
       running: summary?.running ?? false,
@@ -1026,6 +1037,7 @@ class DshSurface implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[]
   private readonly draftImages: Array<PromptImage & { id: string }> = []
   private ready = false
+  private pendingFocus = false
   private pendingPrompt: string | undefined
   private pendingState: ChatViewState | undefined
   private postedState: ChatViewState | undefined
@@ -1050,6 +1062,10 @@ class DshSurface implements vscode.Disposable {
   }
 
   focusPrompt(): void {
+    if (!this.ready) {
+      this.pendingFocus = true
+      return
+    }
     void this.webview.postMessage({ type: 'focus-prompt' })
   }
 
@@ -1213,6 +1229,10 @@ class DshSurface implements vscode.Disposable {
           this.ready = true
           await this.resyncState()
           await this.webview.postMessage({ type: 'ide-context', state: this.editorContext.viewState() })
+          if (this.pendingFocus) {
+            this.pendingFocus = false
+            await this.webview.postMessage({ type: 'focus-prompt' })
+          }
           if (this.pendingPrompt !== undefined) {
             await this.webview.postMessage({ type: 'set-prompt', text: this.pendingPrompt })
             this.pendingPrompt = undefined
@@ -1220,6 +1240,10 @@ class DshSurface implements vscode.Disposable {
           return
         case 'restart': await this.controller.restart(); return
         case 'output': this.output.show(true); return
+        case 'open-workspace': await this.chooseWorkspace(); return
+        case 'configure-api-key':
+          await vscode.commands.executeCommand('deepseekHarness.configureApiKey')
+          return
         case 'new-session': await this.controller.newSession(); return
         case 'select-session':
           if (typeof value.sessionId === 'string') await this.controller.selectSession(value.sessionId)
@@ -1447,6 +1471,7 @@ function imageMediaType(filePath: string): ImageMediaType | undefined {
 class DshViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private surface: DshSurface | undefined
   private pendingPrompt: string | undefined
+  private pendingFocus = false
 
   constructor(
     private readonly controller: DshChatController,
@@ -1459,6 +1484,10 @@ class DshViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
     this.surface?.dispose()
     const surface = new DshSurface(view.webview, this.controller, this.output, this.editorContext, this.extensionUri)
     this.surface = surface
+    if (this.pendingFocus) {
+      this.pendingFocus = false
+      surface.focusPrompt()
+    }
     if (this.pendingPrompt !== undefined) {
       surface.setPrompt(this.pendingPrompt)
       this.pendingPrompt = undefined
@@ -1476,7 +1505,11 @@ class DshViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   }
 
   focusPrompt(): void {
-    this.surface?.focusPrompt()
+    if (this.surface === undefined) {
+      this.pendingFocus = true
+      return
+    }
+    this.surface.focusPrompt()
   }
 
   setPrompt(text: string): void {
@@ -1580,6 +1613,13 @@ export function activate(context: vscode.ExtensionContext): void {
     provider,
     { webviewOptions: { retainContextWhenHidden: true } },
   ))
+
+  const openChat = async (): Promise<void> => {
+    await vscode.commands.executeCommand('workbench.view.extension.deepseekHarness')
+    provider.focusPrompt()
+  }
+
+  context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.openChat', openChat))
 
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.openInEditor', async () => {
     const panel = vscode.window.createWebviewPanel(
@@ -1738,6 +1778,22 @@ export function activate(context: vscode.ExtensionContext): void {
     await controller.restart()
     void vscode.window.showInformationMessage('Stored DeepSeek API key removed. DeepSeek Harness restarted.')
   }))
+
+  const welcomeKey = 'deepseekHarness.welcome.openChat.v1'
+  if (workspace !== undefined && context.globalState.get<boolean>(welcomeKey) !== true) {
+    void (async () => {
+      try {
+        await context.globalState.update(welcomeKey, true)
+        const choice = await vscode.window.showInformationMessage(
+          'DSH Sidebar is ready in VS Code’s right sidebar.',
+          'Open DSH Sidebar',
+        )
+        if (choice === 'Open DSH Sidebar') await openChat()
+      } catch (error) {
+        output.appendLine(`[onboarding] ${error instanceof Error ? error.message : String(error)}`)
+      }
+    })()
+  }
 }
 
 export async function deactivate(): Promise<void> {

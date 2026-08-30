@@ -37,7 +37,9 @@
   ],
   "main": "./dist/extension.js",
   "activationEvents": [
+    "onStartupFinished",
     "onView:deepseekHarness.chat",
+    "onCommand:deepseekHarness.openChat",
     "onCommand:deepseekHarness.openInEditor",
     "onCommand:deepseekHarness.addSelection",
     "onCommand:deepseekHarness.fixWithDeepSeek",
@@ -73,6 +75,10 @@
       ]
     },
     "commands": [
+      {
+        "command": "deepseekHarness.openChat",
+        "title": "DeepSeek Harness: Open Chat"
+      },
       {
         "command": "deepseekHarness.openInEditor",
         "title": "DeepSeek Harness: Open Chat in Editor",
