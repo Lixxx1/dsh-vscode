@@ -29,7 +29,30 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     button { cursor: pointer; }
     #app { width: 100%; height: 100%; min-width: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; }
     .toolbar { min-width: 0; min-height: 38px; padding: 4px 8px 4px 12px; display: flex; align-items: center; gap: 6px; border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, transparent); }
-    .session-select { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; font-weight: 600; text-overflow: ellipsis; }
+    .session-control { min-width: 0; flex: 1; position: relative; }
+    .session-trigger { width: 100%; min-width: 0; height: 28px; padding: 0 6px; display: flex; align-items: center; gap: 5px; border: 0; border-radius: 6px; background: transparent; font-weight: 600; text-align: left; }
+    .session-trigger:hover, .session-trigger[aria-expanded="true"] { background: var(--vscode-toolbar-hoverBackground); }
+    .session-trigger-title { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .session-trigger svg { width: 13px; height: 13px; flex: 0 0 auto; color: var(--vscode-descriptionForeground); }
+    .session-menu { position: absolute; z-index: 30; top: calc(100% + 5px); left: -40px; width: calc(100vw - 16px); max-width: 360px; max-height: min(430px, 72vh); padding: 6px; display: grid; grid-template-rows: auto minmax(0, 1fr); border: 1px solid var(--vscode-widget-border); border-radius: 9px; background: var(--vscode-menu-background, var(--vscode-editor-background)); box-shadow: 0 7px 24px var(--vscode-widget-shadow); }
+    .session-search { width: 100%; height: 29px; padding: 0 8px; border: 1px solid var(--vscode-input-border, transparent); border-radius: 5px; outline: 0; color: var(--vscode-input-foreground); background: var(--vscode-input-background); }
+    .session-list { min-height: 0; margin-top: 5px; overflow: auto; }
+    .session-empty { padding: 18px 8px; color: var(--vscode-descriptionForeground); text-align: center; font-size: 11px; }
+    .session-row { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 26px; align-items: center; border-radius: 6px; }
+    .session-row:hover, .session-row.active { background: var(--vscode-list-hoverBackground); }
+    .session-row.active { color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground)); background: var(--vscode-list-activeSelectionBackground, var(--vscode-list-hoverBackground)); }
+    .session-main { min-width: 0; min-height: 44px; padding: 5px 6px; display: grid; grid-template-columns: 9px minmax(0, 1fr); grid-template-rows: auto auto; column-gap: 7px; border: 0; background: transparent; text-align: left; }
+    .session-indicator { grid-row: 1 / 3; align-self: center; width: 6px; height: 6px; border-radius: 50%; background: transparent; }
+    .session-indicator.running { background: var(--vscode-charts-blue, #4d6bfe); box-shadow: 0 0 0 2px color-mix(in srgb, var(--vscode-charts-blue, #4d6bfe) 20%, transparent); }
+    .session-indicator.unread { background: var(--vscode-notificationsInfoIcon-foreground, #4d6bfe); }
+    .session-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12px; font-weight: 600; }
+    .session-meta { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--vscode-descriptionForeground); font-size: 10px; }
+    .session-more { width: 24px; height: 24px; min-width: 24px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 5px; color: var(--vscode-descriptionForeground); background: transparent; font-size: 17px; line-height: 1; }
+    .session-more:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
+    .session-actions { grid-column: 1 / -1; margin: 0 5px 5px 22px; padding: 3px; display: flex; border: 1px solid var(--vscode-widget-border); border-radius: 6px; background: var(--vscode-editor-background); }
+    .session-action { min-height: 25px; padding: 2px 7px; border: 0; border-radius: 4px; color: var(--vscode-foreground); background: transparent; font-size: 11px; }
+    .session-action:hover { background: var(--vscode-toolbar-hoverBackground); }
+    .session-action.danger { color: var(--vscode-errorForeground); }
     .icon-button { width: 28px; height: 28px; min-width: 28px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--vscode-icon-foreground); }
     .icon-button:hover { background: var(--vscode-toolbar-hoverBackground); }
     .github-star:hover { color: var(--vscode-charts-yellow, #e3b341); }
@@ -239,7 +262,13 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
   <div id="app">
     <header class="toolbar">
       <button id="githubStar" class="icon-button github-star" title="Star dsh-vscode on GitHub" aria-label="Star dsh-vscode on GitHub"><svg viewBox="0 0 24 24"><path d="m12 3 2.8 5.7 6.3.9-4.6 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2-4.6-4.4 6.3-.9z"/></svg></button>
-      <select id="sessions" class="session-select" aria-label="Project conversations"></select>
+      <div id="sessionControl" class="session-control">
+        <button id="sessionTrigger" class="session-trigger" aria-label="Project conversations" aria-haspopup="dialog" aria-expanded="false"><span id="sessionTriggerTitle" class="session-trigger-title">New conversation</span><svg viewBox="0 0 24 24"><path d="m7 9.5 5 5 5-5"/></svg></button>
+        <div id="sessionMenu" class="session-menu hidden" role="dialog" aria-label="Project conversations">
+          <input id="sessionSearch" class="session-search" type="search" placeholder="Search conversations" aria-label="Search conversations">
+          <div id="sessionList" class="session-list" role="listbox"></div>
+        </div>
+      </div>
       <div id="jobsControl" class="jobs-control hidden">
         <button id="jobsTrigger" class="icon-button jobs-trigger" title="Background jobs" aria-label="Background jobs" aria-haspopup="menu" aria-expanded="false"><span class="jobs-dot"></span><span id="jobsCount">0</span></button>
         <div id="jobsMenu" class="jobs-menu hidden" role="menu" aria-label="Background jobs"></div>
@@ -288,7 +317,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     const elements = {
       conversation: document.getElementById('conversation'), scroll: document.getElementById('scroll'),
       conversationStatus: document.getElementById('conversationStatus'), conversationHistory: document.getElementById('conversationHistory'), messages: document.getElementById('messages'), conversationTail: document.getElementById('conversationTail'),
-      githubStar: document.getElementById('githubStar'), sessions: document.getElementById('sessions'), newSession: document.getElementById('newSession'), jobsControl: document.getElementById('jobsControl'), jobsTrigger: document.getElementById('jobsTrigger'), jobsCount: document.getElementById('jobsCount'), jobsMenu: document.getElementById('jobsMenu'),
+      githubStar: document.getElementById('githubStar'), sessionControl: document.getElementById('sessionControl'), sessionTrigger: document.getElementById('sessionTrigger'), sessionTriggerTitle: document.getElementById('sessionTriggerTitle'), sessionMenu: document.getElementById('sessionMenu'), sessionSearch: document.getElementById('sessionSearch'), sessionList: document.getElementById('sessionList'), newSession: document.getElementById('newSession'), jobsControl: document.getElementById('jobsControl'), jobsTrigger: document.getElementById('jobsTrigger'), jobsCount: document.getElementById('jobsCount'), jobsMenu: document.getElementById('jobsMenu'),
       prompt: document.getElementById('prompt'), project: document.getElementById('project'), workspace: document.getElementById('workspace'),
       models: document.getElementById('models'), efforts: document.getElementById('efforts'),
       policyTrigger: document.getElementById('policyTrigger'), policyMenu: document.getElementById('policyMenu'),
@@ -310,6 +339,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     let policyMenuOpen = false;
     let usageOpen = false;
     let jobsOpen = false;
+    let sessionMenuOpen = false;
+    let sessionActionId;
     let jobsTimer;
     let historyAnchor;
     let renderFrame;
@@ -321,6 +352,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     let renderedHistoryKey = '';
     let renderedTail = {};
     let renderedChrome = {};
+    const sessionDrafts = new Map();
     const renderedMessages = new Map();
     const expandedToolIds = new Set();
     const loadingToolRequests = new Map();
@@ -364,6 +396,66 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       if (className) value.className = className;
       if (text !== undefined) value.textContent = text;
       return value;
+    }
+
+    function relativeSessionTime(value) {
+      const elapsed = Math.max(0, Date.now() - Number(value || 0));
+      const minutes = Math.floor(elapsed / 60000);
+      if (minutes < 1) return 'Just now';
+      if (minutes < 60) return minutes + 'm ago';
+      const hours = Math.floor(minutes / 60);
+      if (hours < 24) return hours + 'h ago';
+      const days = Math.floor(hours / 24);
+      return days === 1 ? 'Yesterday' : days + 'd ago';
+    }
+    function closeSessionMenu(focusTrigger) {
+      sessionMenuOpen = false; sessionActionId = undefined;
+      elements.sessionSearch.value = '';
+      elements.sessionMenu.classList.add('hidden'); elements.sessionTrigger.setAttribute('aria-expanded', 'false');
+      if (focusTrigger) elements.sessionTrigger.focus();
+    }
+    function renderSessionCenter(current) {
+      const sessions = array(current.sessions);
+      const selected = sessions.find(session => session.id === current.sessionId);
+      elements.sessionTriggerTitle.textContent = selected ? selected.title : 'New conversation';
+      elements.sessionTrigger.title = selected ? selected.title : 'Project conversations';
+      elements.sessionList.replaceChildren();
+      const query = elements.sessionSearch.value.trim().toLocaleLowerCase();
+      const visible = sessions.filter(session => !query || string(session.title).toLocaleLowerCase().includes(query));
+      if (!visible.length) {
+        elements.sessionList.append(node('div', 'session-empty', query ? 'No matching conversations' : 'No conversations yet'));
+        return;
+      }
+      for (const session of visible) {
+        const row = node('div', 'session-row' + (session.id === current.sessionId ? ' active' : ''));
+        row.setAttribute('role', 'option'); row.setAttribute('aria-selected', String(session.id === current.sessionId));
+        const main = node('button', 'session-main'); main.type = 'button';
+        const indicator = node('span', 'session-indicator' + (session.running ? ' running' : session.unread ? ' unread' : ''));
+        indicator.title = session.running ? 'Running' : session.unread ? 'New activity' : '';
+        const title = node('span', 'session-name', string(session.title, 'New conversation'));
+        const meta = node('span', 'session-meta', session.running ? 'Running' : session.unread ? 'New activity' : relativeSessionTime(session.updatedAt));
+        main.append(indicator, title, meta);
+        main.addEventListener('click', () => {
+          if (state && state.sessionId) sessionDrafts.set(state.sessionId, elements.prompt.value);
+          closeSessionMenu(false);
+          if (!state || session.id !== state.sessionId) vscode.postMessage({ type: 'select-session', sessionId: session.id });
+        });
+        row.append(main);
+        if (!session.blank) {
+          const more = node('button', 'session-more', '…'); more.type = 'button'; more.title = 'Conversation actions'; more.setAttribute('aria-label', 'Actions for ' + string(session.title));
+          more.addEventListener('click', event => { event.stopPropagation(); sessionActionId = sessionActionId === session.id ? undefined : session.id; renderSessionCenter(current); });
+          row.append(more);
+          if (sessionActionId === session.id) {
+            const actions = node('div', 'session-actions');
+            const rename = node('button', 'session-action', 'Rename'); rename.type = 'button';
+            rename.addEventListener('click', () => { closeSessionMenu(false); vscode.postMessage({ type: 'rename-session', sessionId: session.id }); });
+            const archive = node('button', 'session-action danger', 'Archive'); archive.type = 'button';
+            archive.addEventListener('click', () => { closeSessionMenu(false); vscode.postMessage({ type: 'archive-session', sessionId: session.id }); });
+            actions.append(rename, archive); row.append(actions);
+          }
+        }
+        elements.sessionList.append(row);
+      }
     }
 
     function record(value) { return value && typeof value === 'object' && !Array.isArray(value) ? value : undefined; }
@@ -1345,7 +1437,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     }
     function renderConversation(current) {
       if (renderedSessionId !== current.sessionId) {
+        if (renderedSessionId) sessionDrafts.set(renderedSessionId, elements.prompt.value);
         renderedSessionId = current.sessionId; renderedMessages.clear(); elements.messages.replaceChildren();
+        elements.prompt.value = sessionDrafts.get(current.sessionId) || ''; resizePrompt();
         followConversationTail = true;
         renderedHistoryKey = ''; renderedTail = {}; expandedToolIds.clear();
         for (const request of loadingToolRequests.values()) clearTimeout(request.timer);
@@ -1394,11 +1488,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       if (renderedChrome.workspaceName !== current.workspaceName || renderedChrome.cwd !== current.cwd) {
         elements.workspace.textContent = current.workspaceName || 'Workspace'; elements.project.title = current.cwd ? 'DeepSeek project: ' + current.cwd : 'Choose DeepSeek project';
       }
-      if (renderedChrome.sessions !== current.sessions) {
-        elements.sessions.replaceChildren();
-        for (const session of current.sessions || []) { const option = new Option(session.title, session.id, false, session.id === current.sessionId); elements.sessions.append(option); }
-        if (!elements.sessions.childElementCount) elements.sessions.append(new Option('New conversation', ''));
-      } else if (elements.sessions.value !== current.sessionId) elements.sessions.value = current.sessionId;
+      if (renderedChrome.sessions !== current.sessions || renderedChrome.sessionId !== current.sessionId) renderSessionCenter(current);
       if (renderedChrome.models !== current.models) {
         elements.models.replaceChildren();
         for (const model of current.models || []) { const option = new Option(model.label, JSON.stringify({ provider: model.provider, model: model.model }), false, model.selected === true); elements.models.append(option); }
@@ -1411,12 +1501,12 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       if (renderedChrome.jobs !== current.jobs) renderJobs();
       renderConversation(current);
       const enabled = current.phase === 'ready' && current.routable !== false && Boolean(current.sessionId);
-      elements.prompt.disabled = !enabled; elements.attach.disabled = !enabled; elements.project.disabled = current.running === true; elements.newSession.disabled = current.phase !== 'ready'; elements.sessions.disabled = current.phase !== 'ready';
+      elements.prompt.disabled = !enabled; elements.attach.disabled = !enabled; elements.project.disabled = current.running === true; elements.newSession.disabled = current.phase !== 'ready'; elements.sessionTrigger.disabled = current.phase !== 'ready';
       elements.models.disabled = !enabled || !(current.models || []).length; elements.efforts.disabled = !enabled || !elements.efforts.options.length || elements.efforts.value === '';
       elements.cancel.classList.toggle('hidden', current.running !== true); elements.send.title = current.running ? 'Queue message (Enter) · Steer now (Cmd/Ctrl+Enter)' : 'Send (Enter)'; updateSend(); renderQueue();
       if (renderedChrome.commands !== current.commands || renderedChrome.skills !== current.skills || renderedChrome.permissions !== current.permissions) renderCommandMenu();
       renderedChrome = {
-        workspaceName: current.workspaceName, cwd: current.cwd, sessions: current.sessions, models: current.models,
+        workspaceName: current.workspaceName, cwd: current.cwd, sessions: current.sessions, sessionId: current.sessionId, models: current.models,
         agentPreset: current.agentPreset, permissions: current.permissions, plan: current.plan, running: current.running,
         phase: current.phase, usage: current.usage, jobs: current.jobs, commands: current.commands, skills: current.skills,
       };
@@ -1465,9 +1555,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     function selectionFor(model, reasoningEffort) { return { provider: model.provider, model: model.model, ...(reasoningEffort ? { reasoningEffort } : {}) }; }
     function send(mode) {
       const text = elements.prompt.value.trim(); if ((!text && !draftImages.length) || !state || state.phase !== 'ready') return;
-      vscode.postMessage({ type: 'send', text, mode: mode || 'queue' }); elements.prompt.value = ''; commandIndex = 0; resetPrompt();
+      vscode.postMessage({ type: 'send', text, mode: mode || 'queue' }); elements.prompt.value = ''; sessionDrafts.set(state.sessionId, ''); commandIndex = 0; resetPrompt();
     }
-    elements.prompt.addEventListener('input', () => { policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false'); commandIndex = 0; mentionIndex = 0; elements.prompt.placeholder = 'Ask DeepSeek about this project'; resizePrompt(); renderCommandMenu(); requestMentions(); });
+    elements.prompt.addEventListener('input', () => { if (state && state.sessionId) sessionDrafts.set(state.sessionId, elements.prompt.value); policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false'); commandIndex = 0; mentionIndex = 0; elements.prompt.placeholder = 'Ask DeepSeek about this project'; resizePrompt(); renderCommandMenu(); requestMentions(); });
     elements.prompt.addEventListener('click', () => { policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false'); requestMentions(); });
     elements.prompt.addEventListener('keydown', event => {
       if (policyMenuOpen && event.key === 'Escape') { event.preventDefault(); policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false'); return; }
@@ -1497,7 +1587,15 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     });
     elements.project.addEventListener('click', () => vscode.postMessage({ type: 'choose-workspace' }));
     elements.githubStar.addEventListener('click', () => vscode.postMessage({ type: 'open-link', href: 'https://github.com/Lixxx1/dsh-vscode' }));
-    elements.newSession.addEventListener('click', () => vscode.postMessage({ type: 'new-session' })); elements.sessions.addEventListener('change', () => vscode.postMessage({ type: 'select-session', sessionId: elements.sessions.value }));
+    elements.sessionTrigger.addEventListener('click', event => {
+      event.stopPropagation();
+      if (sessionMenuOpen) { closeSessionMenu(false); return; }
+      sessionMenuOpen = true; sessionActionId = undefined; elements.sessionMenu.classList.remove('hidden'); elements.sessionTrigger.setAttribute('aria-expanded', 'true');
+      renderSessionCenter(state || { sessions: [] }); requestAnimationFrame(() => elements.sessionSearch.focus());
+    });
+    elements.sessionSearch.addEventListener('input', () => { sessionActionId = undefined; if (state) renderSessionCenter(state); });
+    elements.sessionMenu.addEventListener('click', event => event.stopPropagation());
+    elements.newSession.addEventListener('click', () => { if (state && state.sessionId) sessionDrafts.set(state.sessionId, elements.prompt.value); closeSessionMenu(false); vscode.postMessage({ type: 'new-session' }); });
     elements.models.addEventListener('change', () => {
       if (!elements.models.value) return; const selected = JSON.parse(elements.models.value); const model = (state.models || []).find(item => item.provider === selected.provider && item.model === selected.model); if (!model) return;
       renderEfforts(model); const effort = model.defaultReasoningEffort || (model.reasoningEfforts && model.reasoningEfforts[0] && model.reasoningEfforts[0].id); if (effort) elements.efforts.value = effort;
@@ -1514,9 +1612,12 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       if (jobsOpen && !elements.jobsMenu.contains(event.target) && !elements.jobsTrigger.contains(event.target)) {
         jobsOpen = false; elements.jobsMenu.classList.add('hidden'); elements.jobsTrigger.setAttribute('aria-expanded', 'false'); renderJobs();
       }
+      if (sessionMenuOpen && !elements.sessionControl.contains(event.target)) closeSessionMenu(false);
     });
     document.addEventListener('keydown', event => {
-      if (event.key === 'Escape' && usageOpen) {
+      if (event.key === 'Escape' && sessionMenuOpen) {
+        event.preventDefault(); closeSessionMenu(true);
+      } else if (event.key === 'Escape' && usageOpen) {
         usageOpen = false; elements.usagePanel.classList.add('hidden'); elements.usageTrigger.setAttribute('aria-expanded', 'false'); elements.usageTrigger.focus();
       }
     });
@@ -1551,7 +1652,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       }
       if (event.data.type === 'focus-prompt') elements.prompt.focus();
       if (event.data.type === 'set-prompt' && typeof event.data.text === 'string') {
-        elements.prompt.value = event.data.text; resizePrompt(); requestMentions(); renderCommandMenu(); elements.prompt.focus();
+        elements.prompt.value = event.data.text; if (state && state.sessionId) sessionDrafts.set(state.sessionId, event.data.text); resizePrompt(); requestMentions(); renderCommandMenu(); elements.prompt.focus();
         const cursor = elements.prompt.value.length; elements.prompt.setSelectionRange(cursor, cursor);
       }
     });

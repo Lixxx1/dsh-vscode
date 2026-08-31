@@ -22,6 +22,18 @@ describe('chat webview', () => {
     expect(html).toContain("href: 'https://github.com/Lixxx1/dsh-vscode'")
   })
 
+  it('uses a searchable session center with official rename and archive actions', () => {
+    const webview = { cspSource: 'vscode-webview:' } as vscode.Webview
+    const mark = { toString: () => 'vscode-resource:/deepseek.svg' } as vscode.Uri
+    const html = chatHtml(webview, mark)
+
+    expect(html).toContain('placeholder="Search conversations"')
+    expect(html).toContain("type: 'rename-session'")
+    expect(html).toContain("type: 'archive-session'")
+    expect(html).toContain('const sessionDrafts = new Map()')
+    expect(html).not.toContain('<select id="sessions"')
+  })
+
   it('offers actionable setup states instead of a generic reconnect loop', () => {
     const webview = { cspSource: 'vscode-webview:' } as vscode.Webview
     const mark = { toString: () => 'vscode-resource:/deepseek.svg' } as vscode.Uri

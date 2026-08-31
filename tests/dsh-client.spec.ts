@@ -48,6 +48,35 @@ describe('DshClient queue protocol', () => {
     ])
   })
 
+  it('uses the official session rename and workspace archive RPCs', async () => {
+    const requests: Array<{ method: string; payload: unknown }> = []
+    vi.stubGlobal('fetch', vi.fn(async (_url: URL, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body)) as { rpcId: string; method: string; payload: unknown }
+      requests.push({ method: request.method, payload: request.payload })
+      const value = request.method === 'workspace.list'
+        ? { archivedSessionIds: ['archived-1'] }
+        : request.method === 'workspace.archiveSession'
+          ? { archivedSessionIds: ['archived-1', 'session-1'] }
+          : { title: 'Renamed', seq: 12 }
+      return new Response(JSON.stringify({
+        type: 'server-response',
+        rpcId: request.rpcId,
+        result: { ok: true, value },
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }))
+    const client = new DshClient(new URL('http://127.0.0.1:31415'))
+
+    await expect(client.listWorkspaces()).resolves.toEqual({ archivedSessionIds: ['archived-1'] })
+    await expect(client.renameSession('session-1', 'Renamed')).resolves.toMatchObject({ title: 'Renamed' })
+    await expect(client.archiveSession('session-1')).resolves.toEqual({ archivedSessionIds: ['archived-1', 'session-1'] })
+
+    expect(requests).toEqual([
+      { method: 'workspace.list', payload: {} },
+      { method: 'session.rename', payload: { sessionId: 'session-1', title: 'Renamed' } },
+      { method: 'workspace.archiveSession', payload: { sessionId: 'session-1' } },
+    ])
+  })
+
   it('reads the official runtime plugin inventory without inventing a management RPC', async () => {
     const requests: Array<{ method: string; payload: unknown }> = []
     vi.stubGlobal('fetch', vi.fn(async (_url: URL, init?: RequestInit) => {
