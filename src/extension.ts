@@ -1109,9 +1109,11 @@ class DshChatController implements vscode.Disposable {
   }
 }
 
+type DraftImage = PromptImage & { id: string }
+
 class DshSurface implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[]
-  private readonly draftImages: Array<PromptImage & { id: string }> = []
+  private readonly draftImagesBySession = new Map<string, DraftImage[]>()
   private ready = false
   private pendingFocus = false
   private pendingPrompt: string | undefined
@@ -1209,6 +1211,8 @@ class DshSurface implements vscode.Disposable {
   }
 
   private async chooseImages(): Promise<void> {
+    const sessionId = this.controller.state.sessionId
+    if (sessionId === '') return
     const selected = await vscode.window.showOpenDialog({
       title: 'Attach images to the DeepSeek prompt',
       canSelectFiles: true,
@@ -1218,7 +1222,7 @@ class DshSurface implements vscode.Disposable {
     })
     if (selected === undefined) return
 
-    const incoming: Array<PromptImage & { id: string }> = []
+    const incoming: DraftImage[] = []
     for (const uri of selected) {
       const mediaType = imageMediaType(uri.fsPath)
       if (mediaType === undefined) continue
@@ -1233,9 +1237,10 @@ class DshSurface implements vscode.Disposable {
     }
     if (incoming.length === 0) return
 
+    const draftImages = this.draftImagesFor(sessionId)
     // Answer with the runtime's own bounds before a rejected prompt spends the upload.
     const rejection = rejectImageAttachments(
-      this.draftImages.map(candidateOf),
+      draftImages.map(candidateOf),
       incoming.map(candidateOf),
       this.controller.state.imageLimits,
     )
@@ -1244,8 +1249,8 @@ class DshSurface implements vscode.Disposable {
       return
     }
 
-    this.draftImages.push(...incoming)
-    await this.publishDraftImages()
+    draftImages.push(...incoming)
+    await this.publishDraftImages(sessionId)
   }
 
   private async chooseWorkspace(): Promise<void> {
@@ -1286,10 +1291,19 @@ class DshSurface implements vscode.Disposable {
     }
   }
 
-  private async publishDraftImages(): Promise<void> {
+  private draftImagesFor(sessionId: string): DraftImage[] {
+    const existing = this.draftImagesBySession.get(sessionId)
+    if (existing !== undefined) return existing
+    const created: DraftImage[] = []
+    this.draftImagesBySession.set(sessionId, created)
+    return created
+  }
+
+  private async publishDraftImages(sessionId: string): Promise<void> {
     await this.webview.postMessage({
       type: 'draft-images',
-      images: this.draftImages.map(image => ({ id: image.id, name: image.name, mediaType: image.mediaType })),
+      sessionId,
+      images: this.draftImagesFor(sessionId).map(image => ({ id: image.id, name: image.name, mediaType: image.mediaType })),
     })
   }
 
@@ -1384,6 +1398,9 @@ class DshSurface implements vscode.Disposable {
           return
         case 'send':
           if (typeof value.text === 'string') {
+            const sessionId = this.controller.state.sessionId
+            if (sessionId === '') return
+            const draftImages = this.draftImagesFor(sessionId)
             if (value.text.trim() === '/permission danger-full-access') {
               const confirmed = await vscode.window.showWarningMessage(
                 'Enable Full access?',
@@ -1403,7 +1420,7 @@ class DshSurface implements vscode.Disposable {
             // where the whole draft can be measured against what the runtime states.
             const rejection = rejectImageAttachments(
               [],
-              this.draftImages.map(candidateOf),
+              draftImages.map(candidateOf),
               this.controller.state.imageLimits,
             )
             if (rejection !== undefined) {
@@ -1411,10 +1428,11 @@ class DshSurface implements vscode.Disposable {
               this.setPrompt(value.text)
               return
             }
-            await this.controller.send(value.text, this.draftImages, ideContext, mode)
-            this.draftImages.length = 0
+            if (this.controller.state.sessionId !== sessionId) return
+            await this.controller.send(value.text, draftImages, ideContext, mode)
+            this.draftImagesBySession.delete(sessionId)
             if (carriesIdeContext) this.editorContext.clearPinned()
-            await this.publishDraftImages()
+            await this.publishDraftImages(sessionId)
           }
           return
         case 'select-permission':
@@ -1463,9 +1481,12 @@ class DshSurface implements vscode.Disposable {
           return
         case 'remove-attachment':
           if (typeof value.id === 'string') {
-            const index = this.draftImages.findIndex(image => image.id === value.id)
-            if (index >= 0) this.draftImages.splice(index, 1)
-            await this.publishDraftImages()
+            const sessionId = this.controller.state.sessionId
+            if (sessionId === '') return
+            const draftImages = this.draftImagesFor(sessionId)
+            const index = draftImages.findIndex(image => image.id === value.id)
+            if (index >= 0) draftImages.splice(index, 1)
+            await this.publishDraftImages(sessionId)
           }
           return
         case 'cancel': await this.controller.cancel(); return
@@ -1562,7 +1583,7 @@ function base64Bytes(data: string): number {
 }
 
 /** Measure a draft attachment against the runtime's published upload bounds. */
-function candidateOf(image: PromptImage & { id: string }): ImageCandidate {
+function candidateOf(image: DraftImage): ImageCandidate {
   return {
     mediaType: image.mediaType,
     bytes: base64Bytes(image.data),

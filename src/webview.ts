@@ -329,6 +329,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     };
     let state;
     let draftImages = [];
+    const draftImagesBySession = new Map();
     let ideContext = { pinned: [] };
     let commandIndex = 0;
     let mentionIndex = 0;
@@ -1440,6 +1441,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
         if (renderedSessionId) sessionDrafts.set(renderedSessionId, elements.prompt.value);
         renderedSessionId = current.sessionId; renderedMessages.clear(); elements.messages.replaceChildren();
         elements.prompt.value = sessionDrafts.get(current.sessionId) || ''; resizePrompt();
+        draftImages = draftImagesBySession.get(current.sessionId) || []; renderAttachments();
         followConversationTail = true;
         renderedHistoryKey = ''; renderedTail = {}; expandedToolIds.clear();
         for (const request of loadingToolRequests.values()) clearTimeout(request.timer);
@@ -1644,7 +1646,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
           }
         }
       }
-      if (event.data.type === 'draft-images') { draftImages = event.data.images || []; renderAttachments(); }
+      if (event.data.type === 'draft-images' && typeof event.data.sessionId === 'string') {
+        const images = event.data.images || []; draftImagesBySession.set(event.data.sessionId, images);
+        if (state && event.data.sessionId === state.sessionId) { draftImages = images; renderAttachments(); }
+      }
       if (event.data.type === 'ide-context') { ideContext = event.data.state || { pinned: [] }; renderIdeContext(); }
       if (event.data.type === 'mention-suggestions' && event.data.requestId === mentionRequestId) {
         const mention = currentMentionQuery();
