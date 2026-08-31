@@ -32,6 +32,8 @@ describe('chat webview', () => {
     expect(html).toContain("type: 'archive-session'")
     expect(html).toContain('const sessionDrafts = new Map()')
     expect(html).toContain('const draftImagesBySession = new Map()')
+    expect(html).toContain('const pendingDraftSends = new Map()')
+    expect(html).toContain("event.data.type === 'restore-draft'")
     expect(html).not.toContain('<select id="sessions"')
   })
 

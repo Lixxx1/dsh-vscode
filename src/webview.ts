@@ -354,6 +354,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     let renderedTail = {};
     let renderedChrome = {};
     const sessionDrafts = new Map();
+    const pendingDraftSends = new Map();
+    let draftSendRequestId = 0;
     const renderedMessages = new Map();
     const expandedToolIds = new Set();
     const loadingToolRequests = new Map();
@@ -1552,12 +1554,17 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
         : state.messages;
       scheduleRender({ ...state, ...patch, messages });
     }
-    function updateSend() { elements.send.disabled = !state || state.phase !== 'ready' || (elements.prompt.value.trim() === '' && draftImages.length === 0); }
+    function updateSend() {
+      const pending = state && [...pendingDraftSends.values()].some(draft => draft.sessionId === state.sessionId);
+      elements.send.disabled = !state || state.phase !== 'ready' || pending || (elements.prompt.value.trim() === '' && draftImages.length === 0);
+    }
     function resizePrompt() { elements.prompt.style.height = 'auto'; elements.prompt.style.height = Math.min(elements.prompt.scrollHeight, 220) + 'px'; updateSend(); }
     function selectionFor(model, reasoningEffort) { return { provider: model.provider, model: model.model, ...(reasoningEffort ? { reasoningEffort } : {}) }; }
     function send(mode) {
       const text = elements.prompt.value.trim(); if ((!text && !draftImages.length) || !state || state.phase !== 'ready') return;
-      vscode.postMessage({ type: 'send', text, mode: mode || 'queue' }); elements.prompt.value = ''; sessionDrafts.set(state.sessionId, ''); commandIndex = 0; resetPrompt();
+      const requestId = ++draftSendRequestId; const sessionId = state.sessionId;
+      pendingDraftSends.set(requestId, { sessionId, text });
+      vscode.postMessage({ type: 'send', sessionId, requestId, text, mode: mode || 'queue' }); elements.prompt.value = ''; sessionDrafts.set(sessionId, ''); commandIndex = 0; resetPrompt();
     }
     elements.prompt.addEventListener('input', () => { if (state && state.sessionId) sessionDrafts.set(state.sessionId, elements.prompt.value); policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false'); commandIndex = 0; mentionIndex = 0; elements.prompt.placeholder = 'Ask DeepSeek about this project'; resizePrompt(); renderCommandMenu(); requestMentions(); });
     elements.prompt.addEventListener('click', () => { policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false'); requestMentions(); });
@@ -1649,6 +1656,20 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       if (event.data.type === 'draft-images' && typeof event.data.sessionId === 'string') {
         const images = event.data.images || []; draftImagesBySession.set(event.data.sessionId, images);
         if (state && event.data.sessionId === state.sessionId) { draftImages = images; renderAttachments(); }
+      }
+      if ((event.data.type === 'draft-sent' || event.data.type === 'restore-draft') && typeof event.data.requestId === 'number') {
+        const pending = pendingDraftSends.get(event.data.requestId);
+        if (!pending || pending.sessionId !== event.data.sessionId) return;
+        pendingDraftSends.delete(event.data.requestId);
+        if (event.data.type === 'restore-draft') {
+          const existing = sessionDrafts.get(pending.sessionId) || '';
+          const restored = existing === '' || existing === pending.text ? pending.text : pending.text + '\\n' + existing;
+          sessionDrafts.set(pending.sessionId, restored);
+          if (state && state.sessionId === pending.sessionId) {
+            elements.prompt.value = restored; resizePrompt(); requestMentions(); renderCommandMenu();
+          }
+        }
+        updateSend();
       }
       if (event.data.type === 'ide-context') { ideContext = event.data.state || { pinned: [] }; renderIdeContext(); }
       if (event.data.type === 'mention-suggestions' && event.data.requestId === mentionRequestId) {

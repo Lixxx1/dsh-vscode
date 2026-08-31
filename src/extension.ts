@@ -1307,6 +1307,14 @@ class DshSurface implements vscode.Disposable {
     })
   }
 
+  private async restoreDraft(sessionId: string, requestId: number, text: string): Promise<void> {
+    await this.webview.postMessage({ type: 'restore-draft', sessionId, requestId, text })
+  }
+
+  private async acknowledgeDraft(sessionId: string, requestId: number): Promise<void> {
+    await this.webview.postMessage({ type: 'draft-sent', sessionId, requestId })
+  }
+
   private acceptMessage(message: unknown): void {
     if (typeof message !== 'object' || message === null || !('type' in message)) return
     const value = message as Record<string, unknown>
@@ -1398,8 +1406,15 @@ class DshSurface implements vscode.Disposable {
           return
         case 'send':
           if (typeof value.text === 'string') {
-            const sessionId = this.controller.state.sessionId
-            if (sessionId === '') return
+            const sessionId = typeof value.sessionId === 'string' ? value.sessionId : ''
+            const requestId = typeof value.requestId === 'number' && Number.isSafeInteger(value.requestId)
+              ? value.requestId
+              : -1
+            if (sessionId === '' || requestId < 0) return
+            if (this.controller.state.sessionId !== sessionId) {
+              await this.restoreDraft(sessionId, requestId, value.text)
+              return
+            }
             const draftImages = this.draftImagesFor(sessionId)
             if (value.text.trim() === '/permission danger-full-access') {
               const confirmed = await vscode.window.showWarningMessage(
@@ -1410,11 +1425,24 @@ class DshSurface implements vscode.Disposable {
                 },
                 'Enable Full Access',
               )
-              if (confirmed !== 'Enable Full Access') return
+              if (confirmed !== 'Enable Full Access') {
+                await this.restoreDraft(sessionId, requestId, value.text)
+                return
+              }
             }
             const slash = this.controller.slashRoute(value.text)
             const carriesIdeContext = slash.kind === 'prompt'
-            const ideContext = carriesIdeContext ? await this.editorContext.snapshotForPrompt(value.text) : undefined
+            let ideContext: IdeContextSnapshot | undefined
+            try {
+              ideContext = carriesIdeContext ? await this.editorContext.snapshotForPrompt(value.text) : undefined
+            } catch (error) {
+              await this.restoreDraft(sessionId, requestId, value.text)
+              throw error
+            }
+            if (this.controller.state.sessionId !== sessionId) {
+              await this.restoreDraft(sessionId, requestId, value.text)
+              return
+            }
             const mode: PromptMode = value.mode === 'steer' ? 'steer' : 'queue'
             // Limits can land after the picker ran, so the send is the last point
             // where the whole draft can be measured against what the runtime states.
@@ -1425,11 +1453,20 @@ class DshSurface implements vscode.Disposable {
             )
             if (rejection !== undefined) {
               void vscode.window.showWarningMessage(rejection)
-              this.setPrompt(value.text)
+              await this.restoreDraft(sessionId, requestId, value.text)
               return
             }
-            if (this.controller.state.sessionId !== sessionId) return
-            await this.controller.send(value.text, draftImages, ideContext, mode)
+            if (this.controller.state.sessionId !== sessionId) {
+              await this.restoreDraft(sessionId, requestId, value.text)
+              return
+            }
+            try {
+              await this.controller.send(value.text, draftImages, ideContext, mode)
+            } catch (error) {
+              await this.restoreDraft(sessionId, requestId, value.text)
+              throw error
+            }
+            await this.acknowledgeDraft(sessionId, requestId)
             this.draftImagesBySession.delete(sessionId)
             if (carriesIdeContext) this.editorContext.clearPinned()
             await this.publishDraftImages(sessionId)
