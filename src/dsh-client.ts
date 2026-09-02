@@ -154,6 +154,18 @@ export class DshClient {
     return this.call('session.list', {})
   }
 
+  listWorkspaces(): Promise<{ archivedSessionIds?: string[] }> {
+    return this.call('workspace.list', {})
+  }
+
+  renameSession(sessionId: string, title: string): Promise<{ title: string; seq?: number }> {
+    return this.call('session.rename', { sessionId, title })
+  }
+
+  archiveSession(sessionId: string): Promise<{ archivedSessionIds: string[] }> {
+    return this.call('workspace.archiveSession', { sessionId })
+  }
+
   createSession(cwd: string): Promise<{ sessionId: string; agentPreset?: string }> {
     return this.call('session.create', { cwd })
   }

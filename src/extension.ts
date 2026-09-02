@@ -64,13 +64,9 @@ import {
   messagesPatchForWebview,
   type ConversationMessagesPatch,
 } from './chat-state-patch.js'
+import { sessionItems, type SessionItem } from './session-center.js'
 
 let activeRuntime: DshRuntime | undefined
-
-interface SessionItem {
-  id: string
-  title: string
-}
 
 interface ReasoningEffortItem {
   id: string
@@ -212,11 +208,6 @@ function initialState(cwd: string): ChatViewState {
   }
 }
 
-function titleOf(summary: SessionSummary): string {
-  const value = summary.projections?.values?.title
-  return typeof value === 'string' && value.trim() !== '' ? value : 'New conversation'
-}
-
 class DshChatController implements vscode.Disposable {
   private readonly changes = new vscode.EventEmitter<ChatViewState>()
   private readonly projector = new ConversationProjector()
@@ -231,6 +222,10 @@ class DshChatController implements vscode.Disposable {
   private readonly attachmentLoads = new Map<string, Promise<void>>()
   private readonly jobsBySession = new Map<string, JobItem[]>()
   private historyEntries: HistoryEntry[] = []
+  private archivedSessionIds = new Set<string>()
+  private readonly unreadSessionIds: Set<string>
+
+  private static readonly unreadStorageKey = 'deepseekHarness.unreadSessions'
 
   readonly onDidChangeState = this.changes.event
 
@@ -239,9 +234,11 @@ class DshChatController implements vscode.Disposable {
     private readonly output: vscode.OutputChannel,
     private readonly dirtyFiles: DirtyFileGuard,
     private readonly diffReviews: DiffReviewManager,
+    private readonly workspaceState: vscode.Memento,
     private _cwd: string,
   ) {
     this._state = initialState(_cwd)
+    this.unreadSessionIds = new Set(workspaceState.get<string[]>(DshChatController.unreadStorageKey, []))
   }
 
   get cwd(): string {
@@ -368,8 +365,30 @@ class DshChatController implements vscode.Disposable {
   }
 
   async selectSession(sessionId: string): Promise<void> {
-    if (!this.summaries.some(summary => summary.sessionId === sessionId && summary.cwd === this.cwd)) return
+    if (!this.summaries.some(summary => summary.sessionId === sessionId && summary.cwd === this.cwd)
+      || this.archivedSessionIds.has(sessionId)) return
+    this.markRead(sessionId)
     await this.loadSession(sessionId)
+  }
+
+  async renameSession(sessionId: string, title: string): Promise<void> {
+    const summary = this.summaries.find(item => item.sessionId === sessionId)
+    const normalized = title.trim()
+    if (summary === undefined || summary.blank || normalized === '') return
+    const result = await this.requireClient().renameSession(sessionId, normalized)
+    summary.projections = { values: { ...summary.projections?.values, title: result.title } }
+    summary.updatedAt = Date.now()
+    this.publishSessionItems()
+  }
+
+  async archiveSession(sessionId: string): Promise<void> {
+    const summary = this.summaries.find(item => item.sessionId === sessionId)
+    if (summary === undefined || summary.blank) return
+    const result = await this.requireClient().archiveSession(sessionId)
+    this.archivedSessionIds = new Set(result.archivedSessionIds)
+    this.unreadSessionIds.delete(sessionId)
+    this.persistUnreadSessions()
+    await this.loadSessions()
   }
 
   async loadOlderHistory(): Promise<void> {
@@ -568,24 +587,64 @@ class DshChatController implements vscode.Disposable {
 
   private async loadSessions(preferredId?: string): Promise<void> {
     const client = this.requireClient()
-    const { items } = await client.listSessions()
+    const [{ items }] = await Promise.all([
+      client.listSessions(),
+      this.refreshArchivedSessions(client),
+    ])
     this.summaries = items.filter(summary => summary.cwd === this.cwd && summary.origin !== 'subagent')
-    const currentStillExists = this.summaries.some(summary => summary.sessionId === this._state.sessionId)
-    const visible = this.summaries.filter(summary => !summary.blank || summary.sessionId === preferredId)
-    const selectedId = preferredId
-      ?? (currentStillExists ? this._state.sessionId : undefined)
-      ?? visible[0]?.sessionId
-      ?? this.summaries[0]?.sessionId
+    const selectable = this.summaries.filter(summary => !this.archivedSessionIds.has(summary.sessionId))
+    const preferredExists = preferredId === undefined
+      ? undefined
+      : selectable.some(summary => summary.sessionId === preferredId) ? preferredId : undefined
+    const currentExists = selectable.some(summary => summary.sessionId === this._state.sessionId)
+    const selectedId = preferredExists
+      ?? (currentExists ? this._state.sessionId : undefined)
+      ?? [...selectable].sort((left, right) => right.updatedAt - left.updatedAt).find(summary => !summary.blank)?.sessionId
+      ?? selectable[0]?.sessionId
 
-    this.publish({
-      sessions: visible.map(summary => ({ id: summary.sessionId, title: titleOf(summary) })),
-    })
+    if (selectedId !== undefined && this.unreadSessionIds.delete(selectedId)) this.persistUnreadSessions()
+    this.publish({ sessions: sessionItems(this.summaries, this.archivedSessionIds, selectedId, this.unreadSessionIds) })
     if (selectedId === undefined) {
       const created = await client.createSession(this.cwd)
       await this.loadSessions(created.sessionId)
       return
     }
     await this.loadSession(selectedId)
+  }
+
+  private async refreshArchivedSessions(client: DshClient): Promise<void> {
+    try {
+      const result = await client.listWorkspaces()
+      this.archivedSessionIds = new Set(Array.isArray(result.archivedSessionIds) ? result.archivedSessionIds : [])
+    } catch (error) {
+      this.output.appendLine(`[sessions] Archive state is unavailable in this DSH version: ${error instanceof Error ? error.message : String(error)}`)
+      this.archivedSessionIds.clear()
+    }
+  }
+
+  private publishSessionItems(): void {
+    this.publish({
+      sessions: sessionItems(this.summaries, this.archivedSessionIds, this._state.sessionId, this.unreadSessionIds),
+    })
+  }
+
+  private markRead(sessionId: string): void {
+    if (!this.unreadSessionIds.delete(sessionId)) return
+    this.persistUnreadSessions()
+    this.publishSessionItems()
+  }
+
+  private markUnread(sessionId: string): void {
+    if (this.unreadSessionIds.has(sessionId)) return
+    this.unreadSessionIds.add(sessionId)
+    this.persistUnreadSessions()
+  }
+
+  private persistUnreadSessions(): void {
+    void this.workspaceState.update(DshChatController.unreadStorageKey, [...this.unreadSessionIds])
+      .then(undefined, error => {
+        this.output.appendLine(`[sessions] Could not persist unread state: ${error instanceof Error ? error.message : String(error)}`)
+      })
   }
 
   private async loadSession(sessionId: string): Promise<void> {
@@ -722,7 +781,11 @@ class DshChatController implements vscode.Disposable {
         const dshEvent = event as DshEvent
         if (dshEvent.type === 'user/message') {
           const summary = this.summaries.find(item => item.sessionId === sessionId)
-          if (summary !== undefined) summary.blank = false
+          if (summary !== undefined) {
+            summary.blank = false
+            summary.updatedAt = Date.now()
+            this.publishSessionItems()
+          }
           this.publish({ agentPreset: lockAgentPresetState(this._state.agentPreset) })
         }
         if (dshEvent.type === 'agent-preset/selected') {
@@ -854,9 +917,8 @@ class DshChatController implements vscode.Disposable {
         summary.projections = { values: { ...summary.projections?.values, [payload.key]: payload.value } }
       }
       if (typeof payload.value === 'string' && payload.key === 'title') {
-        this.publish({
-          sessions: this._state.sessions.map(item => item.id === sessionId ? { ...item, title: payload.value as string } : item),
-        })
+        if (summary !== undefined) summary.updatedAt = Date.now()
+        this.publishSessionItems()
       }
       if (payload.key === 'imageLimits' && sessionId === this._state.sessionId) {
         this.publish({ imageLimits: imageLimitsOf(payload.value) })
@@ -880,8 +942,22 @@ class DshChatController implements vscode.Disposable {
     if (frame.channel === 'host' && type === 'host/session-status') {
       const running = payload.running === true
       const summary = this.summaries.find(item => item.sessionId === sessionId)
+      const wasRunning = summary?.running === true
       if (summary !== undefined) summary.running = running
+      if (wasRunning && !running && sessionId !== this._state.sessionId) this.markUnread(sessionId)
       if (sessionId === this._state.sessionId) this.publish({ running })
+      this.publishSessionItems()
+      return
+    }
+
+    if (frame.channel === 'host' && type === 'host/archived-sessions-changed') {
+      const archived = Array.isArray(payload.archivedSessionIds)
+        ? payload.archivedSessionIds.filter((value): value is string => typeof value === 'string')
+        : []
+      this.archivedSessionIds = new Set(archived)
+      for (const id of archived) this.unreadSessionIds.delete(id)
+      this.persistUnreadSessions()
+      void this.loadSessions().catch(error => { this.report(error) })
       return
     }
 
@@ -1033,9 +1109,11 @@ class DshChatController implements vscode.Disposable {
   }
 }
 
+type DraftImage = PromptImage & { id: string }
+
 class DshSurface implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[]
-  private readonly draftImages: Array<PromptImage & { id: string }> = []
+  private readonly draftImagesBySession = new Map<string, DraftImage[]>()
   private ready = false
   private pendingFocus = false
   private pendingPrompt: string | undefined
@@ -1133,6 +1211,8 @@ class DshSurface implements vscode.Disposable {
   }
 
   private async chooseImages(): Promise<void> {
+    const sessionId = this.controller.state.sessionId
+    if (sessionId === '') return
     const selected = await vscode.window.showOpenDialog({
       title: 'Attach images to the DeepSeek prompt',
       canSelectFiles: true,
@@ -1142,7 +1222,7 @@ class DshSurface implements vscode.Disposable {
     })
     if (selected === undefined) return
 
-    const incoming: Array<PromptImage & { id: string }> = []
+    const incoming: DraftImage[] = []
     for (const uri of selected) {
       const mediaType = imageMediaType(uri.fsPath)
       if (mediaType === undefined) continue
@@ -1157,9 +1237,10 @@ class DshSurface implements vscode.Disposable {
     }
     if (incoming.length === 0) return
 
+    const draftImages = this.draftImagesFor(sessionId)
     // Answer with the runtime's own bounds before a rejected prompt spends the upload.
     const rejection = rejectImageAttachments(
-      this.draftImages.map(candidateOf),
+      draftImages.map(candidateOf),
       incoming.map(candidateOf),
       this.controller.state.imageLimits,
     )
@@ -1168,8 +1249,8 @@ class DshSurface implements vscode.Disposable {
       return
     }
 
-    this.draftImages.push(...incoming)
-    await this.publishDraftImages()
+    draftImages.push(...incoming)
+    await this.publishDraftImages(sessionId)
   }
 
   private async chooseWorkspace(): Promise<void> {
@@ -1210,11 +1291,28 @@ class DshSurface implements vscode.Disposable {
     }
   }
 
-  private async publishDraftImages(): Promise<void> {
+  private draftImagesFor(sessionId: string): DraftImage[] {
+    const existing = this.draftImagesBySession.get(sessionId)
+    if (existing !== undefined) return existing
+    const created: DraftImage[] = []
+    this.draftImagesBySession.set(sessionId, created)
+    return created
+  }
+
+  private async publishDraftImages(sessionId: string): Promise<void> {
     await this.webview.postMessage({
       type: 'draft-images',
-      images: this.draftImages.map(image => ({ id: image.id, name: image.name, mediaType: image.mediaType })),
+      sessionId,
+      images: this.draftImagesFor(sessionId).map(image => ({ id: image.id, name: image.name, mediaType: image.mediaType })),
     })
+  }
+
+  private async restoreDraft(sessionId: string, requestId: number, text: string): Promise<void> {
+    await this.webview.postMessage({ type: 'restore-draft', sessionId, requestId, text })
+  }
+
+  private async acknowledgeDraft(sessionId: string, requestId: number): Promise<void> {
+    await this.webview.postMessage({ type: 'draft-sent', sessionId, requestId })
   }
 
   private acceptMessage(message: unknown): void {
@@ -1248,6 +1346,43 @@ class DshSurface implements vscode.Disposable {
         case 'select-session':
           if (typeof value.sessionId === 'string') await this.controller.selectSession(value.sessionId)
           return
+        case 'rename-session':
+          if (typeof value.sessionId === 'string') {
+            const session = this.controller.state.sessions.find(item => item.id === value.sessionId)
+            if (session === undefined || session.blank) return
+            const title = await vscode.window.showInputBox({
+              title: 'Rename conversation',
+              value: session.title,
+              prompt: 'Choose a title for this DeepSeek conversation',
+              validateInput: input => input.trim() === '' ? 'Enter a conversation title.' : undefined,
+            })
+            if (title === undefined) return
+            try {
+              await this.controller.renameSession(session.id, title)
+            } catch (error) {
+              const detail = error instanceof Error ? error.message : String(error)
+              await vscode.window.showErrorMessage(`Could not rename the conversation. ${detail} Update DSH if this method is unavailable.`)
+            }
+          }
+          return
+        case 'archive-session':
+          if (typeof value.sessionId === 'string') {
+            const session = this.controller.state.sessions.find(item => item.id === value.sessionId)
+            if (session === undefined || session.blank) return
+            const confirmed = await vscode.window.showWarningMessage(
+              `Archive “${session.title}”?`,
+              { modal: true, detail: 'This removes the conversation from this sidebar. Its DSH session data is not deleted.' },
+              'Archive',
+            )
+            if (confirmed !== 'Archive') return
+            try {
+              await this.controller.archiveSession(session.id)
+            } catch (error) {
+              const detail = error instanceof Error ? error.message : String(error)
+              await vscode.window.showErrorMessage(`Could not archive the conversation. ${detail} Update DSH if this method is unavailable.`)
+            }
+          }
+          return
         case 'load-history': await this.controller.loadOlderHistory(); return
         case 'load-tool-output':
           if (typeof value.messageId === 'string' && typeof value.requestId === 'number') {
@@ -1271,6 +1406,16 @@ class DshSurface implements vscode.Disposable {
           return
         case 'send':
           if (typeof value.text === 'string') {
+            const sessionId = typeof value.sessionId === 'string' ? value.sessionId : ''
+            const requestId = typeof value.requestId === 'number' && Number.isSafeInteger(value.requestId)
+              ? value.requestId
+              : -1
+            if (sessionId === '' || requestId < 0) return
+            if (this.controller.state.sessionId !== sessionId) {
+              await this.restoreDraft(sessionId, requestId, value.text)
+              return
+            }
+            const draftImages = this.draftImagesFor(sessionId)
             if (value.text.trim() === '/permission danger-full-access') {
               const confirmed = await vscode.window.showWarningMessage(
                 'Enable Full access?',
@@ -1280,28 +1425,51 @@ class DshSurface implements vscode.Disposable {
                 },
                 'Enable Full Access',
               )
-              if (confirmed !== 'Enable Full Access') return
+              if (confirmed !== 'Enable Full Access') {
+                await this.restoreDraft(sessionId, requestId, value.text)
+                return
+              }
             }
             const slash = this.controller.slashRoute(value.text)
             const carriesIdeContext = slash.kind === 'prompt'
-            const ideContext = carriesIdeContext ? await this.editorContext.snapshotForPrompt(value.text) : undefined
+            let ideContext: IdeContextSnapshot | undefined
+            try {
+              ideContext = carriesIdeContext ? await this.editorContext.snapshotForPrompt(value.text) : undefined
+            } catch (error) {
+              await this.restoreDraft(sessionId, requestId, value.text)
+              throw error
+            }
+            if (this.controller.state.sessionId !== sessionId) {
+              await this.restoreDraft(sessionId, requestId, value.text)
+              return
+            }
             const mode: PromptMode = value.mode === 'steer' ? 'steer' : 'queue'
             // Limits can land after the picker ran, so the send is the last point
             // where the whole draft can be measured against what the runtime states.
             const rejection = rejectImageAttachments(
               [],
-              this.draftImages.map(candidateOf),
+              draftImages.map(candidateOf),
               this.controller.state.imageLimits,
             )
             if (rejection !== undefined) {
               void vscode.window.showWarningMessage(rejection)
-              this.setPrompt(value.text)
+              await this.restoreDraft(sessionId, requestId, value.text)
               return
             }
-            await this.controller.send(value.text, this.draftImages, ideContext, mode)
-            this.draftImages.length = 0
+            if (this.controller.state.sessionId !== sessionId) {
+              await this.restoreDraft(sessionId, requestId, value.text)
+              return
+            }
+            try {
+              await this.controller.send(value.text, draftImages, ideContext, mode)
+            } catch (error) {
+              await this.restoreDraft(sessionId, requestId, value.text)
+              throw error
+            }
+            await this.acknowledgeDraft(sessionId, requestId)
+            this.draftImagesBySession.delete(sessionId)
             if (carriesIdeContext) this.editorContext.clearPinned()
-            await this.publishDraftImages()
+            await this.publishDraftImages(sessionId)
           }
           return
         case 'select-permission':
@@ -1350,9 +1518,12 @@ class DshSurface implements vscode.Disposable {
           return
         case 'remove-attachment':
           if (typeof value.id === 'string') {
-            const index = this.draftImages.findIndex(image => image.id === value.id)
-            if (index >= 0) this.draftImages.splice(index, 1)
-            await this.publishDraftImages()
+            const sessionId = this.controller.state.sessionId
+            if (sessionId === '') return
+            const draftImages = this.draftImagesFor(sessionId)
+            const index = draftImages.findIndex(image => image.id === value.id)
+            if (index >= 0) draftImages.splice(index, 1)
+            await this.publishDraftImages(sessionId)
           }
           return
         case 'cancel': await this.controller.cancel(); return
@@ -1449,7 +1620,7 @@ function base64Bytes(data: string): number {
 }
 
 /** Measure a draft attachment against the runtime's published upload bounds. */
-function candidateOf(image: PromptImage & { id: string }): ImageCandidate {
+function candidateOf(image: DraftImage): ImageCandidate {
   return {
     mediaType: image.mediaType,
     bytes: base64Bytes(image.data),
@@ -1591,7 +1762,7 @@ export function activate(context: vscode.ExtensionContext): void {
   }
   const cwd = workspace?.uri.fsPath ?? ''
   const diffReviews = new DiffReviewManager()
-  const controller = new DshChatController(runtime, output, new DirtyFileGuard(), diffReviews, cwd)
+  const controller = new DshChatController(runtime, output, new DirtyFileGuard(), diffReviews, context.workspaceState, cwd)
   const pluginManager = new DshPluginManager(context, controller, output)
   const editorContext = new EditorContextBridge(() => controller.cwd)
   const provider = new DshViewProvider(controller, output, editorContext, context.extensionUri)
