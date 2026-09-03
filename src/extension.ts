@@ -1517,7 +1517,19 @@ class DshSurface implements vscode.Disposable {
           return
         case 'attach': await this.chooseImages(); return
         case 'attach-images':
-          if (typeof value.sessionId === 'string') await this.addEncodedImages(value.sessionId, value.images)
+          if (typeof value.sessionId === 'string'
+            && typeof value.requestId === 'number'
+            && Number.isSafeInteger(value.requestId)) {
+            try {
+              await this.addEncodedImages(value.sessionId, value.images)
+            } finally {
+              await this.webview.postMessage({
+                type: 'attachments-added',
+                sessionId: value.sessionId,
+                requestId: value.requestId,
+              })
+            }
+          }
           return
         case 'attachment-error':
           if (typeof value.message === 'string') await vscode.window.showWarningMessage(value.message)

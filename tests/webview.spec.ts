@@ -46,9 +46,21 @@ describe('chat webview', () => {
     expect(script).toContain("if (!files.length) return;")
     expect(script).toContain("item.getAsFile()")
     expect(script).toContain("reader.readAsDataURL(file)")
-    expect(script).toContain("type: 'attach-images', sessionId, images")
+    expect(script).toContain("type: 'attach-images', sessionId, requestId, images")
     const pasteHandler = script.slice(script.indexOf("elements.prompt.addEventListener('paste'"))
     expect(pasteHandler.indexOf("if (!files.length) return;")).toBeLessThan(pasteHandler.indexOf('event.preventDefault();'))
+  })
+
+  it('blocks sending until the extension acknowledges pasted attachments', () => {
+    const webview = { cspSource: 'vscode-webview:' } as vscode.Webview
+    const mark = { toString: () => 'vscode-resource:/deepseek.svg' } as vscode.Uri
+    const script = /<script nonce="[^"]+">([\s\S]*?)<\/script>/.exec(chatHtml(webview, mark))?.[1] ?? ''
+
+    expect(script).toContain('const pendingAttachmentRequests = new Map()')
+    expect(script).toContain('pendingAttachmentRequests.set(requestId, { sessionId })')
+    expect(script).toContain("request => request.sessionId === sessionId)) return;")
+    expect(script).toContain("event.data.type === 'attachments-added'")
+    expect(script).toContain('pendingAttachmentRequests.delete(event.data.requestId)')
   })
 
   it('offers actionable setup states instead of a generic reconnect loop', () => {
