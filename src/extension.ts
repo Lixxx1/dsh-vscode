@@ -1235,6 +1235,11 @@ class DshSurface implements vscode.Disposable {
         name: path.basename(uri.fsPath),
       })
     }
+
+    await this.addDraftImages(sessionId, incoming)
+  }
+
+  private async addDraftImages(sessionId: string, incoming: readonly DraftImage[]): Promise<void> {
     if (incoming.length === 0) return
 
     const draftImages = this.draftImagesFor(sessionId)
@@ -1251,6 +1256,16 @@ class DshSurface implements vscode.Disposable {
 
     draftImages.push(...incoming)
     await this.publishDraftImages(sessionId)
+  }
+
+  private async addEncodedImages(sessionId: string, values: unknown): Promise<void> {
+    if (sessionId !== this.controller.state.sessionId || !Array.isArray(values)) return
+    const incoming: DraftImage[] = []
+    for (const value of values) {
+      const image = draftImageFromWebview(value)
+      if (image !== undefined) incoming.push(image)
+    }
+    await this.addDraftImages(sessionId, incoming)
   }
 
   private async chooseWorkspace(): Promise<void> {
@@ -1501,6 +1516,12 @@ class DshSurface implements vscode.Disposable {
           if (typeof value.agentPreset === 'string') await this.controller.selectAgentPreset(value.agentPreset)
           return
         case 'attach': await this.chooseImages(); return
+        case 'attach-images':
+          if (typeof value.sessionId === 'string') await this.addEncodedImages(value.sessionId, value.images)
+          return
+        case 'attachment-error':
+          if (typeof value.message === 'string') await vscode.window.showWarningMessage(value.message)
+          return
         case 'choose-workspace': await this.chooseWorkspace(); return
         case 'request-mentions':
           if (typeof value.requestId === 'number' && typeof value.query === 'string') {
@@ -1636,6 +1657,30 @@ function imageMediaType(filePath: string): ImageMediaType | undefined {
     case '.webp': return 'image/webp'
     case '.gif': return 'image/gif'
     default: return undefined
+  }
+}
+
+function draftImageFromWebview(value: unknown): DraftImage | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const candidate = value as Record<string, unknown>
+  const mediaType = candidate.mediaType
+  if (mediaType !== 'image/png'
+    && mediaType !== 'image/jpeg'
+    && mediaType !== 'image/webp'
+    && mediaType !== 'image/gif') return undefined
+  if (typeof candidate.data !== 'string'
+    || candidate.data === ''
+    || candidate.data.length % 4 !== 0
+    || !/^[A-Za-z0-9+/]*={0,2}$/.test(candidate.data)) return undefined
+  const name = typeof candidate.name === 'string' && candidate.name.trim() !== ''
+    ? candidate.name.trim()
+    : undefined
+  return {
+    id: randomUUID(),
+    type: 'image',
+    mediaType,
+    data: candidate.data,
+    ...(name === undefined ? {} : { name }),
   }
 }
 

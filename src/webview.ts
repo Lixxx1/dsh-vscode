@@ -1566,8 +1566,48 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       pendingDraftSends.set(requestId, { sessionId, text });
       vscode.postMessage({ type: 'send', sessionId, requestId, text, mode: mode || 'queue' }); elements.prompt.value = ''; sessionDrafts.set(sessionId, ''); commandIndex = 0; resetPrompt();
     }
+    function clipboardImage(file, index) {
+      const mediaType = String(file.type || '').toLowerCase();
+      if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(mediaType)) return Promise.resolve(null);
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.addEventListener('load', () => {
+          const result = typeof reader.result === 'string' ? reader.result : '';
+          const separator = result.indexOf(',');
+          if (separator < 0) { reject(new Error('The pasted image could not be read.')); return; }
+          resolve({ mediaType, data: result.slice(separator + 1), name: file.name || ('pasted-image-' + String(index + 1)) });
+        });
+        reader.addEventListener('error', () => reject(new Error('The pasted image could not be read.')));
+        reader.readAsDataURL(file);
+      });
+    }
+    function clipboardImageFiles(event) {
+      const clipboard = event.clipboardData;
+      if (!clipboard) return [];
+      const itemFiles = Array.from(clipboard.items || [])
+        .filter(item => item.kind === 'file' && String(item.type || '').toLowerCase().startsWith('image/'))
+        .map(item => item.getAsFile())
+        .filter(Boolean);
+      if (itemFiles.length) return itemFiles;
+      return Array.from(clipboard.files || []).filter(file => String(file.type || '').toLowerCase().startsWith('image/'));
+    }
     elements.prompt.addEventListener('input', () => { if (state && state.sessionId) sessionDrafts.set(state.sessionId, elements.prompt.value); policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false'); commandIndex = 0; mentionIndex = 0; elements.prompt.placeholder = 'Ask DeepSeek about this project'; resizePrompt(); renderCommandMenu(); requestMentions(); });
     elements.prompt.addEventListener('click', () => { policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false'); requestMentions(); });
+    elements.prompt.addEventListener('paste', event => {
+      const files = clipboardImageFiles(event);
+      if (!files.length) return;
+      event.preventDefault();
+      if (!state || state.phase !== 'ready' || !state.sessionId) return;
+      const sessionId = state.sessionId;
+      Promise.all(files.map(clipboardImage)).then(values => {
+        const images = values.filter(Boolean);
+        if (!images.length) {
+          vscode.postMessage({ type: 'attachment-error', message: 'Paste a PNG, JPEG, WebP, or GIF image.' });
+          return;
+        }
+        vscode.postMessage({ type: 'attach-images', sessionId, images });
+      }).catch(error => vscode.postMessage({ type: 'attachment-error', message: error && error.message || 'The pasted image could not be read.' }));
+    });
     elements.prompt.addEventListener('keydown', event => {
       if (policyMenuOpen && event.key === 'Escape') { event.preventDefault(); policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false'); return; }
       const mentionOpen = !elements.mentionMenu.classList.contains('hidden') && mentionCandidates.length > 0;

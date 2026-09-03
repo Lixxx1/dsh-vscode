@@ -37,6 +37,20 @@ describe('chat webview', () => {
     expect(html).not.toContain('<select id="sessions"')
   })
 
+  it('attaches supported clipboard images without intercepting ordinary text paste', () => {
+    const webview = { cspSource: 'vscode-webview:' } as vscode.Webview
+    const mark = { toString: () => 'vscode-resource:/deepseek.svg' } as vscode.Uri
+    const script = /<script nonce="[^"]+">([\s\S]*?)<\/script>/.exec(chatHtml(webview, mark))?.[1] ?? ''
+
+    expect(script).toContain("elements.prompt.addEventListener('paste'")
+    expect(script).toContain("if (!files.length) return;")
+    expect(script).toContain("item.getAsFile()")
+    expect(script).toContain("reader.readAsDataURL(file)")
+    expect(script).toContain("type: 'attach-images', sessionId, images")
+    const pasteHandler = script.slice(script.indexOf("elements.prompt.addEventListener('paste'"))
+    expect(pasteHandler.indexOf("if (!files.length) return;")).toBeLessThan(pasteHandler.indexOf('event.preventDefault();'))
+  })
+
   it('offers actionable setup states instead of a generic reconnect loop', () => {
     const webview = { cspSource: 'vscode-webview:' } as vscode.Webview
     const mark = { toString: () => 'vscode-resource:/deepseek.svg' } as vscode.Uri
