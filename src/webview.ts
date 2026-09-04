@@ -356,6 +356,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     const sessionDrafts = new Map();
     const pendingDraftSends = new Map();
     let draftSendRequestId = 0;
+    const pendingAttachmentRequests = new Map();
+    let attachmentRequestId = 0;
     const renderedMessages = new Map();
     const expandedToolIds = new Set();
     const loadingToolRequests = new Map();
@@ -1555,19 +1557,71 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       scheduleRender({ ...state, ...patch, messages });
     }
     function updateSend() {
-      const pending = state && [...pendingDraftSends.values()].some(draft => draft.sessionId === state.sessionId);
-      elements.send.disabled = !state || state.phase !== 'ready' || pending || (elements.prompt.value.trim() === '' && draftImages.length === 0);
+      const pendingSend = state && [...pendingDraftSends.values()].some(draft => draft.sessionId === state.sessionId);
+      const pendingAttachment = state && [...pendingAttachmentRequests.values()].some(request => request.sessionId === state.sessionId);
+      elements.send.disabled = !state || state.phase !== 'ready' || pendingSend || pendingAttachment || (elements.prompt.value.trim() === '' && draftImages.length === 0);
     }
     function resizePrompt() { elements.prompt.style.height = 'auto'; elements.prompt.style.height = Math.min(elements.prompt.scrollHeight, 220) + 'px'; updateSend(); }
     function selectionFor(model, reasoningEffort) { return { provider: model.provider, model: model.model, ...(reasoningEffort ? { reasoningEffort } : {}) }; }
     function send(mode) {
       const text = elements.prompt.value.trim(); if ((!text && !draftImages.length) || !state || state.phase !== 'ready') return;
-      const requestId = ++draftSendRequestId; const sessionId = state.sessionId;
+      const sessionId = state.sessionId;
+      if ([...pendingAttachmentRequests.values()].some(request => request.sessionId === sessionId)) return;
+      const requestId = ++draftSendRequestId;
       pendingDraftSends.set(requestId, { sessionId, text });
       vscode.postMessage({ type: 'send', sessionId, requestId, text, mode: mode || 'queue' }); elements.prompt.value = ''; sessionDrafts.set(sessionId, ''); commandIndex = 0; resetPrompt();
     }
+    function clipboardImage(file, index) {
+      const mediaType = String(file.type || '').toLowerCase();
+      if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(mediaType)) return Promise.resolve(null);
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.addEventListener('load', () => {
+          const result = typeof reader.result === 'string' ? reader.result : '';
+          const separator = result.indexOf(',');
+          if (separator < 0) { reject(new Error('The pasted image could not be read.')); return; }
+          resolve({ mediaType, data: result.slice(separator + 1), name: file.name || ('pasted-image-' + String(index + 1)) });
+        });
+        reader.addEventListener('error', () => reject(new Error('The pasted image could not be read.')));
+        reader.readAsDataURL(file);
+      });
+    }
+    function clipboardImageFiles(event) {
+      const clipboard = event.clipboardData;
+      if (!clipboard) return [];
+      const itemFiles = Array.from(clipboard.items || [])
+        .filter(item => item.kind === 'file' && String(item.type || '').toLowerCase().startsWith('image/'))
+        .map(item => item.getAsFile())
+        .filter(Boolean);
+      if (itemFiles.length) return itemFiles;
+      return Array.from(clipboard.files || []).filter(file => String(file.type || '').toLowerCase().startsWith('image/'));
+    }
     elements.prompt.addEventListener('input', () => { if (state && state.sessionId) sessionDrafts.set(state.sessionId, elements.prompt.value); policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false'); commandIndex = 0; mentionIndex = 0; elements.prompt.placeholder = 'Ask DeepSeek about this project'; resizePrompt(); renderCommandMenu(); requestMentions(); });
     elements.prompt.addEventListener('click', () => { policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false'); requestMentions(); });
+    elements.prompt.addEventListener('paste', event => {
+      const files = clipboardImageFiles(event);
+      if (!files.length) return;
+      event.preventDefault();
+      if (!state || state.phase !== 'ready' || !state.sessionId) return;
+      const sessionId = state.sessionId;
+      const requestId = ++attachmentRequestId;
+      pendingAttachmentRequests.set(requestId, { sessionId });
+      updateSend();
+      Promise.all(files.map(clipboardImage)).then(values => {
+        const images = values.filter(Boolean);
+        if (!images.length) {
+          pendingAttachmentRequests.delete(requestId);
+          updateSend();
+          vscode.postMessage({ type: 'attachment-error', message: 'Paste a PNG, JPEG, WebP, or GIF image.' });
+          return;
+        }
+        vscode.postMessage({ type: 'attach-images', sessionId, requestId, images });
+      }).catch(error => {
+        pendingAttachmentRequests.delete(requestId);
+        updateSend();
+        vscode.postMessage({ type: 'attachment-error', message: error && error.message || 'The pasted image could not be read.' });
+      });
+    });
     elements.prompt.addEventListener('keydown', event => {
       if (policyMenuOpen && event.key === 'Escape') { event.preventDefault(); policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false'); return; }
       const mentionOpen = !elements.mentionMenu.classList.contains('hidden') && mentionCandidates.length > 0;
@@ -1656,6 +1710,13 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       if (event.data.type === 'draft-images' && typeof event.data.sessionId === 'string') {
         const images = event.data.images || []; draftImagesBySession.set(event.data.sessionId, images);
         if (state && event.data.sessionId === state.sessionId) { draftImages = images; renderAttachments(); }
+      }
+      if (event.data.type === 'attachments-added' && typeof event.data.requestId === 'number') {
+        const pending = pendingAttachmentRequests.get(event.data.requestId);
+        if (pending && pending.sessionId === event.data.sessionId) {
+          pendingAttachmentRequests.delete(event.data.requestId);
+          updateSend();
+        }
       }
       if ((event.data.type === 'draft-sent' || event.data.type === 'restore-draft') && typeof event.data.requestId === 'number') {
         const pending = pendingDraftSends.get(event.data.requestId);
