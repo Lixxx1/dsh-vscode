@@ -13,6 +13,16 @@ describe('DSH launch resolution', () => {
     expect(parseDshWebUrl('dsh web: https://example.com')).toBeUndefined()
   })
 
+  it('recognizes the authenticated loopback URL carrying a process token', () => {
+    expect(parseDshWebUrl('dsh web: http://127.0.0.1:43127/?token=qwoGynUAJzCyb5GDd3ZnvKQUzKEmiiPyZ1ZJw_uzpqk'))
+      .toBe('http://127.0.0.1:43127/?token=qwoGynUAJzCyb5GDd3ZnvKQUzKEmiiPyZ1ZJw_uzpqk')
+    expect(parseDshWebUrl('dsh web: http://127.0.0.1:44195/?token=AbC-12_xYz (LAN: http://192.168.1.4:44195/?token=AbC-12_xYz)'))
+      .toBe('http://127.0.0.1:44195/?token=AbC-12_xYz')
+    expect(parseDshWebUrl('\u001b[1mdsh web: \u001b[0mhttp://127.0.0.1:43127/?token=abc')).toBe('http://127.0.0.1:43127/?token=abc')
+    expect(parseDshWebUrl('dsh web: http://127.0.0.1:43127evil')).toBeUndefined()
+    expect(parseDshWebUrl('dsh web: http://127.0.0.1:43127/?token=abc trailing')).toBe('http://127.0.0.1:43127/?token=abc')
+  })
+
   it('suppresses the rc.8 browser handoff while preserving older DSH launches', () => {
     const args = ['web', '--host', '127.0.0.1', '--port', '0']
     expect(webArgsForDshVersion(args, '0.1.0-rc.7')).toEqual(args)

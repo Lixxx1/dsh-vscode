@@ -274,9 +274,18 @@ function resolveTsxImport(sourceRoot: string): string {
   }
 }
 
-/** Extract the URL printed by the official web-app Cordis plugin. */
+/** Strip ANSI escape sequences (color, cursor moves, OSC-8 hyperlinks) from one output line. */
+const ANSI_ESCAPE = /\u001b\[[0-9;?]*[ -/]*[@-~]/g
+
+/**
+ * Extract the URL printed by the official web-app Cordis plugin.
+ * Current releases print the process-authenticated URL carrying a `?token=`
+ * query (`dsh web: http://127.0.0.1:41234/?token=…`) and may append a
+ * ` (LAN: …)` suffix; earlier releases printed the bare loopback origin.
+ */
 export function parseDshWebUrl(line: string): string | undefined {
-  const match = /(?:^|\s)dsh web:\s+(http:\/\/127\.0\.0\.1:\d+)(?:\s|$)/.exec(line)
+  const plain = line.replace(ANSI_ESCAPE, '')
+  const match = /(?:^|\s)dsh web:\s+(http:\/\/127\.0\.0\.1:\d+(?:[/?#][^\s]*)?)(?:\s|$)/.exec(plain)
   return match?.[1]
 }
 
