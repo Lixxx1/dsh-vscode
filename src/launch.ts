@@ -276,8 +276,14 @@ function resolveTsxImport(sourceRoot: string): string {
 
 /** Extract the URL printed by the official web-app Cordis plugin. */
 export function parseDshWebUrl(line: string): string | undefined {
-  const match = /(?:^|\s)dsh web:\s+(http:\/\/127\.0\.0\.1:\d+)(?:\s|$)/.exec(line)
-  return match?.[1]
+  const match = /(?:^|\s)dsh web:\s+(http:\/\/127\.0\.0\.1(?::\d+)?(?:\/)?(?:\?token=[A-Za-z0-9_-]+)?)(?:\s|$)/.exec(line)
+  if (match?.[1] === undefined) return undefined
+  try {
+    const url = new URL(match[1])
+    return url.port !== '0' ? match[1] : undefined
+  } catch {
+    return undefined
+  }
 }
 
 /**

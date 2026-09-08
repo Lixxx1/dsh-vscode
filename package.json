@@ -228,13 +228,15 @@
     "publish:marketplace": "vsce publish --readme-path README.marketplace.md"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
     "@types/node": "^22.20.0",
     "@types/vscode": "^1.100.0",
+    "@types/ws": "^8.18.1",
     "@vscode/vsce": "^3.6.0",
-    "@modelcontextprotocol/sdk": "1.30.0",
     "esbuild": "^0.25.12",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8",
+    "ws": "^8.21.3",
     "zod": "^3.25.76"
   }
 }

@@ -1948,7 +1948,8 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.showOutput', () => { output.show(true) }))
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.openInBrowser', async () => {
     try {
-      const uri = await runtime.start(controller.cwd === '' ? undefined : vscode.Uri.file(controller.cwd))
+      await runtime.start(controller.cwd === '' ? undefined : vscode.Uri.file(controller.cwd))
+      const uri = vscode.Uri.parse(runtime.connection.browserUrl().href)
       await vscode.env.openExternal(await vscode.env.asExternalUri(uri))
     } catch (error) {
       void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error))
