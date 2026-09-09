@@ -232,7 +232,11 @@
     "@types/vscode": "^1.100.0",
     "@vscode/vsce": "^3.6.0",
     "@modelcontextprotocol/sdk": "1.30.0",
+    "dompurify": "^3.4.15",
     "esbuild": "^0.25.12",
+    "jsdom": "^27.4.0",
+    "katex": "^0.18.7",
+    "marked": "^18.0.12",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8",
     "zod": "^3.25.76"
