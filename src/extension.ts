@@ -1130,8 +1130,12 @@ class DshSurface implements vscode.Disposable {
     extensionUri: vscode.Uri,
   ) {
     const mediaRoot = vscode.Uri.joinPath(extensionUri, 'media')
-    webview.options = { enableScripts: true, localResourceRoots: [mediaRoot] }
-    webview.html = chatHtml(webview, webview.asWebviewUri(vscode.Uri.joinPath(mediaRoot, 'deepseek.svg')))
+    const renderRoot = vscode.Uri.joinPath(extensionUri, 'dist', 'webview')
+    webview.options = { enableScripts: true, localResourceRoots: [mediaRoot, renderRoot] }
+    webview.html = chatHtml(webview, webview.asWebviewUri(vscode.Uri.joinPath(mediaRoot, 'deepseek.svg')), {
+      script: webview.asWebviewUri(vscode.Uri.joinPath(renderRoot, 'markdown.js')),
+      style: webview.asWebviewUri(vscode.Uri.joinPath(renderRoot, 'katex.min.css')),
+    })
     this.disposables = [
       controller.onDidChangeState(state => { this.queueState(state) }),
       editorContext.onDidChange(state => { void webview.postMessage({ type: 'ide-context', state }) }),
