@@ -2,6 +2,7 @@ import type { DshConnection } from './dsh-connection.js'
 import type { DshFrame, HistoryEntry, RpcReceipt, SessionSummary } from './dsh-client.js'
 import { decodeHistory } from './dsh-history.js'
 import { DshStreams, wireRecord } from './dsh-streams.js'
+import { DshAssistantStream } from './dsh-assistant-stream.js'
 
 interface Projection { seq: number; value: unknown }
 interface PendingQuestion { sessionId: string; event: string; request: Record<string, unknown> }
@@ -94,12 +95,16 @@ export class DshSessionFeed {
     return new Promise((resolve, reject) => {
       const state: Follow = { sessionId, cursor: -1, lastSeq: -1, active: false, pending: [], cancel: () => {}, reject }
       this.follow = state
+      const assistant = new DshAssistantStream(
+        update => this.mux({ type: 'session/assistant-stream', sessionId, update }),
+        entry => this.mux({ type: 'session/event', sessionId, event: entry.event }),
+      )
       let opened = false
       const timer = setTimeout(() => {
         if (this.follow === state) this.closeFollow(new Error('DSH session snapshot timed out.'))
       }, 30_000)
       state.reject = error => { clearTimeout(timer); reject(error) }
-      state.cancel = this.streams.open('session/follow', { request: { address: { kind: 'session', sessionId }, maxMessages: 100 } }, raw => {
+      state.cancel = this.streams.open('session/follow', { request: { address: { kind: 'session', sessionId }, maxMessages: 100, assistantStream: true } }, raw => {
         if (this.follow !== state) return
         if (!wireRecord(raw)) throw new Error('Invalid session frame.')
         if (!opened) {
@@ -111,6 +116,7 @@ export class DshSessionFeed {
           const latest = events.at(-1)?.event.seq
           if (latest !== undefined && latest > state.cursor) throw new Error('History exceeds snapshot cursor.')
           this.installProjections(sessionId, state.cursor, raw.projections.values)
+          assistant.open(raw.assistantStream, state.cursor, events)
           opened = true
           clearTimeout(timer)
           resolve({ events, hasMore: raw.hasMore, projections: this.projectionValues(sessionId), isCurrent: () => this.follow === state, activate: () => {
@@ -125,11 +131,12 @@ export class DshSessionFeed {
             this.presentQuestions()
           } })
         } else {
+          if (raw.type === 'assistant-stream') { assistant.frame(raw.frame, state.lastSeq); return }
           if (raw.type !== 'event') throw new Error('Unexpected session snapshot.')
           const entry = decodeHistory([raw])[0]
           if (entry === undefined || entry.event.seq !== state.lastSeq + 1) throw new Error('Non-contiguous DSH session events.')
           state.lastSeq = entry.event.seq
-          this.mux({ type: 'session/event', sessionId, event: entry.event })
+          assistant.durable(entry)
         }
       }, error => { state.reject(error) })
     })
@@ -241,6 +248,20 @@ export class DshSessionFeed {
     }
     if (frame.type !== 'emit' || typeof frame.event !== 'string' || !Array.isArray(frame.args)) throw new Error('Invalid remote event.')
     const [id, value] = frame.args
+    if (frame.event === 'commands/change' && frame.args.length === 0) {
+      this.host({ type: 'host/commands-changed' })
+    } else if (frame.event === 'llm/adapters-updated' && frame.args.length === 0) {
+      this.host({ type: 'host/models-changed' })
+    } else if (frame.event === 'credentials/reference-updated' && typeof id === 'string') {
+      // A credential reference is only an invalidation hint; never expose it to the Webview.
+      this.host({ type: 'host/credentials-changed' })
+    } else if (frame.event === 'settings/document-updated' && typeof id === 'string'
+      && Number.isSafeInteger(value) && (value as number) >= 0) {
+      this.host({ type: 'host/settings-changed', ns: id, revision: value })
+    } else if (frame.event === 'agent-preset/selected' && typeof id === 'string' && typeof value === 'string') {
+      // Selection itself comes from the sequenced projection, not this unsequenced hint.
+      this.host({ type: 'host/session-composition-changed', sessionId: id })
+    }
     if (frame.event === 'api-session/added' && wireRecord(id)) this.host({ ...id, type: 'host/session-added' })
     else if (typeof id === 'string') {
       if (frame.event === 'api-session/status' && typeof value === 'boolean') {

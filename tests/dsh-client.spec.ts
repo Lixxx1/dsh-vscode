@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DshClient, type DshFrame } from '../src/dsh-client.js'
 import type { DshConnection } from '../src/dsh-connection.js'
+import { DshConnectionError } from '../src/dsh-connection.js'
 import { decodeHistory } from '../src/dsh-history.js'
 import { ConversationProjector } from '../src/conversation.js'
 
@@ -47,6 +48,9 @@ function harness(autoSnapshot = true) {
   const connection = {
     call: vi.fn(async (endpoint: string, args: unknown) => {
       requests.push({ endpoint, args })
+      if (endpoint === 'commands/execute' && (args as any).line === '') {
+        throw new DshConnectionError('gateway/arguments-invalid', 'typert gateway: commands/execute: args fields do not match the descriptor: missing "images"; unexpected "submittedAttachments"')
+      }
       return results[endpoint] ?? { accepted: true }
     }),
     openStreamSocket: vi.fn(() => {
@@ -62,6 +66,71 @@ function harness(autoSnapshot = true) {
 }
 
 describe('DSH 0.1.2 chat transport', () => {
+  it('forwards the actual discovery events and does not publish credential references', async () => {
+    const h = harness()
+    await h.client.startStreams()
+    for (const [event, args] of [
+      ['commands/change', []], ['llm/adapters-updated', []], ['credentials/reference-updated', ['SECRET_REFERENCE']],
+      ['settings/document-updated', ['llm-deepseek', 3]], ['agent-preset/selected', ['s', 'minimal']],
+    ]) h.push('$events', { type: 'emit', event, args })
+    expect(h.frames.map(f => f.payload)).toEqual([
+      { type: 'host/commands-changed' }, { type: 'host/models-changed' }, { type: 'host/credentials-changed' },
+      { type: 'host/settings-changed', ns: 'llm-deepseek', revision: 3 },
+      { type: 'host/session-composition-changed', sessionId: 's' },
+    ])
+    expect(JSON.stringify(h.frames)).not.toContain('SECRET_REFERENCE')
+    expect(h.errors).toEqual([])
+  })
+
+  it('invalidates command catalogs globally, skills only for the recomposed session, and presets on settings changes', async () => {
+    const h = harness()
+    h.results['commands/list'] = [{ name: 'plan', description: 'Plan' }]
+    await h.client.startStreams()
+    await h.client.listCommands('a'); await h.client.listCommands('b')
+    await h.client.listSkills('a'); await h.client.listSkills('b')
+    await h.client.listAgentPresets()
+    const count = (endpoint: string) => h.requests.filter(r => r.endpoint === endpoint).length
+    h.push('$events', { type: 'emit', event: 'commands/change', args: [] })
+    h.results['commands/list'] = []
+    expect(await h.client.listCommands('a')).toEqual([])
+    expect(await h.client.listCommands('b')).toEqual([])
+    expect(count('commands/list')).toBe(4)
+    h.push('$events', { type: 'emit', event: 'agent-preset/selected', args: ['a', 'minimal'] })
+    await h.client.listSkills('a'); await h.client.listSkills('b')
+    expect(count('skills/list')).toBe(3)
+    h.push('$events', { type: 'emit', event: 'settings/document-updated', args: ['agent-presets', 1] })
+    await h.client.listAgentPresets()
+    expect(count('agentPresets/list')).toBe(2)
+  })
+
+  it('discards an old model catalog when settings or credentials change during its request', async () => {
+    const h = harness()
+    await h.client.startStreams()
+    const first = Promise.withResolvers<unknown>()
+    vi.mocked(h.connection.call).mockImplementationOnce(() => first.promise as any)
+    const pending = h.client.models('s')
+    h.push('$events', { type: 'emit', event: 'llm/adapters-updated', args: [] })
+    h.push('$events', { type: 'emit', event: 'settings/document-updated', args: ['llm-deepseek', 1] })
+    h.push('$events', { type: 'emit', event: 'credentials/reference-updated', args: ['API_KEY'] })
+    h.results['session/modelCatalog'] = { default: { provider: 'new', model: 'new' }, routableProviders: ['new'], groups: [], failures: [] }
+    first.resolve({ default: { provider: 'old', model: 'old' }, routableProviders: [], groups: [], failures: [] })
+    expect(await pending).toMatchObject({ current: { provider: 'new', model: 'new' }, routable: true })
+    expect(h.client.currentModels('s')).toMatchObject({ current: { provider: 'new', model: 'new' } })
+  })
+
+  it('reopening a session refetches its command and skill catalogs', async () => {
+    const h = harness()
+    await h.client.startStreams()
+    h.results['commands/list'] = [{ name: 'old' }]
+    await h.client.listCommands('s'); await h.client.listSkills('s')
+    const opening = await h.client.openSession('s')
+    opening.activate()
+    h.results['commands/list'] = [{ name: 'new' }]
+    expect(await h.client.listCommands('s')).toEqual([{ name: 'new' }])
+    await h.client.listSkills('s')
+    expect(h.requests.filter(r => r.endpoint === 'skills/list')).toHaveLength(2)
+  })
+
   it('multiplexes all baselines through one connection and uses named Remote arguments', async () => {
     const h = harness()
     await h.client.startStreams()
@@ -100,6 +169,7 @@ describe('DSH 0.1.2 chat transport', () => {
       { endpoint: 'settings/mutate', args: { ns: 'ns', ops: [{ op: 'set', path: ['x'], value: 1 }], expectedRevision: 3 } },
       { endpoint: 'skills/list', args: { request: { sessionId: 's' } } },
       { endpoint: 'agentPresets/select', args: { agentId: 's', agentPreset: 'coding' } },
+      { endpoint: 'commands/execute', args: { agentId: 's', line: '', submittedAttachments: [] } },
       { endpoint: 'commands/execute', args: { agentId: 's', line: '/compact', images: [] } },
       { endpoint: 'commands/execute', args: { agentId: 's', line: '/plan inspect', images: [{ mediaType: 'image/png', data: 'YWJj', name: 'image.png' }] } },
     ])
@@ -120,6 +190,59 @@ describe('DSH 0.1.2 chat transport', () => {
     expect(projector.messages()[0]?.text).toBe('hello world')
     await h.client.history('s', 5)
     expect(h.requests.at(-1)).toEqual({ endpoint: 'session/page', args: { request: { address: { kind: 'session', sessionId: 's' }, throughSeq: 5, beforeSeq: 5, maxMessages: 100 } } })
+  })
+
+  it('opts into 0.1.5 streaming, buffers the live baseline and settlement, and keeps history cursors durable', async () => {
+    const h = harness(false)
+    await h.client.startStreams()
+    const pending = h.client.openSession('s')
+    expect(h.outgoing.at(-1).payload.args.request.assistantStream).toBe(true)
+    h.push('session/follow', { ...snapshot(), records: [], assistantStream: { revision: 2, activeAttempt: {
+      attemptId: 'a', turn: 1, step: 1, startedAfterSeq: 5, nextIndex: 1,
+      stream: [{ type: 'text-chunks', time0: 10, index: 0, dt: [], texts: ['Hello'] }],
+    } } })
+    const opening = await pending
+    h.push('session/follow', { type: 'assistant-stream', frame: {
+      type: 'chunk', attemptId: 'a', revision: 3, index: 1, time: 20, chunk: { type: 'text-delta', index: 0, text: ' world' },
+    } })
+    h.push('session/follow', { type: 'event', event: { type: 'assistant/message', seq: 6, time: 30, surfaceOp: 'append',
+      data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: 'Hello world' }] }, stream: [] },
+    } })
+    h.push('session/follow', { type: 'assistant-stream', frame: { type: 'end', attemptId: 'a', revision: 4, index: 2,
+      outcome: { kind: 'committed', eventType: 'assistant/message', seq: 6 },
+    } })
+    expect(opening.events).toEqual([])
+    expect(h.frames).toEqual([])
+    opening.activate()
+    const projector = new ConversationProjector()
+    for (const frame of h.frames) {
+      if (frame.payload.type === 'session/assistant-stream') projector.applyStream(frame.payload.update as any)
+      if (frame.payload.type === 'session/event') projector.apply(frame.payload.event as any)
+    }
+    expect(projector.messages()).toEqual([{ id: 'assistant:1:1', role: 'assistant', text: 'Hello world' }])
+    expect(h.frames.filter(f => f.payload.type === 'session/event')).toHaveLength(1)
+    await h.client.history('s', 5)
+    expect(h.requests.at(-1)?.args.request).toMatchObject({ throughSeq: 5, beforeSeq: 5 })
+    // The next durable seq follows 6, not the number of transient chunks.
+    h.push('session/follow', { type: 'event', event: { seq: 7, time: 40, type: 'turn/end', data: { turn: 1 } } })
+    expect(h.errors).toEqual([])
+  })
+
+  it('does not leak a cancelled live prefix into another subscription', async () => {
+    const h = harness(false)
+    await h.client.startStreams()
+    const first = h.client.openSession('a')
+    h.push('session/follow', { ...snapshot('a'), assistantStream: { revision: 0 } })
+    const old = await first
+    const oldId = h.ids.get('session/follow')!
+    h.push('session/follow', { type: 'assistant-stream', frame: { type: 'start', attemptId: 'old', revision: 1, turn: 1, step: 1, startedAfterSeq: 5 } })
+    const second = h.client.openSession('b')
+    h.push('session/follow', { ...snapshot('b'), assistantStream: { revision: 0 } })
+    const current = await second
+    old.activate(); current.activate()
+    h.receive(oldId, { type: 'assistant-stream', frame: { type: 'chunk', attemptId: 'old', revision: 2, index: 0, time: 10, chunk: { type: 'text-delta', text: 'Stale' } } })
+    expect(h.frames.some(f => f.payload.type === 'session/assistant-stream')).toBe(false)
+    expect(h.errors).toEqual([])
   })
 
   it('cancels stale subscriptions including A → B → A and ignores late frames', async () => {

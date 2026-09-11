@@ -1,5 +1,8 @@
 import { spawn } from 'node:child_process'
 import * as vscode from 'vscode'
+import { DshConnectionError } from './dsh-connection.js'
+import { pickRuntimeSettingsNamespace } from './runtime-settings-picker.js'
+import { PLUGIN_STATUS_ICONS, PLUGIN_STATUS_LABELS, runtimePluginGroups } from './runtime-plugin-inventory.js'
 import { resolveLaunch } from './launch.js'
 import { terminateProcessTree } from './process-tree.js'
 import {
@@ -14,7 +17,6 @@ import {
   readInstalledPlugins,
   resolveDshHome,
   type InstalledPlugin,
-  type InstalledPluginStatus,
   type PluginInventorySnapshot,
 } from './plugin-profile.js'
 import {
@@ -37,6 +39,7 @@ interface CatalogCache {
 }
 
 interface PluginController {
+  readonly onDidChangeRuntimeSettings: vscode.Event<void>
   readonly cwd: string
   readonly runtimeOwnership: 'external' | 'managed' | undefined
   readonly state: {
@@ -46,7 +49,7 @@ interface PluginController {
   }
   pluginInventory(): Promise<PluginInventorySnapshot>
   settings(): Promise<SettingsDescription>
-  mutateSettings(ns: string, ops: SettingsMutation[], expectedRevision: number): Promise<SettingsNamespace>
+  mutateSettings(namespace: SettingsNamespace, ops: SettingsMutation[]): Promise<SettingsNamespace>
   restart(): Promise<void>
 }
 
@@ -54,28 +57,11 @@ type PluginPick = vscode.QuickPickItem & (
   | { action: 'install' }
   | { action: 'browse' }
   | { action: 'configure' }
+  | { action: 'inventory' }
   | { action: 'refresh' }
   | { action: 'plugin'; plugin: InstalledPlugin }
   | { action: 'empty' }
 )
-
-const STATUS_LABELS: Record<InstalledPluginStatus, string> = {
-  active: 'Active',
-  failed: 'Failed',
-  disabled: 'Disabled',
-  loading: 'Loading',
-  inactive: 'Inactive',
-  unknown: 'Status unavailable',
-}
-
-const STATUS_ICONS: Record<InstalledPluginStatus, string> = {
-  active: 'pass-filled',
-  failed: 'error',
-  disabled: 'circle-slash',
-  loading: 'loading~spin',
-  inactive: 'circle-outline',
-  unknown: 'extensions',
-}
 
 /** Manage runtime-capability bundles through the official DSH profile CLI. */
 export class DshPluginManager {
@@ -87,11 +73,15 @@ export class DshPluginManager {
 
   async show(): Promise<void> {
     while (true) {
-      const plugins = readInstalledPlugins(resolveDshHome())
+      // An external server need not use this machine's web profile.
+      const external = this.controller.runtimeOwnership === 'external'
+      const plugins = external ? [] : readInstalledPlugins(resolveDshHome())
       const inventory = await this.tryInventory()
       const selected = await vscode.window.showQuickPick(this.items(plugins, inventory), {
         title: 'DeepSeek Harness Runtime Plugins',
-        placeHolder: 'Tools, skills, MCP, memory, and agent hooks loaded by the DSH web profile',
+        placeHolder: this.controller.runtimeOwnership === 'external'
+          ? 'Connected DSH runtime · use its CLI to install or remove plugins'
+          : 'Tools, skills, MCP, memory, and agent hooks loaded by the DSH web profile',
         matchOnDescription: true,
         matchOnDetail: true,
       })
@@ -102,6 +92,10 @@ export class DshPluginManager {
       }
       if (selected.action === 'configure') {
         await this.configureSettings()
+        continue
+      }
+      if (selected.action === 'inventory') {
+        await this.showInventory()
         continue
       }
       if (selected.action === 'refresh') continue
@@ -126,7 +120,9 @@ export class DshPluginManager {
       {
         action: 'browse',
         label: '$(search) Find community runtime plugins…',
-        detail: 'Search tools, skills, MCP integrations, memory, and agent hooks; install with one click',
+        detail: this.controller.runtimeOwnership === 'external'
+          ? 'Browse plugin sources; install using the external runtime’s CLI'
+          : 'Search tools, skills, MCP integrations, memory, and agent hooks; install with one click',
       },
       {
         action: 'configure',
@@ -134,13 +130,23 @@ export class DshPluginManager {
         detail: 'Edit settings namespaces registered by built-in and community DSH plugins',
       },
       {
+        action: 'inventory',
+        label: '$(list-tree) View runtime plugin inventory…',
+        detail: 'Read-only plugin status, grouped by Agent preset and global runtime',
+      },
+      {
         action: 'refresh',
         label: '$(refresh) Refresh',
-        detail: 'Read the current web profile and Loader status again',
+        detail: this.controller.runtimeOwnership === 'external'
+          ? 'Read the connected runtime’s Loader status again'
+          : 'Read the current web profile and Loader status again',
       },
       { action: 'empty', label: 'Installed for the DSH web profile', kind: vscode.QuickPickItemKind.Separator },
     ]
 
+    if (this.controller.runtimeOwnership === 'external') {
+      return items.filter(item => item.action !== 'install' && item.action !== 'empty')
+    }
     if (plugins.length === 0) {
       items.push({
         action: 'empty',
@@ -155,12 +161,36 @@ export class DshPluginManager {
       items.push({
         action: 'plugin',
         plugin,
-        label: `$(${STATUS_ICONS[status]}) ${plugin.name}`,
-        description: plugin.bundle ? STATUS_LABELS[status] : 'Not a DSH bundle',
+        label: `$(${PLUGIN_STATUS_ICONS[status]}) ${plugin.name}`,
+        description: plugin.bundle ? PLUGIN_STATUS_LABELS[status] : 'Not a DSH bundle',
         detail: `${plugin.spec} · Applies to every project using the web profile`,
       })
     }
     return items
+  }
+
+  private async showInventory(): Promise<void> {
+    while (true) {
+      const inventory = await this.tryInventory()
+      if (inventory === undefined) {
+        await vscode.window.showWarningMessage('Runtime inventory is unavailable. Connect to DSH and try again.')
+        return
+      }
+      const rows = runtimePluginGroups(inventory).flatMap(group => [
+        { label: group.label, kind: vscode.QuickPickItemKind.Separator },
+        ...group.rows,
+        ...(group.rows.length === 0 ? [{ label: 'No entries in this group' }] : []),
+      ])
+      const refresh = { label: '$(refresh) Refresh inventory' }
+      const selected = await vscode.window.showQuickPick([refresh, ...rows], {
+        title: 'DSH Runtime Plugin Inventory',
+        placeHolder: 'Loader status only; an active MCP plugin does not confirm its server is connected',
+        matchOnDescription: true,
+        matchOnDetail: true,
+      })
+      if (selected === undefined) return
+      // All rows are informational; reopening also fetches a fresh owner snapshot.
+    }
   }
 
   private async tryInventory(): Promise<PluginInventorySnapshot | undefined> {
@@ -225,7 +255,8 @@ export class DshPluginManager {
       location: vscode.ProgressLocation.Notification,
       title: 'Loading DSH community runtime plugins…',
     }, async () => this.loadCatalog())
-    const installed = new Set(readInstalledPlugins(resolveDshHome()).map(plugin => plugin.name))
+    const installed = new Set(this.controller.runtimeOwnership === 'external'
+      ? [] : readInstalledPlugins(resolveDshHome()).map(plugin => plugin.name))
     const selected = await vscode.window.showQuickPick(plugins.map(plugin => {
       const alreadyInstalled = installed.has(plugin.npm ?? plugin.name)
       const stars = plugin.stars === undefined ? '' : ` · ★ ${String(plugin.stars)}`
@@ -243,7 +274,7 @@ export class DshPluginManager {
       matchOnDetail: true,
     })
     if (selected === undefined) return
-    const actions = selected.alreadyInstalled
+    const actions = selected.alreadyInstalled || this.controller.runtimeOwnership === 'external'
       ? [{ label: '$(github) Open on GitHub', action: 'open' as const }]
       : [
           { label: '$(cloud-download) Install', action: 'install' as const },
@@ -330,32 +361,23 @@ export class DshPluginManager {
       await vscode.window.showWarningMessage('Start DeepSeek Harness before configuring runtime settings.')
       return
     }
-    let description = await this.controller.settings()
-    if (!description.writable) {
-      await vscode.window.showWarningMessage('The active DSH profile does not expose writable runtime settings.')
-      return
-    }
     while (true) {
-      const selected = await vscode.window.showQuickPick(description.namespaces.map(namespace => ({
-        label: `$(settings-gear) ${namespace.ns}`,
-        description: hasSettingsOverrides(namespace) ? 'Customized' : 'Default',
-        detail: `${namespace.applies === 'restart' ? 'Requires a runtime restart' : 'Applies immediately'} · ${String(runtimeSettingFields(namespace).length)} settings`,
-        namespace,
-      })), {
-        title: 'DeepSeek Harness Runtime Settings',
-        placeHolder: 'Choose a settings namespace registered by DSH or a runtime plugin',
-        matchOnDescription: true,
-        matchOnDetail: true,
-      })
+      const selected = await pickRuntimeSettingsNamespace(this.controller)
       if (selected === undefined) return
-      const changed = await this.configureNamespace(selected.namespace)
+      let changed: boolean
+      try {
+        changed = await this.configureNamespace(selected)
+      } catch (error) {
+        if (!(error instanceof DshConnectionError) || error.code !== 'settings/conflict') throw error
+        await vscode.window.showWarningMessage('These runtime settings changed elsewhere. Nothing was overwritten; choose the setting again to edit the latest version.')
+        continue
+      }
       if (!changed) continue
-      if (selected.namespace.applies === 'restart') {
-        await this.restartAfterChange(`${selected.namespace.ns} updated`)
+      if (selected.applies === 'restart') {
+        await this.restartAfterChange(`${selected.ns} updated`)
         return
       }
-      await vscode.window.showInformationMessage(`${selected.namespace.ns} updated.`)
-      description = await this.controller.settings()
+      await vscode.window.showInformationMessage(`${selected.ns} updated.`)
     }
   }
 
@@ -393,12 +415,12 @@ export class DshPluginManager {
         .filter(field => field.overridden)
         .map(field => ({ op: 'unset', path: field.path }))
       if (resets.length === 0) return false
-      await this.controller.mutateSettings(namespace.ns, resets, namespace.revision)
+      await this.controller.mutateSettings(namespace, resets)
       return true
     }
     const mutation = await this.editSetting(namespace, selected.field)
     if (mutation === undefined) return false
-    await this.controller.mutateSettings(namespace.ns, [mutation], namespace.revision)
+    await this.controller.mutateSettings(namespace, [mutation])
     return true
   }
 
@@ -510,6 +532,10 @@ export class DshPluginManager {
   }
 
   private async runOfficialPluginCommand(args: readonly string[], title: string): Promise<void> {
+    if (this.controller.runtimeOwnership === 'external') {
+      throw new Error('Install or remove plugins using the CLI of the external DSH runtime, or switch to a managed runtime. No local profile was changed.')
+    }
+    if (!await this.requireIdle()) throw new Error('Plugin operation cancelled because a DeepSeek task is running.')
     const defaultWorkspace = vscode.workspace.workspaceFolders?.[0]?.uri
     const cwd = this.controller.cwd || defaultWorkspace?.fsPath || process.cwd()
     const workspace = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(cwd))?.uri ?? defaultWorkspace
@@ -530,6 +556,10 @@ export class DshPluginManager {
       title,
       cancellable: true,
     }, async (_progress, token) => new Promise<void>((resolvePromise, rejectPromise) => {
+      if (this.controller.runtimeOwnership === 'external' || this.controller.state.running) {
+        rejectPromise(new Error('The runtime changed or a task started. Reopen plugin management before making changes.'))
+        return
+      }
       let diagnostics = ''
       let cancelled = false
       let settled = false

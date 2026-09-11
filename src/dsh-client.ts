@@ -5,6 +5,8 @@ import { wireRecord } from './dsh-streams.js'
 import type { DshEvent } from './conversation.js'
 import type { PluginInventorySnapshot } from './plugin-profile.js'
 import type { SettingsDescription, SettingsMutation, SettingsNamespace } from './runtime-settings.js'
+import { RemoteRead } from './remote-read.js'
+import { DshCommandTransport } from './dsh-command-transport.js'
 
 export interface SessionSummary {
   sessionId: string
@@ -31,7 +33,7 @@ export interface ModelSelection {
 export interface CommandDescriptor {
   name: string
   description: string
-  input?: { hint: string; images?: boolean }
+  input?: { hint: string; images?: boolean; attachments?: boolean }
 }
 
 export interface CommandExecution {
@@ -127,17 +129,26 @@ interface ModelCatalog {
 
 /** The sidebar uses only authenticated 0.1.2 Remotes. */
 export class DshClient {
+  private readonly commandTransport = new DshCommandTransport((endpoint, args, timeoutMs) => this.call(endpoint, args, timeoutMs))
   private readonly api: DshRemoteApi
   private readonly feed: DshSessionFeed
   private readonly lifetime = new AbortController()
   private readonly frameListeners = new Set<(frame: DshFrame) => void>()
   private readonly errorListeners = new Set<(error: Error) => void>()
-  private catalog: ModelCatalog | undefined
+  private readonly catalog: RemoteRead<ModelCatalog>
+  private readonly commands = new Map<string, RemoteRead<CommandDescriptor[]>>()
+  private readonly skills = new Map<string, RemoteRead<SkillDescriptor[]>>()
+  private readonly presets: RemoteRead<AgentPresetRoster>
 
   constructor(private readonly connection: DshConnection) {
     this.api = new DshRemoteApi(connection, this.lifetime.signal)
+    this.catalog = new RemoteRead(() => this.call('session/modelCatalog', {}), this.lifetime.signal)
+    this.presets = new RemoteRead(() => this.call('agentPresets/list', {}, 10_000), this.lifetime.signal)
     this.feed = new DshSessionFeed(connection,
-      frame => { for (const listener of this.frameListeners) listener(frame) },
+      frame => {
+        this.invalidateDiscovery(frame)
+        for (const listener of this.frameListeners) listener(frame)
+      },
       error => { for (const listener of this.errorListeners) listener(error) })
   }
 
@@ -149,8 +160,18 @@ export class DshClient {
     this.errorListeners.add(listener)
     return () => { this.errorListeners.delete(listener) }
   }
-  startStreams(): Promise<void> { return this.feed.start() }
-  openSession(sessionId: string): Promise<SessionOpening> { return this.feed.open(sessionId) }
+  async startStreams(): Promise<void> {
+    await this.feed.start()
+    // Reads made before the event subscription may have missed a Host commit.
+    this.catalog.invalidate()
+    this.presets.invalidate()
+    for (const read of [...this.commands.values(), ...this.skills.values()]) read.invalidate()
+  }
+  openSession(sessionId: string): Promise<SessionOpening> {
+    this.presets.invalidate()
+    this.invalidateSessionDiscovery(sessionId)
+    return this.feed.open(sessionId)
+  }
   async listSessions(): Promise<{ items: SessionSummary[] }> {
     const result = await this.api.listSessions()
     return { items: result.items.map(summary => this.feed.summary(summary)) }
@@ -164,11 +185,11 @@ export class DshClient {
   history(sessionId: string, beforeSeq: number): Promise<{ events: HistoryEntry[]; hasMore: boolean }> { return this.feed.page(sessionId, beforeSeq) }
 
   async models(sessionId: string): Promise<SessionModels> {
-    this.catalog = await this.call<ModelCatalog>('session/modelCatalog', {})
+    await this.catalog.read()
     return this.currentModels(sessionId) as SessionModels
   }
   currentModels(sessionId: string): SessionModels | undefined {
-    const catalog = this.catalog
+    const catalog = this.catalog.current
     if (catalog === undefined) return undefined
     const projection = this.feed.projectionValues(sessionId).modelSelection
     const candidate = wireRecord(projection) ? projection.next ?? projection.lastUsed : undefined
@@ -195,24 +216,53 @@ export class DshClient {
   selectModel(sessionId: string, selection: ModelSelection): Promise<{ selected: ModelSelection }> {
     return this.call('session/selectModel', { request: { sessionId, ...selection } })
   }
-  listCommands(sessionId: string): Promise<CommandDescriptor[]> { return this.call('commands/list', { agentId: sessionId }, 10_000) }
-  async listSkills(sessionId: string): Promise<SkillDescriptor[]> {
-    return (await this.call<{ skills: SkillDescriptor[] }>('skills/list', { request: { sessionId } }, 10_000)).skills
+  listCommands(sessionId: string): Promise<CommandDescriptor[]> {
+    let read = this.commands.get(sessionId)
+    if (read === undefined) {
+      read = new RemoteRead(() => this.call('commands/list', { agentId: sessionId }, 10_000), this.lifetime.signal)
+      this.commands.set(sessionId, read)
+    }
+    return read.read()
   }
-  listAgentPresets(): Promise<AgentPresetRoster> { return this.call('agentPresets/list', {}, 10_000) }
+  listSkills(sessionId: string): Promise<SkillDescriptor[]> {
+    let read = this.skills.get(sessionId)
+    if (read === undefined) {
+      read = new RemoteRead(async () => (await this.call<{ skills: SkillDescriptor[] }>(
+        'skills/list', { request: { sessionId } }, 10_000)).skills, this.lifetime.signal)
+      this.skills.set(sessionId, read)
+    }
+    return read.read()
+  }
+  listAgentPresets(): Promise<AgentPresetRoster> { return this.presets.read() }
   async selectAgentPreset(sessionId: string, agentPreset: string): Promise<{ agentPreset: string }> {
-    return { agentPreset: await this.call<string>('agentPresets/select', { agentId: sessionId, agentPreset }) }
+    const selected = await this.call<string>('agentPresets/select', { agentId: sessionId, agentPreset })
+    this.invalidateSessionDiscovery(sessionId)
+    return { agentPreset: selected }
   }
   executeCommand(sessionId: string, line: string, images: readonly PromptImage[] = []): Promise<CommandExecution | undefined> {
-    return this.call('commands/execute', {
-      agentId: sessionId, line, images: images.map(({ mediaType, data, name }) => ({ mediaType, data, ...(name === undefined ? {} : { name }) })),
-    }, 300_000)
+    return this.commandTransport.execute(sessionId, line, images)
   }
   dispose(): void {
     this.lifetime.abort()
     this.feed.dispose()
     this.frameListeners.clear()
     this.errorListeners.clear()
+    this.commands.clear()
+    this.skills.clear()
+  }
+  private invalidateSessionDiscovery(sessionId: string): void {
+    this.commands.get(sessionId)?.invalidate()
+    this.skills.get(sessionId)?.invalidate()
+  }
+  private invalidateDiscovery(frame: DshFrame): void {
+    const payload = frame.payload
+    if (payload.type === 'host/commands-changed') for (const read of this.commands.values()) read.invalidate()
+    if (payload.type === 'host/models-changed' || payload.type === 'host/settings-changed' || payload.type === 'host/credentials-changed') this.catalog.invalidate()
+    if (payload.type === 'host/settings-changed' && payload.ns === 'agent-presets') this.presets.invalidate()
+    if ((payload.type === 'host/session-composition-changed'
+      || (payload.type === 'session/projection' && payload.key === 'agentPreset')) && typeof payload.sessionId === 'string') {
+      this.invalidateSessionDiscovery(payload.sessionId)
+    }
   }
   private call<T>(endpoint: string, args: Record<string, unknown>, timeoutMs = 30_000): Promise<T> {
     return this.connection.call(endpoint, args, timeoutMs, this.lifetime.signal)

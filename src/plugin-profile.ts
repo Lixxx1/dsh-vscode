@@ -13,6 +13,24 @@ export interface PluginInventoryEntry {
 
 export interface PluginInventorySnapshot {
   entries: readonly PluginInventoryEntry[]
+  agentPresets?: readonly AgentPresetPluginGroup[]
+}
+
+export interface AgentPresetPluginRow {
+  entryId: string | null
+  moduleName: string
+  enabled: boolean | 'conditional'
+  condition?: string
+  fiberPhase: PluginFiberPhase
+}
+
+export interface AgentPresetPluginGroup {
+  id: string
+  trust: 'system' | 'user'
+  name?: string
+  isDefault: boolean
+  broken?: string
+  rows: readonly AgentPresetPluginRow[]
 }
 
 export interface InstalledPlugin {
@@ -21,7 +39,7 @@ export interface InstalledPlugin {
   bundle: boolean
 }
 
-export type InstalledPluginStatus = 'active' | 'failed' | 'disabled' | 'loading' | 'inactive' | 'unknown'
+export type InstalledPluginStatus = 'active' | 'failed' | 'disabled' | 'loading' | 'unloading' | 'configured' | 'conditional' | 'inactive' | 'unknown'
 
 interface ProfileManifest {
   dependencies?: Record<string, unknown>
@@ -76,23 +94,31 @@ export function readInstalledPlugins(dshHome: string): InstalledPlugin[] {
     .sort((left, right) => left.name.localeCompare(right.name))
 }
 
-/** Match one installed bundle to Loader entries without claiming unavailable provenance. */
+/** A configured preset row without a live Fiber is not an active plugin. */
+export function pluginEntryStatus(entry: AgentPresetPluginRow, preset: boolean): InstalledPluginStatus {
+  if (entry.enabled === false) return 'disabled'
+  if (entry.enabled === 'conditional') return 'conditional'
+  if (entry.fiberPhase === 'pending' || entry.fiberPhase === 'loading') return 'loading'
+  if (entry.fiberPhase !== null) return entry.fiberPhase
+  return preset ? 'configured' : 'inactive'
+}
+
+/** Match a bundle to observed entries and preset declarations, without inferring MCP connectivity. */
 export function installedPluginStatus(
   pluginName: string,
   inventory: PluginInventorySnapshot | undefined,
 ): InstalledPluginStatus {
   if (inventory === undefined) return 'unknown'
-  const entries = inventory.entries.filter(entry => (
-    entry.moduleName === pluginName || entry.moduleName.startsWith(`${pluginName}/`)
-  ))
-  if (entries.length === 0) return 'unknown'
-  if (entries.some(entry => entry.enabled && entry.fiberPhase === 'failed')) return 'failed'
-  if (entries.some(entry => entry.enabled && entry.fiberPhase === 'active')) return 'active'
-  if (entries.every(entry => !entry.enabled)) return 'disabled'
-  if (entries.some(entry => entry.enabled && (entry.fiberPhase === 'pending' || entry.fiberPhase === 'loading'))) {
-    return 'loading'
+  const matches = (entry: AgentPresetPluginRow): boolean => entry.moduleName === pluginName || entry.moduleName.startsWith(`${pluginName}/`)
+  const states = [
+    ...inventory.entries.filter(matches).map(entry => pluginEntryStatus(entry, false)),
+    ...(inventory.agentPresets ?? []).filter(preset => preset.broken === undefined)
+      .flatMap(preset => preset.rows.filter(matches).map(entry => pluginEntryStatus(entry, true))),
+  ]
+  for (const status of ['failed', 'loading', 'unloading', 'active', 'configured', 'conditional', 'inactive', 'disabled'] as const) {
+    if (states.includes(status)) return status
   }
-  return 'inactive'
+  return 'unknown'
 }
 
 /** Accept one pnpm package spec while preventing option injection into the official CLI forwarder. */

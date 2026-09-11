@@ -48,6 +48,11 @@ describe('collaboration state projections', () => {
     expect(planModeCommand('normal')).toBe('/plan off')
   })
 
+  it('removes Plan controls when the official command disappears without inventing a mode transition', () => {
+    expect(planModeWithCommandAvailability({ available: true, active: true, pending: false }, false))
+      .toEqual({ available: false, active: true, pending: false })
+  })
+
   it('requires confirmation only for the official full-access preset', () => {
     expect(requiresFullAccessConfirmation('danger-full-access')).toBe(true)
     expect(requiresFullAccessConfirmation('workspace-write')).toBe(false)

@@ -1,6 +1,7 @@
 import { withoutIdeContext } from './ide-context.js'
 import type { ImageMediaType } from './dsh-client.js'
 import { presentToolCall, presentToolResult } from './tool-presentation.js'
+import type { AssistantAttempt, AssistantStreamUpdate } from './dsh-assistant-stream.js'
 
 export type ConversationRole = 'user' | 'assistant' | 'tool' | 'command' | 'notice'
 
@@ -68,6 +69,7 @@ export interface DshEvent {
   seq: number
   time: number
   data: unknown
+  surfaceOp?: unknown
 }
 
 interface EventData {
@@ -144,8 +146,11 @@ export class ConversationProjector {
   private readonly orderedIds: string[] = []
   private readonly byId = new Map<string, ConversationMessage>()
   private readonly hiddenCommandIds = new Set<string>()
+  private liveAttempt: (AssistantAttempt & { message?: ConversationMessage }) | undefined
 
-  reset(entries: readonly (DshEvent | { event: DshEvent; view?: unknown })[]): void {
+  reset(entries: readonly (DshEvent | { event: DshEvent; view?: unknown })[], preserveLive = false): void {
+    const live = preserveLive ? this.liveAttempt : undefined
+    this.liveAttempt = undefined
     this.orderedIds.length = 0
     this.byId.clear()
     this.hiddenCommandIds.clear()
@@ -153,11 +158,36 @@ export class ConversationProjector {
       if ('event' in entry) this.apply(entry.event, entry.view)
       else this.apply(entry)
     }
+    this.liveAttempt = live
+  }
+
+  /** A process-local prefix is not history; retry/abandonment must be able to discard it. */
+  applyStream(update: AssistantStreamUpdate): void {
+    if (update.kind === 'start') { this.liveAttempt = { ...update }; return }
+    const active = this.liveAttempt
+    if (active?.attemptId !== update.attemptId) return
+    if (update.kind === 'end') { this.liveAttempt = undefined; return }
+    const chunk = update.chunk
+    const current = active.message
+    const images = chunk.type === 'block-end' ? imageContent(chunk.block) : []
+    const text = chunk.type === 'text-delta' && typeof chunk.text === 'string' ? chunk.text : ''
+    if (text === '' && images.length === 0) return
+    const next: ConversationMessage = {
+      id: `assistant-live:${active.attemptId}`, role: 'assistant', streaming: true,
+      text: `${current?.text ?? ''}${text}`,
+      ...(current?.images === undefined && images.length === 0 ? {} : { images: mergeImages(current?.images, images) }),
+    }
+    if (text !== '') appendAssistantStream(current, next, text)
+    else inheritAssistantStream(current, next)
+    active.message = next
   }
 
   apply(event: DshEvent, view?: unknown): void {
     const data = record(event.data)
     if (data === undefined) return
+    if ((event.type === 'assistant/message' || event.type === 'assistant/attempt')
+      && this.liveAttempt?.turn === data.turn && this.liveAttempt?.step === data.step
+      && (event.type === 'assistant/attempt' || event.surfaceOp === 'append')) this.liveAttempt = undefined
 
     if (event.type === 'user/message') {
       const source = record(data.source)
@@ -301,13 +331,20 @@ export class ConversationProjector {
   }
 
   messages(): ConversationMessage[] {
-    return this.orderedIds.flatMap(id => {
+    const messages = this.orderedIds.flatMap(id => {
       const value = this.byId.get(id)
       if (value === undefined) return []
       const copy = { ...value }
       inheritAssistantStream(value, copy)
       return [copy]
     })
+    const live = this.liveAttempt?.message
+    if (live !== undefined) {
+      const copy = { ...live }
+      inheritAssistantStream(live, copy)
+      messages.push(copy)
+    }
+    return messages
   }
 
   private set(id: string, message: ConversationMessage): void {
