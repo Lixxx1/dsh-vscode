@@ -11,7 +11,7 @@ describe('DSH 0.1.2 Session Remotes', () => {
     await api.renameSession('s1', 'A new title')
     await api.cancel('s1')
     await api.updateQueue('s1', 'm1', { kind: 'steer' })
-    expect(call.mock.calls).toEqual([
+    expect(call.mock.calls.map(args => args.slice(0, 2))).toEqual([
       ['session/list', { _request: {} }],
       ['session/create', { request: { cwd: 'C:\\Users\\测试\\project' } }],
       ['session/rename', { request: { sessionId: 's1', title: 'A new title' } }],
@@ -35,5 +35,16 @@ describe('DSH 0.1.2 Session Remotes', () => {
     expect(second.requestId).not.toBe(first.requestId)
     expect(second.content).toEqual([image])
     expect(second.mode).toBe('queue')
+  })
+
+  it('forwards the client lifetime to all session mutations', async () => {
+    const call = vi.fn().mockResolvedValue({ accepted: true })
+    const lifetime = new AbortController()
+    const api = new DshRemoteApi({ call } as unknown as DshConnection, lifetime.signal)
+    await api.prompt('s1', 'hello')
+    await api.cancel('s1')
+    lifetime.abort()
+    expect(call.mock.calls.every(args => args[2] === 30_000 && args[3] === lifetime.signal)).toBe(true)
+    expect(call.mock.calls[0]![3].aborted).toBe(true)
   })
 })

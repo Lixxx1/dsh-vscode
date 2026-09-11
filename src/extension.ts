@@ -216,6 +216,7 @@ class DshChatController implements vscode.Disposable {
   private summaries: SessionSummary[] = []
   private _state: ChatViewState
   private generation = 0
+  private sessionLoadGeneration = 0
   private readonly guardedDirtyCalls = new Set<string>()
   private queueRawText = new Map<string, string>()
   private readonly attachmentResults = new Map<string, Pick<ConversationImage, 'data' | 'error'>>()
@@ -308,9 +309,11 @@ class DshChatController implements vscode.Disposable {
     })
     if (this.cwd === '') return
     try {
-      const uri = await this.runtime.start(this.cwd === '' ? undefined : vscode.Uri.file(this.cwd))
+      await this.runtime.start(this.cwd === '' ? undefined : vscode.Uri.file(this.cwd))
       if (generation !== this.generation) return
-      const client = new DshClient(new URL(uri.toString(true)))
+      const connection = this.runtime.connection
+      if (connection === undefined) throw new Error('DSH did not establish an authenticated connection.')
+      const client = new DshClient(connection)
       this.client = client
       this.clientDisposables.push(
         client.onFrame(frame => {
@@ -325,9 +328,9 @@ class DshChatController implements vscode.Disposable {
           this.publish({ phase: 'error', statusText: `Lost the DSH event stream: ${error.message}` })
         }),
       )
-      await this.loadSessions()
+      await client.startStreams()
       if (generation !== this.generation || this.client !== client) return
-      client.startStreams()
+      await this.loadSessions()
     } catch (error) {
       if (generation !== this.generation) return
       const message = error instanceof Error ? error.message : String(error)
@@ -395,6 +398,7 @@ class DshChatController implements vscode.Disposable {
     if (this._state.sessionId === '' || !this._state.hasMoreHistory || this._state.loadingHistory) return
     const sessionId = this._state.sessionId
     const client = this.requireClient()
+    const loadGeneration = this.sessionLoadGeneration
     const beforeSeq = earliestHistorySequence(this.historyEntries)
     if (beforeSeq === undefined) {
       this.publish({ hasMoreHistory: false })
@@ -403,7 +407,7 @@ class DshChatController implements vscode.Disposable {
     this.publish({ loadingHistory: true })
     try {
       const page = await client.history(sessionId, beforeSeq)
-      if (this.client !== client || this._state.sessionId !== sessionId) return
+      if (this.client !== client || this._state.sessionId !== sessionId || loadGeneration !== this.sessionLoadGeneration) return
       const unseenEntries = unseenHistoryEntries(this.historyEntries, page.events)
       this.historyEntries = mergeHistoryEntries(this.historyEntries, unseenEntries)
       this.projector.reset(this.historyEntries)
@@ -414,8 +418,10 @@ class DshChatController implements vscode.Disposable {
         loadingHistory: false,
       })
       this.hydrateImages(client, sessionId)
+    } catch (error) {
+      if (this.client === client && loadGeneration === this.sessionLoadGeneration) throw error
     } finally {
-      if (this.client === client && this._state.sessionId === sessionId && this._state.loadingHistory) {
+      if (this.client === client && loadGeneration === this.sessionLoadGeneration && this._state.sessionId === sessionId && this._state.loadingHistory) {
         this.publish({ loadingHistory: false })
       }
     }
@@ -649,6 +655,7 @@ class DshChatController implements vscode.Disposable {
 
   private async loadSession(sessionId: string): Promise<void> {
     const client = this.requireClient()
+    const loadGeneration = ++this.sessionLoadGeneration
     this.historyEntries = []
     this.publish({
       phase: 'loading',
@@ -657,16 +664,27 @@ class DshChatController implements vscode.Disposable {
       hasMoreHistory: false,
       loadingHistory: false,
     })
-    const [{ events, hasMore }, models] = await Promise.all([
-      client.history(sessionId),
-      client.models(sessionId),
-    ])
-    if (this.client !== client || this._state.sessionId !== sessionId) return
+    const result = await (async () => {
+      const opening = await client.openSession(sessionId)
+      if (!opening.isCurrent()) return undefined
+      const models = await client.models(sessionId)
+      return { opening, models }
+    })().catch((error: unknown) => {
+      if (this.client === client && loadGeneration === this.sessionLoadGeneration) throw error
+      return undefined
+    })
+    if (result === undefined || this.client !== client || loadGeneration !== this.sessionLoadGeneration || !result.opening.isCurrent()) return
+    const { opening, models } = result
+    const { events, hasMore } = opening
     this.projector.reset(events)
     this.historyEntries = events
     this.guardedDirtyCalls.clear()
     this.queueRawText.clear()
     const summary = this.summaries.find(item => item.sessionId === sessionId)
+    if (summary !== undefined) {
+      summary.projections = { values: opening.projections }
+      if (typeof opening.projections.agentPreset === 'string') summary.agentPreset = opening.projections.agentPreset
+    }
     this.publish({
       phase: 'ready',
       statusText: '',
@@ -690,6 +708,7 @@ class DshChatController implements vscode.Disposable {
       loadingHistory: false,
       ...this.modelPatch(models),
     })
+    opening.activate()
     this.hydrateImages(client, sessionId)
     void this.loadCommands(client, sessionId)
     void this.loadSkills(client, sessionId)
@@ -929,6 +948,10 @@ class DshChatController implements vscode.Disposable {
       if (payload.key === 'plan' && sessionId === this._state.sessionId) {
         this.publish({ plan: planModeStateOf(payload.value) })
       }
+      if (payload.key === 'modelSelection' && sessionId === this._state.sessionId) {
+        const models = this.client?.currentModels(sessionId)
+        if (models !== undefined) this.publish(this.modelPatch(models))
+      }
       if ((payload.key === 'tokenUsage'
         || payload.key === 'sessionStats'
         || payload.key === 'contextPressure'
@@ -969,7 +992,12 @@ class DshChatController implements vscode.Disposable {
     }
 
     if (frame.channel === 'host' && type === 'host/session-added' && payload.cwd === this.cwd) {
-      void this.loadSessions(sessionId).catch(error => { this.report(error) })
+      // Discovery must not steal focus or replace a snapshot currently loading.
+      if (!this.summaries.some(item => item.sessionId === sessionId)) {
+        this.summaries.push({ sessionId, cwd: this.cwd, updatedAt: typeof payload.updatedAt === 'number' ? payload.updatedAt : 0,
+          running: payload.running === true, blank: payload.blank === true })
+        this.publishSessionItems()
+      }
     }
   }
 
