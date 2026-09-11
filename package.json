@@ -233,6 +233,7 @@
     "@types/vscode": "^1.100.0",
     "@types/ws": "^8.18.1",
     "@vscode/vsce": "^3.6.0",
+    "diff": "^9.0.0",
     "esbuild": "^0.25.12",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8",

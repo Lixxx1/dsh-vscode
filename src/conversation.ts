@@ -1,5 +1,6 @@
 import { withoutIdeContext } from './ide-context.js'
 import type { ImageMediaType } from './dsh-client.js'
+import { presentToolCall, presentToolResult } from './tool-presentation.js'
 
 export type ConversationRole = 'user' | 'assistant' | 'tool' | 'command' | 'notice'
 
@@ -221,7 +222,7 @@ export class ConversationProjector {
         text: name,
         detail: 'Running…',
         streaming: true,
-        callView: toolView(view, 'call'),
+        callView: toolView(view, 'call') ?? presentToolCall(name, data.arguments),
         ...(typeof data.arguments === 'string' ? { rawInput: data.arguments } : {}),
       })
       return
@@ -249,7 +250,7 @@ export class ConversationProjector {
         failed,
         ...(current?.callView === undefined ? {} : { callView: current.callView }),
         ...(current?.rawInput === undefined ? {} : { rawInput: current.rawInput }),
-        resultView: toolView(view, 'result'),
+        resultView: toolView(view, 'result') ?? presentToolResult(current?.text ?? '', current?.rawInput, event, failed),
         ...(rawResult === '' ? {} : { rawResult }),
         ...(images.length > 0 ? { images } : {}),
       })
