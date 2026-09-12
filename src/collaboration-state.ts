@@ -52,7 +52,7 @@ export function effectivePlanMode(plan: PlanModeState): boolean {
 }
 
 export function planModeWithCommandAvailability(plan: PlanModeState, available: boolean): PlanModeState {
-  return available && !plan.available ? { ...plan, available: true } : plan
+  return { ...plan, available }
 }
 
 export function planModeCommand(mode: 'normal' | 'plan'): '/plan' | '/plan off' {

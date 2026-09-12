@@ -11,6 +11,13 @@ describe('DSH launch resolution', () => {
     expect(parseDshWebUrl('info dsh web: http://127.0.0.1:8080 (LAN: ignored)')).toBe('http://127.0.0.1:8080')
     expect(parseDshWebUrl('server listening at http://127.0.0.1:43127')).toBeUndefined()
     expect(parseDshWebUrl('dsh web: https://example.com')).toBeUndefined()
+    expect(parseDshWebUrl('dsh web: http://127.0.0.1:3080/?token=launch-token_123')).toBe('http://127.0.0.1:3080/?token=launch-token_123')
+    expect(parseDshWebUrl('dsh web: http://127.0.0.1:3080/')).toBe('http://127.0.0.1:3080/')
+    expect(parseDshWebUrl('dsh web: http://127.0.0.1:3080/?token=one&token=two')).toBeUndefined()
+    expect(parseDshWebUrl('dsh web: http://127.0.0.1:3080/path')).toBeUndefined()
+    expect(parseDshWebUrl('dsh web: http://127.0.0.1:0')).toBeUndefined()
+    expect(parseDshWebUrl('dsh web: http://127.0.0.1:999999')).toBeUndefined()
+    expect(parseDshWebUrl('dsh web: http://127.0.0.1/?token=token')).toBe('http://127.0.0.1/?token=token')
   })
 
   it('suppresses the rc.8 browser handoff while preserving older DSH launches', () => {

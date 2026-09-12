@@ -31,6 +31,13 @@ describe('toolWriteIntents', () => {
     expect(toolWriteIntents(value, view)).toEqual([{ callId: 'call-2', paths: ['a.ts', 'b.ts'] }])
   })
 
+  it.each(['write', 'edit'])('detects rc.1 %s arguments without a presentation view', name => {
+    expect(toolWriteIntents(event('tool/call', {
+      turn: 1, step: 1, callId: 'rc1-call', name,
+      arguments: JSON.stringify({ file_path: 'src/app.ts', content: 'new', old_string: 'old', new_string: 'new' }),
+    }))).toEqual([{ callId: 'rc1-call', paths: ['src/app.ts'] }])
+  })
+
   it('ignores read-only calls and malformed write arguments', () => {
     expect(toolWriteIntents(event('tool/call', {
       callId: 'read-1', name: 'read', arguments: '{"file_path":"src/app.ts"}',

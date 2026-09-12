@@ -18,7 +18,7 @@ import {
   type PermissionPresetItem,
   type PlanModeState,
 } from './collaboration-state.js'
-import { DEEPSEEK_API_KEY_SECRET, normalizeDeepSeekApiKey } from './credentials.js'
+import { configureApiKey, clearApiKey, watchDebugConfiguration } from './runtime-configuration.js'
 import { DiffReviewManager, type ChangedFileGroup } from './diff-review.js'
 import { DebugRuntimeContribution } from './debug-runtime-contribution.js'
 import { DebugSessionManager } from './debug-session-manager.js'
@@ -47,6 +47,7 @@ import {
 } from './image-limits.js'
 import { jobsSnapshotOf, type JobItem } from './jobs.js'
 import { queueSnapshotOf, type QueueItemState } from './queue.js'
+import type { AssistantStreamUpdate } from './dsh-assistant-stream.js'
 import { DshRuntime, type RuntimeOwnership, type RuntimeState } from './runtime.js'
 import { toolWriteIntents } from './tool-write-guard.js'
 import { pageConversationMessage } from './tool-output-page.js'
@@ -64,7 +65,12 @@ import {
   messagesPatchForWebview,
   type ConversationMessagesPatch,
 } from './chat-state-patch.js'
-import { sessionItems, type SessionItem } from './session-center.js'
+import { sessionItems, type SessionItem, type SessionAttention } from './session-center.js'
+import { wireRecord } from './dsh-streams.js'
+import type { DshConnection } from './dsh-connection.js'
+import { canRetryConnection, reconnectAttempts } from './dsh-reconnect.js'
+import { ExistingRuntimeConnectionError, existingRuntimeUrl, type RuntimeTarget } from './runtime-target.js'
+import { pickExistingRuntime, pickManagedRuntime } from './runtime-picker.js'
 
 let activeRuntime: DshRuntime | undefined
 
@@ -124,6 +130,7 @@ interface ChatViewState {
   phase: 'loading' | 'ready' | 'error'
   statusText: string
   setup: SetupKind
+  canReconnect: boolean
   workspaceName: string
   cwd: string
   sessions: SessionItem[]
@@ -183,6 +190,7 @@ function initialState(cwd: string): ChatViewState {
     phase: cwd === '' ? 'error' : 'loading',
     statusText: cwd === '' ? 'Open a project folder to start using DeepSeek Harness.' : 'Starting the official DeepSeek Harness runtime…',
     setup: setupKindFor(cwd, cwd === '' ? 'error' : 'loading', ''),
+    canReconnect: false,
     workspaceName: path.basename(cwd),
     cwd,
     sessions: [],
@@ -208,14 +216,23 @@ function initialState(cwd: string): ChatViewState {
   }
 }
 
-class DshChatController implements vscode.Disposable {
+export class DshChatController implements vscode.Disposable {
   private readonly changes = new vscode.EventEmitter<ChatViewState>()
+  private readonly settingsChanges = new vscode.EventEmitter<void>()
   private readonly projector = new ConversationProjector()
   private client: DshClient | undefined
   private clientDisposables: Array<() => void> = []
   private summaries: SessionSummary[] = []
   private _state: ChatViewState
   private generation = 0
+  private runtimeSwitchRevision = 0
+  private disposed = false
+  private activityRevision = 0
+  private readonly runtimeActivity = new Map<string, { running: boolean; revision: number }>()
+  private sessionLoadGeneration = 0
+  private sessionListGeneration = 0
+  private readonly discoveryRequests = new Map<string, number>()
+  private readonly settingsOwners = new WeakMap<SettingsNamespace, DshClient>()
   private readonly guardedDirtyCalls = new Set<string>()
   private queueRawText = new Map<string, string>()
   private readonly attachmentResults = new Map<string, Pick<ConversationImage, 'data' | 'error'>>()
@@ -224,10 +241,15 @@ class DshChatController implements vscode.Disposable {
   private historyEntries: HistoryEntry[] = []
   private archivedSessionIds = new Set<string>()
   private readonly unreadSessionIds: Set<string>
+  private readonly sessionAttention = new Map<string, SessionAttention>()
+  private readonly reconnectSessions = new Set<string>()
+  private automaticReconnects: number[] = []
+  private recovery: { abort: AbortController; task: Promise<void>; failure: Error | undefined } | undefined
 
   private static readonly unreadStorageKey = 'deepseekHarness.unreadSessions'
 
   readonly onDidChangeState = this.changes.event
+  readonly onDidChangeRuntimeSettings = this.settingsChanges.event
 
   constructor(
     private readonly runtime: DshRuntime,
@@ -254,24 +276,51 @@ class DshChatController implements vscode.Disposable {
     return state.kind === 'ready' ? state.ownership : undefined
   }
 
+  /** Includes hidden, archived and other-workspace sessions on this runtime. */
+  get hasRunningTasks(): boolean {
+    return this._state.running || this.summaries.some(summary => summary.running)
+      || [...this.runtimeActivity.values()].some(activity => activity.running)
+      || [...this.jobsBySession.values()].some(jobs => jobs.some(job => job.status === 'running' || job.status === 'stopping'))
+  }
+
+  get isDisposed(): boolean { return this.disposed }
+
+  /** Opaque connection identity for deferred plugin/settings completion checks. */
+  get runtimeIdentity(): object | undefined {
+    return this.runtime.state.kind === 'ready' ? this.runtime.connection : undefined
+  }
+
   publish(patch: Partial<ChatViewState>): void {
     this._state = { ...this._state, ...patch }
     this.changes.fire(this._state)
   }
 
   observeRuntime(state: RuntimeState): void {
+    if (state.kind === 'stopped' || state.kind === 'failed') {
+      this.cancelRecovery()
+      ++this.generation
+      this.disconnectClient()
+      for (const summary of this.summaries) summary.running = false
+      this.clearLiveControls()
+      this.publish({ canReconnect: false, running: false, messages: this.resetToDurableMessages() })
+    }
     if (state.kind === 'starting') this.publish({ phase: 'loading', statusText: state.detail, setup: null })
     if (state.kind === 'failed') this.publish({
       phase: 'error',
       statusText: state.message,
-      setup: setupKindFor(this.cwd, 'error', state.message),
+      setup: state.reason === 'runtime-auth' ? 'runtime-auth' : setupKindFor(this.cwd, 'error', state.message),
     })
-    if (state.kind === 'stopped' && this._state.phase === 'ready') {
+    if (state.kind === 'stopped') {
       this.publish({ phase: 'error', statusText: 'DeepSeek Harness stopped.', setup: null })
     }
   }
 
-  async start(): Promise<void> {
+  async start(target?: RuntimeTarget): Promise<void> {
+    if (this.disposed) return
+    ++this.runtimeSwitchRevision
+    this.cancelRecovery()
+    this.reconnectSessions.clear()
+    this.automaticReconnects = []
     const generation = ++this.generation
     this.disconnectClient()
     this.projector.reset([])
@@ -286,6 +335,7 @@ class DshChatController implements vscode.Disposable {
       phase: this.cwd === '' ? 'error' : 'loading',
       statusText: this.cwd === '' ? 'Open a project folder to start using DeepSeek Harness.' : 'Starting the official DeepSeek Harness runtime…',
       setup: this.cwd === '' ? 'workspace' : null,
+      canReconnect: false,
       messages: [],
       sessions: [],
       sessionId: '',
@@ -308,44 +358,182 @@ class DshChatController implements vscode.Disposable {
     })
     if (this.cwd === '') return
     try {
-      const uri = await this.runtime.start(this.cwd === '' ? undefined : vscode.Uri.file(this.cwd))
+      await this.runtime.start(this.cwd === '' ? undefined : vscode.Uri.file(this.cwd), target)
       if (generation !== this.generation) return
-      const client = new DshClient(new URL(uri.toString(true)))
-      this.client = client
-      this.clientDisposables.push(
-        client.onFrame(frame => {
-          const type = frame.payload.type
-          if (typeof type === 'string' && (type.startsWith('approval/') || type.startsWith('question/'))) {
-            this.output.appendLine(`[protocol] ${type} for ${String(frame.payload.sessionId ?? 'unknown session')}`)
-          }
-          this.acceptFrame(frame)
-        }),
-        client.onError(error => {
-          this.output.appendLine(`[protocol] ${error.message}`)
-          this.publish({ phase: 'error', statusText: `Lost the DSH event stream: ${error.message}` })
-        }),
-      )
-      await this.loadSessions()
+      const connection = this.runtime.connection
+      if (connection === undefined) throw new Error('DSH did not establish an authenticated connection.')
+      const client = this.connectClient(connection)
+      this.publish({ canReconnect: true })
+      await client.startStreams()
       if (generation !== this.generation || this.client !== client) return
-      client.startStreams()
+      await this.loadSessions()
     } catch (error) {
       if (generation !== this.generation) return
       const message = error instanceof Error ? error.message : String(error)
       this.output.appendLine(`[chat] ${message}`)
-      this.publish({ phase: 'error', statusText: message, setup: setupKindFor(this.cwd, 'error', message) })
+      this.publish({ phase: 'error', statusText: message,
+        setup: error instanceof ExistingRuntimeConnectionError ? 'runtime-auth' : setupKindFor(this.cwd, 'error', message) })
     }
   }
 
-  async restart(): Promise<void> {
+  async restart(target?: RuntimeTarget): Promise<boolean> {
+    if (this.disposed) return false
+    const revision = ++this.runtimeSwitchRevision
+    this.cancelRecovery()
     ++this.generation
     this.disconnectClient()
+    this.publish({ phase: 'loading', statusText: 'Restarting DeepSeek Harness…', canReconnect: false })
     await this.runtime.stop()
-    await this.start()
+    if (revision !== this.runtimeSwitchRevision) return false
+    const startGeneration = this.generation + 1
+    await this.start(target)
+    return !this.disposed && this.runtimeSwitchRevision === revision + 1 && this.generation === startGeneration
+  }
+
+  assertCanSelectRuntime(): void {
+    if (this.disposed) throw new Error('The DeepSeek sidebar has closed. Reopen it before selecting a runtime.')
+    if (this.cwd === '') throw new Error('Open a project folder before selecting a DSH runtime.')
+    if (this._state.phase === 'loading') throw new Error('Wait for the current connection attempt to finish before selecting a runtime.')
+    if (this.runtime.state.kind === 'ready' && this._state.phase !== 'ready') {
+      throw new Error('Reconnect to DeepSeek Harness to check running tasks before switching projects or runtimes.')
+    }
+    if (this.hasRunningTasks) {
+      throw new Error('Finish or stop the running DeepSeek tasks before switching runtimes.')
+    }
+  }
+
+  async selectRuntime(target: RuntimeTarget): Promise<void> {
+    this.assertCanSelectRuntime()
+    if (target.kind === 'external') existingRuntimeUrl(target.launchUrl.href)
+    this.publish({ phase: 'loading', setup: null, statusText: 'Switching DeepSeek Harness runtime…' })
+    await this.restart(target)
+  }
+
+  /** Rebuild subscriptions on the same runtime; never resubmit a user action. */
+  reconnect(automatic = false): Promise<void> {
+    if (this.recovery !== undefined) return this.recovery.task
+    if (this.runtime.state.kind !== 'ready') {
+      this.publish({ phase: 'error', setup: null, canReconnect: false,
+        statusText: 'The DSH runtime is not running. Use Restart Runtime to start it.' })
+      return Promise.resolve()
+    }
+    const connection = this.runtime.connection
+    if (!automatic) this.automaticReconnects = []
+    const generation = ++this.generation
+    const selectedId = this._state.sessionId
+    for (const id of this.client?.handledSessionIds ?? []) this.reconnectSessions.add(id)
+    if (selectedId !== '') this.reconnectSessions.add(selectedId)
+    this.disconnectClient()
+    this.clearLiveControls()
+    this.publish({ phase: 'loading', setup: null, canReconnect: true, statusText: 'Reconnecting to the existing DSH runtime…' })
+    const recovery = { abort: new AbortController(), task: Promise.resolve(), failure: undefined as Error | undefined }
+    this.recovery = recovery
+    recovery.task = reconnectAttempts(async attempt => {
+      if (this.runtime.state.kind !== 'ready' || this.runtime.connection !== connection) throw new Error('The DSH runtime changed. Reconnect to its new instance.')
+      this.disconnectClient()
+      recovery.failure = undefined
+      if (automatic) {
+        this.automaticReconnects = this.automaticReconnects.filter(time => Date.now() - time < 30_000)
+        if (this.automaticReconnects.length >= 3) throw new Error('The DSH connection keeps dropping. Check the runtime, then reconnect manually.')
+        this.automaticReconnects.push(Date.now())
+      }
+      this.publish({ phase: 'loading', statusText: `Reconnecting to DSH${automatic ? ` (${String(attempt)}/3)` : ''}…` })
+      // A manual retry can renew an expired cookie using the existing launch URL.
+      // Tokenless reused runtimes only need their subscriptions rebuilt.
+      // An automatic retry never changes credentials or starts a process.
+      if (!automatic && connection.canReauthenticate) await connection.reauthenticate(recovery.abort.signal)
+      recovery.abort.signal.throwIfAborted()
+      const client = this.connectClient(connection, [...this.reconnectSessions])
+      try {
+        await client.startStreams()
+        recovery.abort.signal.throwIfAborted()
+        await this.loadSessions(selectedId || undefined, false)
+        recovery.abort.signal.throwIfAborted()
+        if (recovery.failure !== undefined) throw recovery.failure
+        if (this.client !== client || this._state.phase !== 'ready') throw new Error('DSH did not restore the conversation. Reconnect to try again.')
+      } catch (error) {
+        throw recovery.failure ?? error
+      }
+    }, recovery.abort.signal, automatic).catch((error: unknown) => {
+      if (recovery.abort.signal.aborted || generation !== this.generation) return
+      this.disconnectClient()
+      this.clearLiveControls()
+      const message = error instanceof Error ? error.message : String(error)
+      this.output.appendLine(`[reconnect] ${message}`)
+      this.publish({
+        phase: 'error',
+        setup: null,
+        messages: this.resetToDurableMessages(),
+        statusText: `Could not reconnect to DSH: ${message} No tasks were resent.`,
+      })
+    }).finally(() => {
+      if (this.recovery === recovery) this.recovery = undefined
+    })
+    return recovery.task
+  }
+
+  private connectClient(connection: DshConnection, requestSessions: readonly string[] = []): DshClient {
+    const client = new DshClient(connection, requestSessions)
+    this.client = client
+    this.clientDisposables.push(
+      client.onFrame(frame => {
+        if (this.client !== client) return
+        const type = frame.payload.type
+        if (typeof type === 'string' && (type.startsWith('approval/') || type.startsWith('question/'))) {
+          this.output.appendLine(`[protocol] ${type} for ${String(frame.payload.sessionId ?? 'unknown session')}`)
+        }
+        this.acceptFrame(frame)
+      }),
+      client.onError(error => {
+        if (this.client !== client) return
+        this.output.appendLine(`[protocol] ${error.message}`)
+        for (const id of client.handledSessionIds) this.reconnectSessions.add(id)
+        if (this.recovery !== undefined) {
+          this.recovery.failure = error
+          client.dispose()
+          return
+        }
+        if (canRetryConnection(error) && this.runtime.state.kind === 'ready') {
+          void this.reconnect(true)
+        } else {
+          this.disconnectClient()
+          this.clearLiveControls()
+          this.publish({
+            phase: 'error',
+            setup: null,
+            messages: this.resetToDurableMessages(),
+            statusText: `Lost the DSH event stream: ${error.message}`,
+          })
+        }
+      }),
+    )
+    return client
+  }
+
+  private clearLiveControls(): void {
+    ++this.sessionLoadGeneration
+    this.queueRawText.clear()
+    this.jobsBySession.clear()
+    this.sessionAttention.clear()
+    this.publish({ approval: null, question: null, queue: [], jobs: [], loadingHistory: false })
+    this.publishSessionItems()
+  }
+
+  private resetToDurableMessages(): ConversationMessage[] {
+    // Process-local assistant deltas cannot settle once their stream or runtime
+    // is abandoned. Preserve only the selected session's durable history.
+    this.projector.reset(this.historyEntries)
+    return this.projectedMessages()
+  }
+
+  private cancelRecovery(): void {
+    this.recovery?.abort.abort()
+    this.recovery = undefined
   }
 
   async switchWorkspace(cwd: string): Promise<void> {
     if (cwd === '' || cwd === this.cwd) return
-    if (this._state.running) throw new Error('Wait for the current DeepSeek task to finish before switching projects.')
+    this.assertCanSelectRuntime()
     this._cwd = cwd
     this.summaries = []
     this.projector.reset([])
@@ -359,12 +547,16 @@ class DshChatController implements vscode.Disposable {
   }
 
   async newSession(): Promise<void> {
+    this.requireReady()
     const client = this.requireClient()
+    const generation = this.sessionLoadGeneration
     const created = await client.createSession(this.cwd)
+    if (this.client !== client || generation !== this.sessionLoadGeneration) return
     await this.loadSessions(created.sessionId)
   }
 
   async selectSession(sessionId: string): Promise<void> {
+    this.requireReady()
     if (!this.summaries.some(summary => summary.sessionId === sessionId && summary.cwd === this.cwd)
       || this.archivedSessionIds.has(sessionId)) return
     this.markRead(sessionId)
@@ -372,19 +564,25 @@ class DshChatController implements vscode.Disposable {
   }
 
   async renameSession(sessionId: string, title: string): Promise<void> {
+    this.requireReady()
     const summary = this.summaries.find(item => item.sessionId === sessionId)
     const normalized = title.trim()
     if (summary === undefined || summary.blank || normalized === '') return
-    const result = await this.requireClient().renameSession(sessionId, normalized)
+    const client = this.requireClient()
+    const result = await client.renameSession(sessionId, normalized)
+    if (this.client !== client) return
     summary.projections = { values: { ...summary.projections?.values, title: result.title } }
     summary.updatedAt = Date.now()
     this.publishSessionItems()
   }
 
   async archiveSession(sessionId: string): Promise<void> {
+    this.requireReady()
     const summary = this.summaries.find(item => item.sessionId === sessionId)
     if (summary === undefined || summary.blank) return
-    const result = await this.requireClient().archiveSession(sessionId)
+    const client = this.requireClient()
+    const result = await client.archiveSession(sessionId)
+    if (this.client !== client) return
     this.archivedSessionIds = new Set(result.archivedSessionIds)
     this.unreadSessionIds.delete(sessionId)
     this.persistUnreadSessions()
@@ -392,9 +590,11 @@ class DshChatController implements vscode.Disposable {
   }
 
   async loadOlderHistory(): Promise<void> {
+    this.requireReady()
     if (this._state.sessionId === '' || !this._state.hasMoreHistory || this._state.loadingHistory) return
     const sessionId = this._state.sessionId
     const client = this.requireClient()
+    const loadGeneration = this.sessionLoadGeneration
     const beforeSeq = earliestHistorySequence(this.historyEntries)
     if (beforeSeq === undefined) {
       this.publish({ hasMoreHistory: false })
@@ -403,10 +603,10 @@ class DshChatController implements vscode.Disposable {
     this.publish({ loadingHistory: true })
     try {
       const page = await client.history(sessionId, beforeSeq)
-      if (this.client !== client || this._state.sessionId !== sessionId) return
+      if (this.client !== client || this._state.sessionId !== sessionId || loadGeneration !== this.sessionLoadGeneration) return
       const unseenEntries = unseenHistoryEntries(this.historyEntries, page.events)
       this.historyEntries = mergeHistoryEntries(this.historyEntries, unseenEntries)
-      this.projector.reset(this.historyEntries)
+      this.projector.reset(this.historyEntries, true)
       this.publish({
         messages: this.projectedMessages(),
         changedFiles: this.diffReviews.prependHistory(sessionId, this.cwd, unseenEntries),
@@ -414,8 +614,10 @@ class DshChatController implements vscode.Disposable {
         loadingHistory: false,
       })
       this.hydrateImages(client, sessionId)
+    } catch (error) {
+      if (this.client === client && loadGeneration === this.sessionLoadGeneration) throw error
     } finally {
-      if (this.client === client && this._state.sessionId === sessionId && this._state.loadingHistory) {
+      if (this.client === client && loadGeneration === this.sessionLoadGeneration && this._state.sessionId === sessionId && this._state.loadingHistory) {
         this.publish({ loadingHistory: false })
       }
     }
@@ -427,19 +629,22 @@ class DshChatController implements vscode.Disposable {
     ideContext?: IdeContextSnapshot,
     mode: PromptMode = 'queue',
   ): Promise<void> {
+    this.requireReady()
     const normalized = text.trim()
     if ((normalized === '' && images.length === 0) || this._state.sessionId === '') return
-    const slash = this.slashRoute(normalized)
+    const client = this.requireClient()
+    const sessionId = this._state.sessionId
+    const generation = this.sessionLoadGeneration
+    const { route: slash, command } = await this.resolveInput(normalized)
+    if (this.client !== client || generation !== this.sessionLoadGeneration || this._state.phase !== 'ready') throw new Error('The conversation changed. Check its history before sending again.')
     if (slash.kind === 'command') {
-      const command = this._state.commands.find(item => item.name === slash.name)
-      if (images.length > 0 && command?.input?.images !== true) {
+      if (images.length > 0 && (command?.input?.attachments ?? command?.input?.images) !== true) {
         throw new Error(`${slash.token} does not accept image attachments; remove them first.`)
       }
-      const usesRc8Envelope = this._state.commands.some(item => item.input?.images === true)
-      const execution = await this.requireClient().executeCommand(
-        this._state.sessionId,
+      const execution = await client.executeCommand(
+        sessionId,
         normalized,
-        usesRc8Envelope && images.length > 0 ? images : undefined,
+        images.length > 0 ? images : undefined,
       )
       if (execution === undefined) throw new Error(`DeepSeek did not recognize ${slash.token}.`)
       if (images.length > 0 && execution.result.kind === 'error') {
@@ -447,36 +652,52 @@ class DshChatController implements vscode.Disposable {
       }
       return
     }
-    await this.requireClient().prompt(
-      this._state.sessionId,
+    await client.prompt(
+      sessionId,
       slash.kind === 'skill' || ideContext === undefined ? normalized : withIdeContext(normalized, ideContext),
       images,
       mode,
     )
-    const summary = this.summaries.find(item => item.sessionId === this._state.sessionId)
+    if (this.client !== client) return
+    const summary = this.summaries.find(item => item.sessionId === sessionId)
     if (summary !== undefined) summary.blank = false
-    this.publish({ agentPreset: lockAgentPresetState(this._state.agentPreset) })
+    if (generation === this.sessionLoadGeneration) this.publish({ agentPreset: lockAgentPresetState(this._state.agentPreset) })
   }
 
-  slashRoute(text: string): SlashRoute {
-    return routeSlashInput(text, this._state.commands, this._state.skills)
+  async slashRoute(text: string): Promise<SlashRoute> {
+    return (await this.resolveInput(text)).route
+  }
+
+  private async resolveInput(text: string): Promise<{ route: SlashRoute; command: CommandDescriptor | undefined }> {
+    if (!text.trimStart().startsWith('/')) return { route: { kind: 'prompt' }, command: undefined }
+    const client = this.requireClient()
+    const sessionId = this._state.sessionId
+    const generation = this.sessionLoadGeneration
+    // An invalidated catalog must settle before an unknown slash name can become a prompt.
+    const [commands, skills] = await Promise.all([client.listCommands(sessionId), client.listSkills(sessionId)])
+    if (this.client !== client || generation !== this.sessionLoadGeneration || this._state.phase !== 'ready') {
+      throw new Error('The conversation changed. Send the message again in the intended conversation.')
+    }
+    const route = routeSlashInput(text, commands.filter(command => command.name !== 'export'), skills)
+    return { route, command: route.kind === 'command' ? commands.find(command => command.name === route.name) : undefined }
   }
 
   async selectAgentPreset(id: string): Promise<void> {
+    this.requireReady()
     const current = this._state.agentPreset
     if (!current.available || current.locked || current.busy || id === current.current) return
     if (!current.options.some(option => option.id === id)) throw new Error(`Unknown DeepSeek agent preset: ${id}`)
     const client = this.requireClient()
     const sessionId = this._state.sessionId
+    const generation = this.sessionLoadGeneration
     if (sessionId === '') return
     this.publish({ agentPreset: selectAgentPresetState(current, id, true) })
     try {
-      const selected = await client.selectAgentPreset(sessionId, id)
-      if (this.client !== client || this._state.sessionId !== sessionId) return
-      const summary = this.summaries.find(item => item.sessionId === sessionId)
-      if (summary !== undefined) summary.agentPreset = selected.agentPreset
+      await client.selectAgentPreset(sessionId, id)
+      if (this.client !== client || generation !== this.sessionLoadGeneration) return
       this.publish({
-        agentPreset: selectAgentPresetState(this._state.agentPreset, selected.agentPreset, false),
+        // The sequenced projection may already include a newer selection from another client.
+        agentPreset: { ...this._state.agentPreset, busy: false },
         commands: [],
         skills: [],
       })
@@ -486,67 +707,97 @@ class DshChatController implements vscode.Disposable {
         this.loadModels(sessionId),
       ])
     } catch (error) {
-      if (this.client === client && this._state.sessionId === sessionId) {
-        this.publish({ agentPreset: { ...current, busy: false } })
+      if (this.client === client && generation === this.sessionLoadGeneration) {
+        const selected = this.summaries.find(item => item.sessionId === sessionId)?.agentPreset ?? current.current
+        this.publish({ agentPreset: selectAgentPresetState(this._state.agentPreset, selected, false) })
       }
       throw error
     }
   }
 
   async cancel(): Promise<void> {
+    this.requireReady()
     if (this._state.sessionId === '') return
     await this.requireClient().cancel(this._state.sessionId)
   }
 
-  async updateQueue(itemId: string, action: 'edit' | 'remove' | 'steer', text?: string): Promise<void> {
-    if (this._state.sessionId === '') return
+  async updateQueue(sessionId: string, itemId: string, action: 'edit' | 'remove' | 'steer', text?: string): Promise<void> {
+    if (sessionId === '' || sessionId !== this._state.sessionId || this._state.phase !== 'ready') {
+      throw new Error('The conversation changed. Use the queue in the current conversation.')
+    }
+    const item = this._state.queue.find(item => item.id === itemId)
+    if (item?.placement !== 'queued') throw new Error('This message is no longer queued.')
+    if (action === 'steer' && !this._state.running) throw new Error('Steering is available only while DeepSeek is running.')
     let request: QueueAction
     if (action === 'edit') {
       const replacement = text?.trim()
       if (replacement === undefined || replacement === '') throw new Error('Queued messages cannot be empty.')
       const original = this.queueRawText.get(itemId)
+      if (item.text === null || original === undefined) throw new Error('Messages with attachments cannot be edited.')
       request = {
         kind: 'edit',
         content: [{
           type: 'text',
-          text: original === undefined ? replacement : replaceTextPreservingIdeContext(original, replacement),
+          text: replaceTextPreservingIdeContext(original, replacement),
         }],
       }
     } else {
       request = { kind: action }
     }
-    await this.requireClient().updateQueue(this._state.sessionId, itemId, request)
+    await this.requireClient().updateQueue(sessionId, itemId, request)
   }
 
   async selectModel(selection: ModelSelection): Promise<void> {
-    if (this._state.sessionId === '') return
-    await this.requireClient().selectModel(this._state.sessionId, selection)
-    await this.loadModels(this._state.sessionId)
+    this.requireReady()
+    const sessionId = this._state.sessionId
+    const client = this.requireClient()
+    const generation = this.sessionLoadGeneration
+    if (sessionId === '') return
+    await client.selectModel(sessionId, selection)
+    if (this.client === client && generation === this.sessionLoadGeneration) await this.loadModels(sessionId)
   }
 
-  pluginInventory(): Promise<PluginInventorySnapshot> {
-    return this.requireClient().pluginInventory()
+  async pluginInventory(): Promise<PluginInventorySnapshot> {
+    const client = this.requireClient()
+    const inventory = await client.pluginInventory()
+    if (this.client !== client) throw new Error('The DSH runtime changed. Refresh the plugin inventory.')
+    return inventory
   }
 
-  settings(): Promise<SettingsDescription> {
-    return this.requireClient().settings()
+  async settings(): Promise<SettingsDescription> {
+    const client = this.requireClient()
+    const description = await client.settings()
+    if (this.client !== client) throw new Error('The DSH runtime changed. Reopen runtime settings.')
+    for (const namespace of description.namespaces) this.settingsOwners.set(namespace, client)
+    return description
   }
 
-  mutateSettings(ns: string, ops: SettingsMutation[], expectedRevision: number): Promise<SettingsNamespace> {
-    return this.requireClient().mutateSettings(ns, ops, expectedRevision)
+  mutateSettings(namespace: SettingsNamespace, ops: SettingsMutation[]): Promise<SettingsNamespace> {
+    this.requireReady()
+    const client = this.requireClient()
+    if (this.settingsOwners.get(namespace) !== client) throw new Error('The DSH runtime changed. Reopen runtime settings before saving.')
+    if (namespace.applies === 'restart' && this.hasRunningTasks) {
+      throw new Error('Finish or stop all running DeepSeek tasks before changing settings that require a runtime restart.')
+    }
+    return client.mutateSettings(namespace.ns, ops, namespace.revision)
   }
 
   async answerApproval(rpcId: string, approvalId: string, outcome: 'allowed-once' | 'rejected'): Promise<void> {
+    this.requireReady()
+    if (this._state.approval?.rpcId !== rpcId || this._state.approval.approvalId !== approvalId) throw new Error('This approval is no longer pending.')
     if (this._state.sessionId === '') return
-    await this.requireClient().respond(rpcId, {
+    const client = this.requireClient()
+    const generation = this.sessionLoadGeneration
+    await client.respond(rpcId, {
       sessionId: this._state.sessionId,
       approvalId,
       outcome,
     })
-    if (this._state.approval?.rpcId === rpcId) this.publish({ approval: null })
+    if (this.client === client && generation === this.sessionLoadGeneration && this._state.approval?.rpcId === rpcId) this.publish({ approval: null })
   }
 
   async answerQuestions(rpcId: string, answers: readonly QuestionAnswer[]): Promise<void> {
+    this.requireReady()
     if (this._state.sessionId === '') return
     const pending = this._state.question
     if (pending?.rpcId !== rpcId) throw new Error('This question is no longer pending.')
@@ -554,11 +805,13 @@ class DshChatController implements vscode.Disposable {
     if (answers.length !== expected.size || answers.some(answer => !expected.has(answer.id))) {
       throw new Error('Every DeepSeek question needs an answer.')
     }
-    await this.requireClient().respond(rpcId, {
+    const client = this.requireClient()
+    const generation = this.sessionLoadGeneration
+    await client.respond(rpcId, {
       sessionId: this._state.sessionId,
       answer: { answers },
     })
-    if (this._state.question?.rpcId === rpcId) this.publish({ question: null })
+    if (this.client === client && generation === this.sessionLoadGeneration && this._state.question?.rpcId === rpcId) this.publish({ question: null })
   }
 
   report(error: unknown): void {
@@ -569,9 +822,13 @@ class DshChatController implements vscode.Disposable {
   }
 
   dispose(): void {
+    this.disposed = true
+    ++this.runtimeSwitchRevision
+    this.cancelRecovery()
     ++this.generation
     this.disconnectClient()
     this.changes.dispose()
+    this.settingsChanges.dispose()
   }
 
   private requireClient(): DshClient {
@@ -579,19 +836,51 @@ class DshChatController implements vscode.Disposable {
     return this.client
   }
 
-  private disconnectClient(): void {
-    for (const dispose of this.clientDisposables.splice(0)) dispose()
-    this.client?.dispose()
-    this.client = undefined
+  private requireReady(): void {
+    if (this._state.phase !== 'ready') throw new Error('DSH is not connected. Wait for the conversation to reconnect before continuing.')
   }
 
-  private async loadSessions(preferredId?: string): Promise<void> {
+  private disconnectClient(): void {
+    this.runtimeActivity.clear()
+    this.jobsBySession.clear()
+    ++this.sessionListGeneration
+    this.sessionAttention.clear()
+    for (const dispose of this.clientDisposables.splice(0)) dispose()
+    const client = this.client
+    this.client = undefined
+    this.attachmentLoads.clear()
+    // Successful images can survive a reconnect to the same runtime. Failed
+    // or cancelled loads must be retried by the replacement client.
+    for (const [key, result] of this.attachmentResults) {
+      if (result.error !== undefined) this.attachmentResults.delete(key)
+    }
+    client?.dispose()
+    this.settingsChanges.fire()
+  }
+
+  private async loadSessions(preferredId?: string, allowCreate = true): Promise<void> {
     const client = this.requireClient()
+    const cwd = this.cwd
+    const listGeneration = ++this.sessionListGeneration
+    const selectionGeneration = this.sessionLoadGeneration
+    const activityRevision = this.activityRevision
     const [{ items }] = await Promise.all([
       client.listSessions(),
-      this.refreshArchivedSessions(client),
+      this.refreshArchivedSessions(client, listGeneration),
     ])
-    this.summaries = items.filter(summary => summary.cwd === this.cwd && summary.origin !== 'subagent')
+    if (this.client !== client || this.cwd !== cwd || listGeneration !== this.sessionListGeneration) return
+    for (const summary of items) {
+      // A list response must not undo a status notification received while it was in flight.
+      if ((this.runtimeActivity.get(summary.sessionId)?.revision ?? -1) <= activityRevision) {
+        this.runtimeActivity.set(summary.sessionId, { running: summary.running, revision: activityRevision })
+      }
+    }
+    this.summaries = items.filter(summary => summary.cwd === cwd && summary.origin !== 'subagent')
+      .map(summary => ({ ...summary, running: this.runtimeActivity.get(summary.sessionId)?.running ?? summary.running }))
+    if (selectionGeneration !== this.sessionLoadGeneration) {
+      this.publishSessionItems()
+      return
+    }
     const selectable = this.summaries.filter(summary => !this.archivedSessionIds.has(summary.sessionId))
     const preferredExists = preferredId === undefined
       ? undefined
@@ -603,20 +892,24 @@ class DshChatController implements vscode.Disposable {
       ?? selectable[0]?.sessionId
 
     if (selectedId !== undefined && this.unreadSessionIds.delete(selectedId)) this.persistUnreadSessions()
-    this.publish({ sessions: sessionItems(this.summaries, this.archivedSessionIds, selectedId, this.unreadSessionIds) })
+    this.publish({ sessions: sessionItems(this.summaries, this.archivedSessionIds, selectedId, this.unreadSessionIds, this.sessionAttention) })
     if (selectedId === undefined) {
+      if (!allowCreate) throw new Error('No conversation is available to restore. Start a new conversation after reconnecting the runtime.')
       const created = await client.createSession(this.cwd)
+      if (this.client !== client || listGeneration !== this.sessionListGeneration || selectionGeneration !== this.sessionLoadGeneration) return
       await this.loadSessions(created.sessionId)
       return
     }
     await this.loadSession(selectedId)
   }
 
-  private async refreshArchivedSessions(client: DshClient): Promise<void> {
+  private async refreshArchivedSessions(client: DshClient, listGeneration: number): Promise<void> {
     try {
       const result = await client.listWorkspaces()
+      if (this.client !== client || listGeneration !== this.sessionListGeneration) return
       this.archivedSessionIds = new Set(Array.isArray(result.archivedSessionIds) ? result.archivedSessionIds : [])
     } catch (error) {
+      if (this.client !== client || listGeneration !== this.sessionListGeneration) return
       this.output.appendLine(`[sessions] Archive state is unavailable in this DSH version: ${error instanceof Error ? error.message : String(error)}`)
       this.archivedSessionIds.clear()
     }
@@ -624,7 +917,7 @@ class DshChatController implements vscode.Disposable {
 
   private publishSessionItems(): void {
     this.publish({
-      sessions: sessionItems(this.summaries, this.archivedSessionIds, this._state.sessionId, this.unreadSessionIds),
+      sessions: sessionItems(this.summaries, this.archivedSessionIds, this._state.sessionId, this.unreadSessionIds, this.sessionAttention),
     })
   }
 
@@ -649,24 +942,47 @@ class DshChatController implements vscode.Disposable {
 
   private async loadSession(sessionId: string): Promise<void> {
     const client = this.requireClient()
-    this.historyEntries = []
+    const loadGeneration = ++this.sessionLoadGeneration
+    const sessionChanged = sessionId !== this._state.sessionId
+    // Keep the last durable snapshot while reopening the same conversation.
+    // A different conversation must never inherit that snapshot on failure.
+    if (sessionChanged) {
+      this.historyEntries = []
+      this.projector.reset([])
+    }
+    this.queueRawText.clear()
     this.publish({
       phase: 'loading',
       statusText: 'Loading project conversation…',
       sessionId,
+      ...(sessionChanged ? { messages: [], changedFiles: [] } : {}),
+      queue: [],
+      approval: null,
+      question: null,
       hasMoreHistory: false,
       loadingHistory: false,
     })
-    const [{ events, hasMore }, models] = await Promise.all([
-      client.history(sessionId),
-      client.models(sessionId),
-    ])
-    if (this.client !== client || this._state.sessionId !== sessionId) return
+    const result = await (async () => {
+      const opening = await client.openSession(sessionId)
+      if (!opening.isCurrent()) return undefined
+      const models = await client.models(sessionId)
+      return { opening, models }
+    })().catch((error: unknown) => {
+      if (this.client === client && loadGeneration === this.sessionLoadGeneration) throw error
+      return undefined
+    })
+    if (result === undefined || this.client !== client || loadGeneration !== this.sessionLoadGeneration || !result.opening.isCurrent()) return
+    const { opening, models } = result
+    const { events, hasMore } = opening
     this.projector.reset(events)
     this.historyEntries = events
     this.guardedDirtyCalls.clear()
     this.queueRawText.clear()
     const summary = this.summaries.find(item => item.sessionId === sessionId)
+    if (summary !== undefined) {
+      summary.projections = { values: opening.projections }
+      if (typeof opening.projections.agentPreset === 'string') summary.agentPreset = opening.projections.agentPreset
+    }
     this.publish({
       phase: 'ready',
       statusText: '',
@@ -690,6 +1006,7 @@ class DshChatController implements vscode.Disposable {
       loadingHistory: false,
       ...this.modelPatch(models),
     })
+    opening.activate()
     this.hydrateImages(client, sessionId)
     void this.loadCommands(client, sessionId)
     void this.loadSkills(client, sessionId)
@@ -697,14 +1014,15 @@ class DshChatController implements vscode.Disposable {
   }
 
   private async loadCommands(client: DshClient, sessionId: string): Promise<void> {
+    const current = this.discoveryRequest('commands', client, sessionId)
     try {
       const commands = await client.listCommands(sessionId)
-      if (this.client === client && this._state.sessionId === sessionId) {
+      if (current()) {
         const visibleCommands = commands.filter(command => command.name !== 'export')
         this.publish({
           commands: visibleCommands,
           plan: planModeWithCommandAvailability(
-            this._state.plan,
+            planModeStateOf(this.summaries.find(item => item.sessionId === sessionId)?.projections?.values?.plan),
             visibleCommands.some(command => command.name === 'plan'),
           ),
         })
@@ -716,9 +1034,10 @@ class DshChatController implements vscode.Disposable {
   }
 
   private async loadSkills(client: DshClient, sessionId: string): Promise<void> {
+    const current = this.discoveryRequest('skills', client, sessionId)
     try {
       const skills = await client.listSkills(sessionId)
-      if (this.client === client && this._state.sessionId === sessionId) this.publish({ skills })
+      if (current()) this.publish({ skills })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       this.output.appendLine(`[skills] Discovery unavailable: ${message}`)
@@ -726,11 +1045,12 @@ class DshChatController implements vscode.Disposable {
   }
 
   private async loadAgentPresets(client: DshClient, sessionId: string): Promise<void> {
+    const current = this.discoveryRequest('presets', client, sessionId)
     try {
       const roster = await client.listAgentPresets()
-      if (this.client !== client || this._state.sessionId !== sessionId) return
+      if (!current()) return
       const summary = this.summaries.find(item => item.sessionId === sessionId)
-      this.publish({ agentPreset: agentPresetStateOf(roster.presets, summary?.agentPreset, summary?.blank ?? false) })
+      this.publish({ agentPreset: agentPresetStateOf(roster.presets, summary?.agentPreset, summary?.blank ?? false, this._state.agentPreset.busy) })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       this.output.appendLine(`[agent-preset] Discovery unavailable: ${message}`)
@@ -739,8 +1059,29 @@ class DshChatController implements vscode.Disposable {
 
   private async loadModels(sessionId: string): Promise<void> {
     const client = this.requireClient()
-    const models = await client.models(sessionId)
-    if (this.client === client && this._state.sessionId === sessionId) this.publish(this.modelPatch(models))
+    const current = this.discoveryRequest('models', client, sessionId)
+    try {
+      const models = await client.models(sessionId)
+      if (current()) this.publish(this.modelPatch(models))
+    } catch (error) {
+      if (current()) this.output.appendLine(`[models] Discovery unavailable: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  private discoveryRequest(kind: string, client: DshClient, sessionId: string): () => boolean {
+    const request = (this.discoveryRequests.get(kind) ?? 0) + 1
+    this.discoveryRequests.set(kind, request)
+    const generation = this.sessionLoadGeneration
+    return () => this.client === client && this._state.sessionId === sessionId
+      && this._state.phase === 'ready' && this.sessionLoadGeneration === generation && this.discoveryRequests.get(kind) === request
+  }
+
+  private refreshComposition(sessionId: string): void {
+    if (this.client === undefined || sessionId !== this._state.sessionId || this._state.phase !== 'ready') return
+    this.publish({ commands: [], skills: [], plan: { ...this._state.plan, available: false } })
+    void this.loadCommands(this.client, sessionId)
+    void this.loadSkills(this.client, sessionId)
+    void this.loadAgentPresets(this.client, sessionId)
   }
 
   private modelPatch(models: SessionModels): Pick<ChatViewState, 'models' | 'routable'> {
@@ -775,6 +1116,27 @@ class DshChatController implements vscode.Disposable {
     const type = typeof payload.type === 'string' ? payload.type : ''
     const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : ''
 
+    if (frame.channel === 'host') {
+      if (sessionId !== '' && (type === 'host/session-added' || type === 'host/session-status' || type === 'host/session-removed')) {
+        this.runtimeActivity.set(sessionId, { running: type !== 'host/session-removed' && payload.running === true,
+          revision: ++this.activityRevision })
+      }
+      if (type === 'host/settings-changed' || type === 'host/credentials-changed') this.settingsChanges.fire()
+      if (this.client !== undefined && this._state.phase === 'ready' && this._state.sessionId !== '') {
+        const activeId = this._state.sessionId
+        if (type === 'host/commands-changed') void this.loadCommands(this.client, activeId)
+        if (type === 'host/models-changed' || type === 'host/settings-changed' || type === 'host/credentials-changed') void this.loadModels(activeId)
+        if (type === 'host/settings-changed' && payload.ns === 'agent-presets') void this.loadAgentPresets(this.client, activeId)
+        if (type === 'host/session-composition-changed') this.refreshComposition(sessionId)
+      }
+    }
+
+    if (frame.channel === 'mux' && type === 'session/assistant-stream' && sessionId === this._state.sessionId) {
+      this.projector.applyStream(payload.update as AssistantStreamUpdate)
+      this.publish({ messages: this.projectedMessages() })
+      return
+    }
+
     if (frame.channel === 'mux' && type === 'session/event' && sessionId === this._state.sessionId) {
       const event = payload.event
       if (typeof event === 'object' && event !== null) {
@@ -783,30 +1145,10 @@ class DshChatController implements vscode.Disposable {
           const summary = this.summaries.find(item => item.sessionId === sessionId)
           if (summary !== undefined) {
             summary.blank = false
-            summary.updatedAt = Date.now()
+            summary.updatedAt = Math.max(summary.updatedAt, dshEvent.time)
             this.publishSessionItems()
           }
           this.publish({ agentPreset: lockAgentPresetState(this._state.agentPreset) })
-        }
-        if (dshEvent.type === 'agent-preset/selected') {
-          const data = typeof dshEvent.data === 'object' && dshEvent.data !== null
-            ? dshEvent.data as Record<string, unknown>
-            : undefined
-          const agentPreset = typeof data?.agentPreset === 'string' ? data.agentPreset : undefined
-          if (agentPreset !== undefined) {
-            const summary = this.summaries.find(item => item.sessionId === sessionId)
-            if (summary !== undefined) summary.agentPreset = agentPreset
-            this.publish({
-              agentPreset: selectAgentPresetState(this._state.agentPreset, agentPreset, false),
-              commands: [],
-              skills: [],
-            })
-            const client = this.client
-            if (client !== undefined) {
-              void this.loadCommands(client, sessionId)
-              void this.loadSkills(client, sessionId)
-            }
-          }
         }
         this.historyEntries = mergeHistoryEntries(this.historyEntries, [{ event: dshEvent, view: payload.view }])
         const conflict = this.dirtyConflict(dshEvent, payload.view)
@@ -917,7 +1259,6 @@ class DshChatController implements vscode.Disposable {
         summary.projections = { values: { ...summary.projections?.values, [payload.key]: payload.value } }
       }
       if (typeof payload.value === 'string' && payload.key === 'title') {
-        if (summary !== undefined) summary.updatedAt = Date.now()
         this.publishSessionItems()
       }
       if (payload.key === 'imageLimits' && sessionId === this._state.sessionId) {
@@ -927,7 +1268,18 @@ class DshChatController implements vscode.Disposable {
         this.publish({ permissions: permissionPresetsOf(payload.value) })
       }
       if (payload.key === 'plan' && sessionId === this._state.sessionId) {
-        this.publish({ plan: planModeStateOf(payload.value) })
+        this.publish({ plan: planModeWithCommandAvailability(planModeStateOf(payload.value), this._state.commands.some(command => command.name === 'plan')) })
+      }
+      if (payload.key === 'agentPreset' && typeof payload.value === 'string') {
+        if (summary !== undefined) summary.agentPreset = payload.value
+        if (sessionId === this._state.sessionId) {
+          this.publish({ agentPreset: selectAgentPresetState(this._state.agentPreset, payload.value, false) })
+          this.refreshComposition(sessionId)
+        }
+      }
+      if (payload.key === 'modelSelection' && sessionId === this._state.sessionId) {
+        const models = this.client?.currentModels(sessionId)
+        if (models !== undefined) this.publish(this.modelPatch(models))
       }
       if ((payload.key === 'tokenUsage'
         || payload.key === 'sessionStats'
@@ -939,11 +1291,41 @@ class DshChatController implements vscode.Disposable {
       return
     }
 
-    if (frame.channel === 'host' && type === 'host/session-status') {
-      const running = payload.running === true
+    if (frame.channel === 'host' && type === 'host/session-attention') {
+      const approvals = typeof payload.approvals === 'number' ? payload.approvals : 0
+      const questions = typeof payload.questions === 'number' ? payload.questions : 0
+      if (approvals + questions > 0) this.sessionAttention.set(sessionId, { approvals, questions })
+      else this.sessionAttention.delete(sessionId)
+      this.publishSessionItems()
+      return
+    }
+
+    if (frame.channel === 'host' && type === 'host/session-activity') {
+      const summary = this.summaries.find(item => item.sessionId === sessionId)
+      if (summary !== undefined && typeof payload.updatedAt === 'number' && Number.isFinite(payload.updatedAt)) {
+        summary.updatedAt = Math.max(summary.updatedAt, payload.updatedAt)
+        summary.blank = false
+        this.publishSessionItems()
+      }
+      return
+    }
+
+    if (frame.channel === 'host' && (type === 'host/session-status' || type === 'host/session-removed')) {
+      const running = type === 'host/session-status' && payload.running === true
       const summary = this.summaries.find(item => item.sessionId === sessionId)
       const wasRunning = summary?.running === true
-      if (summary !== undefined) summary.running = running
+      if (summary !== undefined) {
+        summary.running = running
+        if (running) summary.blank = false
+      }
+      if (type === 'host/session-removed') {
+        this.sessionAttention.delete(sessionId)
+        this.jobsBySession.delete(sessionId)
+        if (sessionId === this._state.sessionId) {
+          this.queueRawText.clear()
+          this.publish({ approval: null, question: null, queue: [], jobs: [] })
+        }
+      }
       if (wasRunning && !running && sessionId !== this._state.sessionId) this.markUnread(sessionId)
       if (sessionId === this._state.sessionId) this.publish({ running })
       this.publishSessionItems()
@@ -968,8 +1350,18 @@ class DshChatController implements vscode.Disposable {
       return
     }
 
-    if (frame.channel === 'host' && type === 'host/session-added' && payload.cwd === this.cwd) {
-      void this.loadSessions(sessionId).catch(error => { this.report(error) })
+    if (frame.channel === 'host' && type === 'host/session-added' && payload.cwd === this.cwd && payload.origin !== 'subagent') {
+      // Discovery must not steal focus or replace a snapshot currently loading.
+      const existing = this.summaries.find(item => item.sessionId === sessionId)
+      const summary: SessionSummary = { sessionId, cwd: this.cwd,
+        updatedAt: Math.max(existing?.updatedAt ?? 0, typeof payload.updatedAt === 'number' ? payload.updatedAt : 0),
+        running: payload.running === true, blank: payload.blank === true && existing?.blank !== false,
+        ...(wireRecord(payload.projections) && wireRecord(payload.projections.values)
+          ? { projections: { values: payload.projections.values } } : existing?.projections ? { projections: existing.projections } : {}),
+        ...(typeof payload.agentPreset === 'string' ? { agentPreset: payload.agentPreset } : {}) }
+      if (existing === undefined) this.summaries.push(summary)
+      else Object.assign(existing, summary)
+      this.publishSessionItems()
     }
   }
 
@@ -993,17 +1385,20 @@ class DshChatController implements vscode.Disposable {
       if (this.attachmentResults.has(key) || this.attachmentLoads.has(key)) continue
       const load = client.attachment(sessionId, image.attachmentId)
         .then((result) => {
+          if (this.client !== client || this.attachmentLoads.get(key) !== load) return
           if (result.attachment.attachmentId !== image.attachmentId || result.attachment.mediaType !== image.mediaType) {
             throw new Error('DeepSeek Harness returned mismatched image metadata.')
           }
           this.attachmentResults.set(key, { data: result.data })
         })
         .catch((error: unknown) => {
+          if (this.client !== client || this.attachmentLoads.get(key) !== load) return
           const detail = error instanceof Error ? error.message : String(error)
           this.output.appendLine(`[attachment] ${image.attachmentId}: ${detail}`)
           this.attachmentResults.set(key, { error: 'Image unavailable.' })
         })
         .finally(() => {
+          if (this.attachmentLoads.get(key) !== load) return
           this.attachmentLoads.delete(key)
           if (this.client === client && this._state.sessionId === sessionId) {
             this.publish({ messages: this.projectedMessages() })
@@ -1356,6 +1751,13 @@ class DshSurface implements vscode.Disposable {
           }
           return
         case 'restart': await this.controller.restart(); return
+        case 'reconnect': await this.controller.reconnect(); return
+        case 'connect-existing-runtime':
+          await vscode.commands.executeCommand('deepseekHarness.connectExistingRuntime')
+          return
+        case 'start-managed-runtime':
+          await vscode.commands.executeCommand('deepseekHarness.startManagedRuntime')
+          return
         case 'output': this.output.show(true); return
         case 'open-workspace': await this.chooseWorkspace(); return
         case 'configure-api-key':
@@ -1449,10 +1851,11 @@ class DshSurface implements vscode.Disposable {
                 return
               }
             }
-            const slash = this.controller.slashRoute(value.text)
-            const carriesIdeContext = slash.kind === 'prompt'
+            let carriesIdeContext = false
             let ideContext: IdeContextSnapshot | undefined
             try {
+              const slash = await this.controller.slashRoute(value.text)
+              carriesIdeContext = slash.kind === 'prompt'
               ideContext = carriesIdeContext ? await this.editorContext.snapshotForPrompt(value.text) : undefined
             } catch (error) {
               await this.restoreDraft(sessionId, requestId, value.text)
@@ -1566,10 +1969,12 @@ class DshSurface implements vscode.Disposable {
         case 'cancel': await this.controller.cancel(); return
         case 'queue-action':
           if (
-            typeof value.itemId === 'string'
+            typeof value.sessionId === 'string'
+            && typeof value.itemId === 'string'
             && (value.action === 'edit' || value.action === 'remove' || value.action === 'steer')
           ) {
             await this.controller.updateQueue(
+              value.sessionId,
               value.itemId,
               value.action,
               typeof value.text === 'string' ? value.text : undefined,
@@ -1872,40 +2277,26 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.restart', async () => {
     await controller.restart().catch(error => { void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error)) })
   }))
+  context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.reconnect', async () => {
+    await controller.reconnect().catch(error => { void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error)) })
+  }))
+  let runtimePickerBusy = false
+  const chooseRuntime = async (kind: 'external' | 'managed'): Promise<void> => {
+    if (runtimePickerBusy) return
+    runtimePickerBusy = true
+    try {
+      if (kind === 'external') await pickExistingRuntime(controller)
+      else await pickManagedRuntime(controller)
+    } catch (error) {
+      void vscode.window.showErrorMessage(error instanceof Error ? error.message : 'Could not select the DSH runtime.')
+    } finally {
+      runtimePickerBusy = false
+    }
+  }
+  context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.connectExistingRuntime', () => chooseRuntime('external')))
+  context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.startManagedRuntime', () => chooseRuntime('managed')))
   if (workspace !== undefined) {
-    let debugRestartTimer: NodeJS.Timeout | undefined
-    let debugRestartTask = Promise.resolve()
-    context.subscriptions.push(
-      vscode.workspace.onDidChangeConfiguration(event => {
-        const currentWorkspace = controller.cwd === '' ? workspace.uri : vscode.Uri.file(controller.cwd)
-        if (!event.affectsConfiguration('deepseekHarness.autonomousDebugging', currentWorkspace)) return
-        const enabled = vscode.workspace
-          .getConfiguration('deepseekHarness', currentWorkspace)
-          .get<boolean>('autonomousDebugging', false)
-
-        if (debugRestartTimer !== undefined) clearTimeout(debugRestartTimer)
-        debugRestartTimer = setTimeout(() => {
-          debugRestartTimer = undefined
-          if (runtime.state.kind === 'stopped') {
-            output.appendLine(`[debug] Autonomous debugging ${enabled ? 'enabled' : 'disabled'}; it will apply the next time DSH starts.`)
-            return
-          }
-          debugRestartTask = debugRestartTask
-            .catch(() => undefined)
-            .then(async () => {
-              output.appendLine(`[debug] Autonomous debugging ${enabled ? 'enabled' : 'disabled'}; restarting DSH to apply the change.`)
-              await controller.restart()
-              void vscode.window.showInformationMessage(`VS Code debugging ${enabled ? 'enabled' : 'disabled'}. DeepSeek Harness restarted.`)
-            })
-            .catch(error => {
-              const message = error instanceof Error ? error.message : String(error)
-              output.appendLine(`[debug] Failed to restart DSH after the setting changed: ${message}`)
-              void vscode.window.showErrorMessage(`Could not apply the VS Code debugging setting: ${message}`)
-            })
-        }, 200)
-      }),
-      { dispose: () => { if (debugRestartTimer !== undefined) clearTimeout(debugRestartTimer) } },
-    )
+    context.subscriptions.push(watchDebugConfiguration(controller, workspace.uri, output))
   }
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.managePlugins', async () => {
     await pluginManager.show().catch(error => {
@@ -1952,7 +2343,8 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.showOutput', () => { output.show(true) }))
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.openInBrowser', async () => {
     try {
-      const uri = await runtime.start(controller.cwd === '' ? undefined : vscode.Uri.file(controller.cwd))
+      await runtime.start(controller.cwd === '' ? undefined : vscode.Uri.file(controller.cwd))
+      const uri = vscode.Uri.parse(runtime.connection.browserUrl().href)
       await vscode.env.openExternal(await vscode.env.asExternalUri(uri))
     } catch (error) {
       void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error))
@@ -1960,55 +2352,11 @@ export function activate(context: vscode.ExtensionContext): void {
   }))
 
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.configureApiKey', async () => {
-    if (controller.runtimeOwnership === undefined) await controller.start()
-    if (controller.runtimeOwnership === 'external') {
-      void vscode.window.showInformationMessage(
-        'This sidebar is using an external DeepSeek Harness runtime. Configure its API key where that process is started.',
-      )
-      return
-    }
-    const value = await vscode.window.showInputBox({
-      title: 'Configure DeepSeek API Key',
-      prompt: 'Paste the key here. It is stored in VS Code SecretStorage and passed only to the official DSH child process.',
-      placeHolder: 'sk-…',
-      password: true,
-      ignoreFocusOut: true,
-      validateInput: (candidate) => {
-        try {
-          normalizeDeepSeekApiKey(candidate)
-          return undefined
-        } catch (error) {
-          return error instanceof Error ? error.message : String(error)
-        }
-      },
-    })
-    if (value === undefined) return
-
-    const apiKey = normalizeDeepSeekApiKey(value)
-    await context.secrets.store(DEEPSEEK_API_KEY_SECRET, apiKey)
-    output.appendLine('[credentials] DeepSeek API key stored in VS Code SecretStorage.')
-    await controller.restart()
-    void vscode.window.showInformationMessage('DeepSeek API key configured. DeepSeek Harness restarted.')
+    await configureApiKey(controller, context.secrets, output)
   }))
 
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.clearApiKey', async () => {
-    const choice = await vscode.window.showWarningMessage(
-      'Remove the DeepSeek API key stored by this extension?',
-      { modal: true },
-      'Remove',
-    )
-    if (choice !== 'Remove') return
-
-    await context.secrets.delete(DEEPSEEK_API_KEY_SECRET)
-    output.appendLine('[credentials] DeepSeek API key removed from VS Code SecretStorage.')
-    if (controller.runtimeOwnership === 'external') {
-      void vscode.window.showInformationMessage(
-        'Stored DeepSeek API key removed. The reused external DSH keeps its own credentials.',
-      )
-      return
-    }
-    await controller.restart()
-    void vscode.window.showInformationMessage('Stored DeepSeek API key removed. DeepSeek Harness restarted.')
+    await clearApiKey(controller, context.secrets, output)
   }))
 
   const welcomeKey = 'deepseekHarness.welcome.openChat.v1'

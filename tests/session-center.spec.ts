@@ -12,6 +12,14 @@ function summary(overrides: Partial<SessionSummary> & Pick<SessionSummary, 'sess
 }
 
 describe('session center state', () => {
+  it('keeps a blank conversation visible while it needs a response, but respects archiving', () => {
+    const pending = { approvals: 1, questions: 2 }
+    const items = sessionItems([
+      summary({ sessionId: 'waiting', blank: true }), summary({ sessionId: 'archived', blank: true }),
+    ], new Set(['archived']), 'other', new Set(), new Map([['waiting', pending], ['archived', pending]]))
+    expect(items).toEqual([expect.objectContaining({ id: 'waiting', attention: pending })])
+  })
+
   it('uses the official title projection with a friendly blank fallback', () => {
     expect(sessionTitle(summary({ sessionId: 'one', projections: { values: { title: '  Fix login  ' } } }))).toBe('Fix login')
     expect(sessionTitle(summary({ sessionId: 'two', projections: { values: { title: '   ' } } }))).toBe('New conversation')

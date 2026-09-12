@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { DshConnection, DshConnectionError } from './dsh-connection.js'
 
 export const DEFAULT_DSH_SERVER_URL = 'http://127.0.0.1:3080'
 export const DEFAULT_DSH_WEB_ARGS = ['web', '--host', '127.0.0.1', '--port', '0'] as const
@@ -7,25 +7,41 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
 
-/** Verify that a local endpoint speaks the official DSH RPC protocol. */
-export async function probeDshServer(baseUrl: URL, timeoutMs = 750): Promise<boolean> {
-  const rpcId = randomUUID()
+export type DshServerProbe =
+  | { kind: 'ready' }
+  | { kind: 'authentication-required' }
+  | { kind: 'unsupported' }
+  | { kind: 'unavailable' }
+  | { kind: 'invalid-response' }
+
+/** Probe the new read-only contract; a 401 must not be mistaken for a stopped server. */
+export async function probeDshServer(connection: DshConnection, timeoutMs = 750): Promise<DshServerProbe> {
   try {
-    const response = await fetch(new URL('/api/session.list', baseUrl), {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ type: 'client-request', rpcId, method: 'session.list', payload: {} }),
-      signal: AbortSignal.timeout(timeoutMs),
-    })
-    if (!response.ok) return false
-    const envelope: unknown = await response.json()
-    if (!isRecord(envelope) || envelope.type !== 'server-response' || envelope.rpcId !== rpcId) return false
-    const result = envelope.result
-    if (!isRecord(result) || result.ok !== true || !isRecord(result.value)) return false
-    return Array.isArray(result.value.items)
-  } catch {
-    return false
+    const value = await connection.call<unknown>('session/list', { _request: {} }, timeoutMs)
+    return { kind: isRecord(value) && Array.isArray(value.items) ? 'ready' : 'invalid-response' }
+  } catch (error) {
+    if (error instanceof DshConnectionError) {
+      if (error.code === 'authentication-required') return { kind: 'authentication-required' }
+      if (error.status === 404 || error.code === 'gateway/not-found') return { kind: 'unsupported' }
+      if (error.code === 'invalid-response') return { kind: 'invalid-response' }
+    }
+    return { kind: 'unavailable' }
   }
+}
+
+export const DSH_UPGRADE_MESSAGE = 'This sidebar requires DeepSeek Harness 0.1.2-rc.1 or a compatible newer release. Update DSH, then reconnect.'
+
+/** Unknown/source versions are checked against the actual Remote contract at startup. */
+export function assertSupportedDshVersion(version: string | undefined): void {
+  const match = /(?:^|\s|v)(\d+)\.(\d+)\.(\d+)(?:-([\w.-]+))?(?:\+[\w.-]+)?(?:\s|$)/.exec(version ?? '')
+  if (match === null) return
+  const major = Number(match[1])
+  const minor = Number(match[2])
+  const patch = Number(match[3])
+  if (major > 0 || minor > 1 || (minor === 1 && patch > 2)) return
+  if (minor === 1 && patch === 2
+    && (match[4] === undefined || /^rc\.[1-9]\d*$/.test(match[4]))) return
+  throw new Error(DSH_UPGRADE_MESSAGE)
 }
 
 /** Explicit launch settings take precedence over automatic endpoint reuse. */

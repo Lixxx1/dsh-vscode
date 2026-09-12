@@ -25,6 +25,7 @@ vi.mock('vscode', () => {
 
 import type { DshEvent } from '../src/conversation.js'
 import { DiffReviewManager } from '../src/diff-review.js'
+import { appliedHunks } from '../src/tool-diff.js'
 
 function event(type: string, seq: number, data: unknown): DshEvent {
   return { type, seq, time: seq, data }
@@ -41,6 +42,172 @@ describe('DiffReviewManager', () => {
     temporaryDirectories.push(directory)
     return directory
   }
+
+  function modernEvents(name: 'edit' | 'write', args: Record<string, unknown>, before: string | null, after: string, turn = 1) {
+    const callId = `modern-${turn}`
+    const call = event('tool/call', turn * 10, { turn, callId, name, arguments: JSON.stringify(args) })
+    const text = name === 'write'
+      ? `<path>${args.file_path}</path>\n<type>file</type>\n<content>\n${before === null ? 'Created' : 'Updated'} file\n</content>`
+      : `The file ${args.file_path} has been updated successfully.`
+    const result = event('tool/result', turn * 10 + 1, { turn,
+      meta: { diffs: before === null ? [] : appliedHunks(before, after)?.map(diff => ({ path: args.file_path, ...diff })) },
+      message: { source: { kind: 'tool', callId }, content: [{ type: 'tool-result', toolCallId: callId, content: [{ type: 'text', text }] }] },
+    })
+    return { call, result }
+  }
+
+  it('reviews and reverts rc.1 applied hunks, retaining complete snapshots across history rebuilds', async () => {
+    const cwd = temporaryWorkspace(), file = path.join(cwd, 'app.ts')
+    const before = 'context\nold\ncontext\n', after = 'context\nnew\ncontext\n'
+    const { call, result } = modernEvents('edit', { file_path: 'app.ts', old_string: 'old', new_string: 'new' }, before, after)
+    const manager = new DiffReviewManager()
+    fs.writeFileSync(file, before)
+    manager.accept('modern', cwd, call)
+    fs.writeFileSync(file, after)
+    expect(manager.accept('modern', cwd, result)).toBe(true)
+    const expected = [{ turn: 1, files: [{ path: 'app.ts', additions: 1, deletions: 1, canRevert: true }] }]
+    expect(manager.changedFiles('modern')).toEqual(expected)
+    const entries = [call, result].map(event => ({ event }))
+    expect(manager.rebuild('modern', cwd, entries)).toEqual(expected)
+    expect(manager.prependHistory('modern', cwd, entries)).toEqual(expected)
+    await manager.reviewFile('modern', cwd, 'app.ts', 1)
+    const [, beforeUri, afterUri] = mocks.executeCommand.mock.calls.at(-1)!
+    expect(manager.provideTextDocumentContent(beforeUri)).toBe(before)
+    expect(manager.provideTextDocumentContent(afterUri)).toBe(after)
+    expect(manager.revertFile('modern', cwd, 'app.ts', 1)).toEqual([])
+    expect(fs.readFileSync(file, 'utf8')).toBe(before)
+  })
+
+  it('captures the early assistant tool intent before the later tool/call notification', () => {
+    const cwd = temporaryWorkspace(), file = path.join(cwd, 'app.ts')
+    const args = { file_path: 'app.ts', old_string: 'old', new_string: 'new' }
+    const { call, result } = modernEvents('edit', args, 'old\n', 'new\n')
+    const manager = new DiffReviewManager()
+    fs.writeFileSync(file, 'old\n')
+    manager.accept('early', cwd, event('assistant/message', 9, { turn: 1, message: { content: [
+      { type: 'tool-call', id: 'modern-1', name: 'edit', arguments: JSON.stringify(args) },
+    ] } }))
+    fs.writeFileSync(file, 'new\n')
+    manager.accept('early', cwd, call)
+    manager.accept('early', cwd, result)
+    expect(manager.changedFiles('early')[0]?.files[0]?.canRevert).toBe(true)
+  })
+
+  it('does not invent a reversible full file from replayed hunks or a late snapshot', () => {
+    const cwd = temporaryWorkspace(), file = path.join(cwd, 'app.ts')
+    const { call, result } = modernEvents('edit', { file_path: 'app.ts', old_string: 'old', new_string: 'new' }, 'old\n', 'new\n')
+    fs.writeFileSync(file, 'new\n')
+    for (const replay of [true, false]) {
+      const manager = new DiffReviewManager()
+      manager.accept('late', cwd, call, undefined, replay)
+      manager.accept('late', cwd, result, undefined, replay)
+      expect(manager.changedFiles('late')).toEqual([{ turn: 1, files: [{ path: 'app.ts', additions: 1, deletions: 1, canRevert: false }] }])
+      expect(() => manager.revertAll('late')).toThrow('full snapshot')
+      expect(fs.readFileSync(file, 'utf8')).toBe('new\n')
+    }
+  })
+
+  it.each(['', 'one\ntwo\n'])('safely reverts an explicitly created rc.1 file containing %j', content => {
+    const cwd = temporaryWorkspace(), file = path.join(cwd, 'new.ts')
+    const { call, result } = modernEvents('write', { file_path: 'new.ts', content }, null, content)
+    const manager = new DiffReviewManager()
+    manager.accept('create', cwd, call)
+    fs.writeFileSync(file, content)
+    manager.accept('create', cwd, result)
+    expect(manager.changedFiles('create')[0]?.files[0]?.canRevert).toBe(true)
+    manager.revertAll('create')
+    expect(fs.existsSync(file)).toBe(false)
+  })
+
+  it('rejects dirty buffers and subsequent user edits, while Keep leaves bytes untouched', () => {
+    const cwd = temporaryWorkspace(), file = path.join(cwd, 'app.ts')
+    const { call, result } = modernEvents('write', { file_path: 'app.ts', content: 'new\n' }, 'old\n', 'new\n')
+    const manager = new DiffReviewManager()
+    fs.writeFileSync(file, 'old\n')
+    manager.accept('dirty', cwd, call)
+    fs.writeFileSync(file, 'new\n')
+    manager.accept('dirty', cwd, result)
+    mocks.textDocuments.push({ isDirty: true, uri: { fsPath: file } })
+    expect(() => manager.revertAll('dirty')).toThrow('unsaved')
+    mocks.textDocuments.splice(0)
+    fs.writeFileSync(file, 'manual edit\n')
+    expect(() => manager.revertAll('dirty')).toThrow('changed after DeepSeek')
+    expect(manager.keepAll('dirty')).toEqual([])
+    expect(fs.readFileSync(file, 'utf8')).toBe('manual edit\n')
+  })
+
+  it('ignores failed results, empty overwrite metadata, malformed metadata and opaque plugin metadata', () => {
+    const cwd = temporaryWorkspace(), file = path.join(cwd, 'app.ts')
+    for (const variant of ['failure', 'empty', 'malformed', 'plugin', 'wrong-path']) {
+      const { call, result } = modernEvents('write', { file_path: 'app.ts', content: 'new\n' }, 'old\n', 'new\n')
+      if (variant === 'failure') (result.data as any).error = { message: 'denied' }
+      if (variant === 'empty') (result.data as any).meta = { diffs: [] }
+      if (variant === 'malformed') (result.data as any).meta = { diffs: [null] }
+      if (variant === 'plugin') (call.data as any).name = 'mcp__plugin__write'
+      if (variant === 'wrong-path') (result.data as any).meta.diffs[0].path = 'other.ts'
+      const manager = new DiffReviewManager()
+      fs.writeFileSync(file, 'old\n')
+      manager.accept(variant, cwd, call)
+      fs.writeFileSync(file, 'new\n')
+      manager.accept(variant, cwd, result)
+      expect(manager.changedFiles(variant)).toEqual([])
+    }
+  })
+
+  it('validates a continuous rc.1 multi-turn edit chain before Revert All', () => {
+    const cwd = temporaryWorkspace(), file = path.join(cwd, 'app.ts')
+    const manager = new DiffReviewManager()
+    let before = 'original\r\n'
+    fs.writeFileSync(file, before)
+    for (const turn of [1, 2]) {
+      const after = `turn ${turn}\r\n`
+      const { call, result } = modernEvents('write', { file_path: 'app.ts', content: after }, before, after, turn)
+      manager.accept('series', cwd, call)
+      fs.writeFileSync(file, after)
+      manager.accept('series', cwd, result)
+      before = after
+    }
+    expect(manager.changedFiles('series').map(group => group.files[0]?.canRevert)).toEqual([true, true])
+    manager.revertAll('series')
+    expect(fs.readFileSync(file, 'utf8')).toBe('original\r\n')
+  })
+
+  it('does not enable Revert for a binary or oversized captured file', () => {
+    const cwd = temporaryWorkspace(), file = path.join(cwd, 'app.ts')
+    for (const before of ['old\0bytes', 'x'.repeat(5 * 1024 * 1024 + 1)]) {
+      const { call, result } = modernEvents('write', { file_path: 'app.ts', content: 'new\n' }, 'old\n', 'new\n')
+      const manager = new DiffReviewManager()
+      fs.writeFileSync(file, before)
+      manager.accept('bounded', cwd, call)
+      fs.writeFileSync(file, 'new\n')
+      manager.accept('bounded', cwd, result)
+      expect(manager.changedFiles('bounded')[0]?.files[0]?.canRevert).toBe(false)
+      expect(() => manager.revertAll('bounded')).toThrow('full snapshot')
+      expect(fs.readFileSync(file, 'utf8')).toBe('new\n')
+    }
+  })
+
+  it.skipIf(process.platform === 'win32')('does not track symlink escapes or revert through a changed symlink target', () => {
+    const cwd = temporaryWorkspace(), outside = temporaryWorkspace()
+    fs.symlinkSync(outside, path.join(cwd, 'external'))
+    const escaped = modernEvents('write', { file_path: 'external/new.ts', content: 'new\n' }, null, 'new\n')
+    const manager = new DiffReviewManager()
+    manager.accept('escape', cwd, escaped.call)
+    fs.writeFileSync(path.join(outside, 'new.ts'), 'new\n')
+    manager.accept('escape', cwd, escaped.result)
+    expect(manager.changedFiles('escape')).toEqual([])
+
+    const file = path.join(cwd, 'a.ts'), other = path.join(cwd, 'b.ts'), link = path.join(cwd, 'link.ts')
+    fs.writeFileSync(file, 'old\n'); fs.writeFileSync(other, 'new\n'); fs.symlinkSync(file, link)
+    const { call, result } = modernEvents('edit', { file_path: 'link.ts', old_string: 'old', new_string: 'new' }, 'old\n', 'new\n')
+    manager.accept('link', cwd, call)
+    fs.writeFileSync(file, 'new\n')
+    manager.accept('link', cwd, result)
+    fs.unlinkSync(link); fs.symlinkSync(other, link)
+    expect(() => manager.revertAll('link')).toThrow('target changed')
+    expect(fs.readFileSync(other, 'utf8')).toBe('new\n')
+    expect(manager.rebuild('link', cwd, [call, result].map(event => ({ event })))[0]?.files[0]?.canRevert).toBe(false)
+  })
 
   it('rebuilds changed files from official DSH diff views and opens a native diff', async () => {
     const manager = new DiffReviewManager()

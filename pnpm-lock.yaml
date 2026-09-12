@@ -17,9 +17,15 @@ importers:
       '@types/vscode':
         specifier: ^1.100.0
         version: 1.125.0
+      '@types/ws':
+        specifier: ^8.18.1
+        version: 8.18.1
       '@vscode/vsce':
         specifier: ^3.6.0
         version: 3.9.2
+      diff:
+        specifier: ^9.0.0
+        version: 9.0.0
       dompurify:
         specifier: ^3.4.15
         version: 3.4.15
@@ -41,6 +47,9 @@ importers:
       vitest:
         specifier: ^4.1.8
         version: 4.1.10(@types/node@22.20.1)(jsdom@27.4.0)(vite@8.2.1(@types/node@22.20.1)(esbuild@0.25.12))
+      ws:
+        specifier: ^8.21.3
+        version: 8.21.3
       zod:
         specifier: ^3.25.76
         version: 3.25.76
@@ -537,6 +546,9 @@ packages:
   '@types/vscode@1.125.0':
     resolution: {integrity: sha512-0icm/ZQAaism87P0ekHqi4/Ju9du+Tm0RUW+y7vqRsxY2cY0FNRX1nAnaW7nT6npPt2tfHiheZ55Zm9UhqonFA==}
 
+  '@types/ws@8.18.1':
+    resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
+
   '@typespec/ts-http-runtime@0.3.8':
     resolution: {integrity: sha512-bLMpVcWZNzq6lYOybwFwOAR1IXKcHnhUNqYeHjl1bET/qE3jFPFH+p8Wrh3rU4xwdnifPxmKNESBYnvnmc75aA==}
     engines: {node: '>=22.0.0'}
@@ -873,6 +885,10 @@ packages:
   detect-libc@2.1.2:
     resolution: {integrity: sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==}
     engines: {node: '>=8'}
+
+  diff@9.0.0:
+    resolution: {integrity: sha512-svtcdpS8CgJyqAjEQIXdb3OjhFVVYjzGAPO8WGCmRbrml64SPw/jJD4GoE98aR7r25A0XcgrK3F02yw9R/vhQw==}
+    engines: {node: '>=0.3.1'}
 
   dom-serializer@2.0.0:
     resolution: {integrity: sha512-wIkAryiqt/nV5EQKqQpo3SToSOV9J0DnbJqwK7Wv/Trc92zIAYZ4FlMu+JPFW1DfGFt81ZTCGgDEabffXeLyJg==}
@@ -2550,6 +2566,10 @@ snapshots:
 
   '@types/vscode@1.125.0': {}
 
+  '@types/ws@8.18.1':
+    dependencies:
+      '@types/node': 22.20.1
+
   '@typespec/ts-http-runtime@0.3.8':
     dependencies:
       http-proxy-agent: 7.0.2
@@ -2918,6 +2938,8 @@ snapshots:
   depd@2.0.0: {}
 
   detect-libc@2.1.2: {}
+
+  diff@9.0.0: {}
 
   dom-serializer@2.0.0:
     dependencies:

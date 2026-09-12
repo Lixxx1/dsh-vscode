@@ -45,6 +45,9 @@
     "onCommand:deepseekHarness.fixWithDeepSeek",
     "onCommand:deepseekHarness.sendProblem",
     "onCommand:deepseekHarness.restart",
+    "onCommand:deepseekHarness.reconnect",
+    "onCommand:deepseekHarness.connectExistingRuntime",
+    "onCommand:deepseekHarness.startManagedRuntime",
     "onCommand:deepseekHarness.managePlugins",
     "onCommand:deepseekHarness.configureApiKey",
     "onCommand:deepseekHarness.clearApiKey"
@@ -86,8 +89,20 @@
       },
       {
         "command": "deepseekHarness.restart",
-        "title": "DeepSeek Harness: Reconnect / Restart Runtime",
+        "title": "DeepSeek Harness: Restart Runtime",
         "icon": "$(debug-restart)"
+      },
+      {
+        "command": "deepseekHarness.reconnect",
+        "title": "DeepSeek Harness: Reconnect"
+      },
+      {
+        "command": "deepseekHarness.connectExistingRuntime",
+        "title": "DeepSeek Harness: Connect to Existing Runtime"
+      },
+      {
+        "command": "deepseekHarness.startManagedRuntime",
+        "title": "DeepSeek Harness: Start Managed Runtime"
       },
       {
         "command": "deepseekHarness.managePlugins",
@@ -199,7 +214,7 @@
           "type": "boolean",
           "scope": "resource",
           "default": true,
-          "description": "Reuse a healthy official DSH Web runtime on 127.0.0.1:3080 when no custom executable or arguments are configured."
+          "description": "Look for an existing DSH Web runtime on 127.0.0.1:3080 when no custom executable or arguments are configured. Authenticated runtimes prompt you to connect with their launch URL or start a separate managed runtime."
         },
         "deepseekHarness.autonomousDebugging": {
           "type": "boolean",
@@ -228,10 +243,12 @@
     "publish:marketplace": "vsce publish --readme-path README.marketplace.md"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
     "@types/node": "^22.20.0",
     "@types/vscode": "^1.100.0",
+    "@types/ws": "^8.18.1",
     "@vscode/vsce": "^3.6.0",
-    "@modelcontextprotocol/sdk": "1.30.0",
+    "diff": "^9.0.0",
     "dompurify": "^3.4.15",
     "esbuild": "^0.25.12",
     "jsdom": "^27.4.0",
@@ -239,6 +256,7 @@
     "marked": "^18.0.12",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8",
+    "ws": "^8.21.3",
     "zod": "^3.25.76"
   }
 }

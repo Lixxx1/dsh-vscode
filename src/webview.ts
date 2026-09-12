@@ -46,6 +46,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .session-indicator { grid-row: 1 / 3; align-self: center; width: 6px; height: 6px; border-radius: 50%; background: transparent; }
     .session-indicator.running { background: var(--vscode-charts-blue, #4d6bfe); box-shadow: 0 0 0 2px color-mix(in srgb, var(--vscode-charts-blue, #4d6bfe) 20%, transparent); }
     .session-indicator.unread { background: var(--vscode-notificationsInfoIcon-foreground, #4d6bfe); }
+    .session-indicator.attention { background: var(--vscode-notificationsWarningIcon-foreground, #cca700); }
+    .session-attention-count { flex: 0 0 auto; min-width: 16px; padding: 0 4px; border-radius: 8px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); font-size: 10px; text-align: center; }
     .session-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12px; font-weight: 600; }
     .session-meta { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--vscode-descriptionForeground); font-size: 10px; }
     .session-more { width: 24px; height: 24px; min-width: 24px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 5px; color: var(--vscode-descriptionForeground); background: transparent; font-size: 17px; line-height: 1; }
@@ -275,7 +277,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     <header class="toolbar">
       <button id="githubStar" class="icon-button github-star" title="Star dsh-vscode on GitHub" aria-label="Star dsh-vscode on GitHub"><svg viewBox="0 0 24 24"><path d="m12 3 2.8 5.7 6.3.9-4.6 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2-4.6-4.4 6.3-.9z"/></svg></button>
       <div id="sessionControl" class="session-control">
-        <button id="sessionTrigger" class="session-trigger" aria-label="Project conversations" aria-haspopup="dialog" aria-expanded="false"><span id="sessionTriggerTitle" class="session-trigger-title">New conversation</span><svg viewBox="0 0 24 24"><path d="m7 9.5 5 5 5-5"/></svg></button>
+        <button id="sessionTrigger" class="session-trigger" aria-label="Project conversations" aria-haspopup="dialog" aria-expanded="false"><span id="sessionTriggerTitle" class="session-trigger-title">New conversation</span><span id="sessionAttentionCount" class="session-attention-count hidden"></span><svg viewBox="0 0 24 24"><path d="m7 9.5 5 5 5-5"/></svg></button>
         <div id="sessionMenu" class="session-menu hidden" role="dialog" aria-label="Project conversations">
           <input id="sessionSearch" class="session-search" type="search" placeholder="Search conversations" aria-label="Search conversations">
           <div id="sessionList" class="session-list" role="listbox"></div>
@@ -435,8 +437,14 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     function renderSessionCenter(current) {
       const sessions = array(current.sessions);
       const selected = sessions.find(session => session.id === current.sessionId);
+      const waiting = sessions.filter(session => session.id !== current.sessionId && session.attention && (session.attention.approvals > 0 || session.attention.questions > 0)).length;
+      const attentionCount = document.getElementById('sessionAttentionCount');
+      attentionCount.textContent = String(waiting);
+      attentionCount.classList.toggle('hidden', waiting === 0);
+      attentionCount.title = waiting + ' other conversation(s) need your response';
       elements.sessionTriggerTitle.textContent = selected ? selected.title : 'New conversation';
       elements.sessionTrigger.title = selected ? selected.title : 'Project conversations';
+      elements.sessionTrigger.setAttribute('aria-label', waiting ? 'Project conversations — ' + attentionCount.title : 'Project conversations');
       elements.sessionList.replaceChildren();
       const query = elements.sessionSearch.value.trim().toLocaleLowerCase();
       const visible = sessions.filter(session => !query || string(session.title).toLocaleLowerCase().includes(query));
@@ -448,10 +456,12 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         const row = node('div', 'session-row' + (session.id === current.sessionId ? ' active' : ''));
         row.setAttribute('role', 'option'); row.setAttribute('aria-selected', String(session.id === current.sessionId));
         const main = node('button', 'session-main'); main.type = 'button';
-        const indicator = node('span', 'session-indicator' + (session.running ? ' running' : session.unread ? ' unread' : ''));
-        indicator.title = session.running ? 'Running' : session.unread ? 'New activity' : '';
+        const attention = session.attention;
+        const waitingFor = attention && attention.approvals > 0 ? 'Awaiting approval' : attention && attention.questions > 0 ? 'Awaiting your answer' : '';
+        const indicator = node('span', 'session-indicator' + (waitingFor ? ' attention' : session.running ? ' running' : session.unread ? ' unread' : ''));
+        indicator.title = waitingFor || (session.running ? 'Running' : session.unread ? 'New activity' : '');
         const title = node('span', 'session-name', string(session.title, 'New conversation'));
-        const meta = node('span', 'session-meta', session.running ? 'Running' : session.unread ? 'New activity' : relativeSessionTime(session.updatedAt));
+        const meta = node('span', 'session-meta', waitingFor || (session.running ? 'Running' : session.unread ? 'New activity' : relativeSessionTime(session.updatedAt)));
         main.append(indicator, title, meta);
         main.addEventListener('click', () => {
           if (state && state.sessionId) sessionDrafts.set(state.sessionId, elements.prompt.value);
@@ -624,7 +634,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (card === 'terminal') {
         const cwd = string(callView && callView.cwd);
         if (cwd) body.append(node('div', 'result-title', cwd));
-        appendPre(body, string(resultView && resultView.output) || message.rawResult || string(callView && callView.title));
+        const output = resultView && typeof resultView.output === 'string' ? resultView.output : message.rawResult || string(callView && callView.title);
+        appendPre(body, output);
         if (resultView && (typeof resultView.exitCode === 'number' || resultView.signal)) body.append(node('div', '', resultView.signal ? 'Signal ' + resultView.signal : 'Exit ' + resultView.exitCode));
       } else if (card === 'diff') {
         const paths = [];
@@ -897,6 +908,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         box.append(node('div', 'setup-title', 'Install DeepSeek Harness'), node('div', 'setup-detail', current.statusText || 'The dsh executable was not found.'));
       } else if (setup === 'api-key') {
         box.append(node('div', 'setup-title', 'Configure your DeepSeek API key'), node('div', 'setup-detail', current.statusText || 'DeepSeek Harness needs an API key before it can run tasks.'));
+      } else if (setup === 'runtime-auth') {
+        box.append(node('div', 'setup-title', 'Connect to your running DSH'), node('div', 'setup-detail', current.statusText || 'An existing runtime needs its launch URL. Connect to it, or start a separate runtime managed by this extension.'));
       } else {
         box.append(document.createTextNode(current.statusText || 'Starting DeepSeek Harness…'));
       }
@@ -908,8 +921,14 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
           const install = node('button', 'primary', 'View Installation'); install.addEventListener('click', () => vscode.postMessage({ type: 'open-link', href: 'https://github.com/deepseek-ai/deepseek-harness' })); actions.append(install);
         } else if (setup === 'api-key') {
           const configure = node('button', 'primary', 'Configure API Key'); configure.addEventListener('click', () => vscode.postMessage({ type: 'configure-api-key' })); actions.append(configure);
+        } else if (setup === 'runtime-auth') {
+          const connect = node('button', 'primary', 'Connect Existing Runtime'); connect.addEventListener('click', () => vscode.postMessage({ type: 'connect-existing-runtime' })); actions.append(connect);
+          const managed = node('button', 'secondary', 'Start Managed Runtime'); managed.addEventListener('click', () => vscode.postMessage({ type: 'start-managed-runtime' })); actions.append(managed);
         } else {
-          const retry = node('button', 'secondary', 'Reconnect'); retry.addEventListener('click', () => vscode.postMessage({ type: 'restart' })); actions.append(retry);
+          if (current.canReconnect) {
+            const retry = node('button', 'secondary', 'Reconnect'); retry.addEventListener('click', () => vscode.postMessage({ type: 'reconnect' })); actions.append(retry);
+          }
+          const restart = node('button', 'secondary', 'Restart Runtime'); restart.addEventListener('click', () => vscode.postMessage({ type: 'restart' })); actions.append(restart);
         }
         if (setup !== 'workspace') { const output = node('button', 'secondary', 'Show Output'); output.addEventListener('click', () => vscode.postMessage({ type: 'output' })); actions.append(output); }
         box.append(actions);
@@ -1321,13 +1340,15 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       elements.prompt.value = ''; commandIndex = 0; resetPrompt();
     }
     function resetPrompt() { elements.prompt.placeholder = 'Ask DeepSeek about this project'; resizePrompt(); renderCommandMenu(); renderMentionMenu(); }
-    function postQueueAction(itemId, action, text) {
-      vscode.postMessage({ type: 'queue-action', itemId, action, ...(text === undefined ? {} : { text }) });
+    function postQueueAction(sessionId, itemId, action, text) {
+      if (!state || state.phase !== 'ready' || state.sessionId !== sessionId) return;
+      vscode.postMessage({ type: 'queue-action', sessionId, itemId, action, ...(text === undefined ? {} : { text }) });
     }
     function renderQueue(force) {
-      const queue = (state && state.queue || []).filter(item => item.placement === 'queued');
-      if (queueEditing && !queue.some(item => item.id === queueEditing.id)) queueEditing = null;
-      const signature = JSON.stringify({ queue, running: state && state.running, editing: queueEditing });
+      const sessionId = state && state.sessionId;
+      const queue = (state && state.phase === 'ready' && state.queue || []).filter(item => item.placement === 'queued');
+      if (queueEditing && (queueEditing.sessionId !== sessionId || !queue.some(item => item.id === queueEditing.id))) queueEditing = null;
+      const signature = JSON.stringify({ sessionId, queue, running: state && state.running, editing: queueEditing });
       if (!force && signature === queueRenderSignature) return;
       queueRenderSignature = signature; elements.queueDock.replaceChildren(); elements.queueDock.classList.toggle('hidden', queue.length === 0);
       if (!queue.length) return;
@@ -1337,26 +1358,26 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         if (queueEditing && queueEditing.id === item.id) {
           const editor = node('textarea', 'queue-editor'); editor.value = queueEditing.text; editor.rows = 1; editor.setAttribute('aria-label', 'Edit queued message');
           editor.addEventListener('input', () => {
-            queueEditing = { id: item.id, text: editor.value };
-            queueRenderSignature = JSON.stringify({ queue, running: state && state.running, editing: queueEditing });
+            queueEditing = { sessionId, id: item.id, text: editor.value };
+            queueRenderSignature = JSON.stringify({ sessionId, queue, running: state && state.running, editing: queueEditing });
             save.disabled = editor.value.trim() === '';
           });
           editor.addEventListener('keydown', event => {
             if (event.key === 'Escape') { event.preventDefault(); queueEditing = null; renderQueue(true); return; }
             if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
-              event.preventDefault(); const text = editor.value.trim(); if (!text) return; queueEditing = null; postQueueAction(item.id, 'edit', text); renderQueue(true);
+              event.preventDefault(); const text = editor.value.trim(); if (!text) return; queueEditing = null; postQueueAction(sessionId, item.id, 'edit', text); renderQueue(true);
             }
           });
           const actions = node('div', 'queue-actions'); const save = node('button', 'queue-action', 'Save'); const cancelEdit = node('button', 'queue-action', 'Cancel');
-          save.type = cancelEdit.type = 'button'; save.disabled = queueEditing.text.trim() === ''; save.addEventListener('click', () => { const text = editor.value.trim(); if (!text) return; queueEditing = null; postQueueAction(item.id, 'edit', text); renderQueue(true); });
+          save.type = cancelEdit.type = 'button'; save.disabled = queueEditing.text.trim() === ''; save.addEventListener('click', () => { const text = editor.value.trim(); if (!text) return; queueEditing = null; postQueueAction(sessionId, item.id, 'edit', text); renderQueue(true); });
           cancelEdit.addEventListener('click', () => { queueEditing = null; renderQueue(true); }); actions.append(save, cancelEdit); row.append(editor, actions);
           requestAnimationFrame(() => { editor.focus(); editor.setSelectionRange(editor.value.length, editor.value.length); });
         } else {
           row.append(node('span', 'queue-preview', item.preview || 'Queued message'));
           const actions = node('div', 'queue-actions');
-          const edit = node('button', 'queue-action', 'Edit'); edit.type = 'button'; edit.disabled = item.text === null; edit.title = item.text === null ? 'Messages with attachments cannot be edited' : 'Edit queued message'; edit.addEventListener('click', () => { if (item.text !== null) { queueEditing = { id: item.id, text: item.text }; renderQueue(true); } });
-          const remove = node('button', 'queue-action', 'Delete'); remove.type = 'button'; remove.addEventListener('click', () => postQueueAction(item.id, 'remove'));
-          const steer = node('button', 'queue-action', 'Steer'); steer.type = 'button'; steer.disabled = !state.running; steer.title = state.running ? 'Apply this message to the current task now' : 'Steering is available only while DeepSeek is running'; steer.addEventListener('click', () => postQueueAction(item.id, 'steer'));
+          const edit = node('button', 'queue-action', 'Edit'); edit.type = 'button'; edit.disabled = item.text === null; edit.title = item.text === null ? 'Messages with attachments cannot be edited' : 'Edit queued message'; edit.addEventListener('click', () => { if (item.text !== null) { queueEditing = { sessionId, id: item.id, text: item.text }; renderQueue(true); } });
+          const remove = node('button', 'queue-action', 'Delete'); remove.type = 'button'; remove.addEventListener('click', () => postQueueAction(sessionId, item.id, 'remove'));
+          const steer = node('button', 'queue-action', 'Steer'); steer.type = 'button'; steer.disabled = !state.running; steer.title = state.running ? 'Apply this message to the current task now' : 'Steering is available only while DeepSeek is running'; steer.addEventListener('click', () => postQueueAction(sessionId, item.id, 'steer'));
           actions.append(edit, remove, steer); row.append(actions);
         }
         elements.queueDock.append(row);

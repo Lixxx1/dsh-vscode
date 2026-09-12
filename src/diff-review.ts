@@ -5,6 +5,8 @@ import * as vscode from 'vscode'
 import type { DshEvent } from './conversation.js'
 import type { HistoryEntry } from './dsh-client.js'
 import { comparableFilePath } from './file-path.js'
+import { fileMutation, mutationDiff, diffsFromMeta, writeCreated, toolRecord, type FileMutation, type FileDiff } from './tool-presentation.js'
+import { diffLineStats, verifiedMutation } from './tool-diff.js'
 
 export interface ChangedFileItem {
   path: string
@@ -18,18 +20,14 @@ export interface ChangedFileGroup {
   files: ChangedFileItem[]
 }
 
-interface FileDiff {
-  path: string
-  oldText: string | null
-  newText: string
-}
-
 interface PendingFile {
   absolutePath: string
   displayPath: string
   before?: FileImage
   diffs: FileDiff[]
   turn: number
+  mutation?: FileMutation
+  identity?: string
 }
 
 interface ReviewSnapshot {
@@ -38,6 +36,7 @@ interface ReviewSnapshot {
   fullFile: boolean
   additions: number
   deletions: number
+  eventSeq?: number
 }
 
 interface ReviewFile {
@@ -45,6 +44,7 @@ interface ReviewFile {
   displayPath: string
   turn: number
   snapshots: ReviewSnapshot[]
+  identity?: string
 }
 
 interface FileImage {
@@ -106,14 +106,22 @@ function inside(basePath: string, filePath: string): boolean {
 
 function projectPath(cwd: string, value: string): string | undefined {
   const resolved = path.normalize(path.isAbsolute(value) ? value : path.resolve(cwd, value))
-  return inside(cwd, resolved) ? resolved : undefined
+  if (!inside(cwd, resolved)) return undefined
+  // Resolve existing ancestors too: a newly created file can be under a symlink.
+  let ancestor = resolved
+  while (!fs.existsSync(ancestor) && path.dirname(ancestor) !== ancestor) ancestor = path.dirname(ancestor)
+  const physical = path.resolve(comparableFilePath(ancestor), path.relative(ancestor, resolved))
+  return inside(comparableFilePath(path.resolve(cwd)), physical) ? resolved : undefined
 }
 
 function readImage(filePath: string): FileImage | undefined {
   try {
     const stat = fs.statSync(filePath)
     if (!stat.isFile() || stat.size > MAX_SNAPSHOT_BYTES) return undefined
-    return { text: fs.readFileSync(filePath, 'utf8') }
+    const bytes = fs.readFileSync(filePath)
+    if (bytes.length > MAX_SNAPSHOT_BYTES || bytes.includes(0)) return undefined
+    const text = bytes.toString('utf8')
+    return Buffer.from(text, 'utf8').equals(bytes) ? { text } : undefined
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { text: null }
     return undefined
@@ -141,28 +149,15 @@ function groupedDiffs(cwd: string, diffs: readonly FileDiff[], turn: number): Ma
   return grouped
 }
 
-function changedLineCount(value: string | null): number {
-  if (value === null || value === '') return 0
-  const lines = value.split(/\r?\n/)
-  return lines.length - (lines.at(-1) === '' ? 1 : 0)
-}
-
-function lineStats(diffs: readonly FileDiff[]): { additions: number; deletions: number } {
-  return diffs.reduce((total, diff) => ({
-    additions: total.additions + changedLineCount(diff.newText),
-    deletions: total.deletions + changedLineCount(diff.oldText),
-  }), { additions: 0, deletions: 0 })
-}
-
-function fragmentSnapshot(diffs: readonly FileDiff[]): ReviewSnapshot | undefined {
-  const changed = diffs.filter(diff => (diff.oldText ?? '') !== diff.newText)
+function fragmentSnapshot(diffs: readonly FileDiff[], contextualHunks = false): ReviewSnapshot | undefined {
+  const changed = diffs.filter(diff => diff.oldText === null || diff.oldText !== diff.newText)
   if (changed.length === 0) return undefined
   const separator = '\n\n⋯ unchanged lines ⋯\n\n'
   return {
     before: changed.map(diff => diff.oldText ?? '').join(separator),
     after: changed.map(diff => diff.newText).join(separator),
     fullFile: false,
-    ...lineStats(changed),
+    ...diffLineStats(changed, contextualHunks),
   }
 }
 
@@ -195,8 +190,15 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
   }
 
   rebuild(sessionId: string, cwd: string, entries: readonly HistoryEntry[]): ChangedFileGroup[] {
+    const live = new Map(this.allReviews(sessionId).flatMap(file => file.snapshots
+      .filter(snapshot => snapshot.fullFile && snapshot.eventSeq !== undefined)
+      .map(snapshot => [`${file.turn}:${comparableFilePath(file.absolutePath)}:${snapshot.eventSeq}`, { snapshot, identity: file.identity }] as const)))
     this.clearSession(sessionId)
     for (const entry of entries) this.accept(sessionId, cwd, entry.event, entry.view, true)
+    for (const file of this.allReviews(sessionId)) file.snapshots = file.snapshots.map(snapshot => {
+      const cached = live.get(`${file.turn}:${comparableFilePath(file.absolutePath)}:${snapshot.eventSeq}`)
+      return cached !== undefined && cached.identity === file.identity ? cached.snapshot : snapshot
+    })
     return this.changedFiles(sessionId)
   }
 
@@ -207,16 +209,43 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
   }
 
   accept(sessionId: string, cwd: string, event: DshEvent, view?: unknown, replay = false): boolean {
+    if (event.type === 'assistant/message' && !replay) {
+      const data = toolRecord(event.data)
+      const message = toolRecord(data?.message)
+      if (Array.isArray(message?.content)) for (const value of message.content) {
+        const block = toolRecord(value)
+        if (block?.type === 'tool-call' && typeof block.id === 'string' && typeof block.name === 'string'
+          && fileMutation(block.name, block.arguments) !== undefined) {
+          this.accept(sessionId, cwd, { ...event, type: 'tool/call', data: {
+            turn: data?.turn, callId: block.id, name: block.name, arguments: block.arguments,
+          } })
+        }
+      }
+      return false
+    }
+    if (event.type === 'turn/end') {
+      for (const key of this.pending.keys()) if (key.startsWith(`${sessionId}:`)) this.pending.delete(key)
+      return false
+    }
     const callId = callIdOf(event)
     if (callId === undefined) return false
     const key = `${sessionId}:${callId}`
     const turn = turnOf(event)
 
     if (event.type === 'tool/call') {
-      const files = groupedDiffs(cwd, diffsOf(view, 'call'), turn)
+      const data = record(event.data)
+      const mutation = typeof data?.name === 'string' ? fileMutation(data.name, data.arguments) : undefined
+      const files = groupedDiffs(cwd, mutation === undefined ? diffsOf(view, 'call') : [mutationDiff(mutation)], turn)
+      const previous = this.pending.get(key)
+      for (const [pathKey, file] of files) {
+        if (mutation !== undefined) file.mutation = mutation
+        const earlier = previous?.get(pathKey)?.before
+        if (earlier !== undefined) file.before = earlier
+        file.identity = previous?.get(pathKey)?.identity ?? comparableFilePath(file.absolutePath)
+      }
       if (!replay) {
         for (const file of files.values()) {
-          const before = readImage(file.absolutePath)
+          const before = file.before ?? readImage(file.absolutePath)
           if (before !== undefined) file.before = before
         }
       }
@@ -234,24 +263,39 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
     const currentPending = pending === undefined
       ? undefined
       : new Map([...pending.values()].map(file => [comparableFilePath(file.absolutePath), file]))
-    const results = groupedDiffs(cwd, diffsOf(view, 'result'), turn)
+    const modern = [...(currentPending?.values() ?? [])].some(file => file.mutation !== undefined)
+    const applied = modern ? diffsFromMeta(record(event.data)?.meta) : undefined
+    const created = modern && writeCreated(event)
+    const resultDiffs = modern ? applied ?? [] : diffsOf(view, 'result')
+    const results = groupedDiffs(cwd, resultDiffs, turn)
     const fileKeys = new Set([...(currentPending?.keys() ?? []), ...results.keys()])
     let updated = false
     for (const fileKey of fileKeys) {
       const callFile = currentPending?.get(fileKey)
       const resultFile = results.get(fileKey)
       const absolutePath = callFile?.absolutePath ?? resultFile?.absolutePath
-      if (absolutePath === undefined) continue
+      if (absolutePath === undefined || projectPath(cwd, absolutePath) === undefined) continue
       const displayPath = callFile?.displayPath ?? resultFile?.displayPath ?? path.relative(cwd, absolutePath)
       const fileTurn = resultFile?.turn ?? callFile?.turn ?? turn
       const diffs = resultFile?.diffs ?? callFile?.diffs ?? []
+      if (modern && callFile === undefined) continue
       const after = replay ? undefined : readImage(absolutePath)
-      const stats = lineStats(diffs)
-      const snapshot = callFile?.before !== undefined && after !== undefined && callFile.before.text !== after.text
-        ? { before: callFile.before.text, after: after.text, fullFile: true, ...stats }
-        : fragmentSnapshot(diffs)
+      const mutation = callFile?.mutation
+      const actualDiffs = mutation === undefined ? diffs : resultFile?.diffs
+        ?? (created && mutation.kind === 'write' ? [mutationDiff(mutation)] : [])
+      const before = callFile?.before
+      const sameTarget = before?.text === null || callFile?.identity === comparableFilePath(absolutePath)
+      const matchedApplied = resultFile?.diffs ?? (applied?.length === 0 ? applied : undefined)
+      const verified = sameTarget && (mutation === undefined
+        ? before !== undefined && after !== undefined && before.text !== after.text
+        : before !== undefined && after !== undefined && verifiedMutation(before.text, after.text, mutation, matchedApplied, created))
+      const snapshot = verified && before !== undefined && after !== undefined
+        ? { before: before.text, after: after.text, fullFile: true,
+          ...diffLineStats([{ path: displayPath, oldText: before.text, newText: after.text ?? '' }]) }
+        : fragmentSnapshot(actualDiffs, mutation !== undefined && !created)
       if (snapshot === undefined) continue
-      this.record(sessionId, { absolutePath, displayPath, turn: fileTurn, snapshots: [snapshot] })
+      this.record(sessionId, { absolutePath, displayPath, turn: fileTurn, identity: comparableFilePath(absolutePath),
+        snapshots: [{ ...snapshot, eventSeq: event.seq }] })
       updated = true
     }
     return updated
@@ -363,7 +407,11 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
     const key = comparableFilePath(incoming.absolutePath)
     const existing = files.get(key)
     if (existing === undefined) files.set(key, incoming)
-    else existing.snapshots.push(...incoming.snapshots)
+    else for (const snapshot of incoming.snapshots) {
+      if (snapshot.eventSeq === undefined || !existing.snapshots.some(value => value.eventSeq === snapshot.eventSeq)) {
+        existing.snapshots.push(snapshot)
+      }
+    }
   }
 
   private reviewContent(review: ReviewFile): { before: string | null; after: string | null; fullFile: boolean } {
@@ -446,6 +494,7 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
 
   private validateCurrentFile(review: ReviewFile, expected: string | null): void {
     const reviewPath = comparableFilePath(review.absolutePath)
+    if (review.identity !== undefined && reviewPath !== review.identity) throw new Error(`Cannot revert ${review.displayPath}: its filesystem target changed.`)
     const dirty = vscode.workspace.textDocuments.some(document =>
       document.isDirty
       && comparableFilePath(path.resolve(document.uri.fsPath)) === reviewPath,
