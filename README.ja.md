@@ -76,7 +76,7 @@ VS Code の設定で **DeepSeek Harness: Autonomous Debugging** を有効にし�
 
 DeepSeek はサイドバーからデバッガーを起動し、ブレークポイントの設定、ステップ実行、実行時の値の確認、コードの修正、結果の検証まで行えるようになります。
 
-DeepSeek Harness `0.1.0-rc.8` 以降が必要です。
+DeepSeek Harness `0.1.2-rc.1` または互換性のある新しいバージョンが必要です。`0.1.5-rc.1` で動作確認済みです。
 
 💬 使いにくい点や「次はこれが欲しい」というアイデアがあれば、[Issue を立ててください](https://github.com/Lixxx1/dsh-vscode/issues)。いただいたフィードバックはすべて読んでいます。PR も歓迎です。
 

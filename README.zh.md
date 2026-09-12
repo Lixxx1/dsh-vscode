@@ -76,7 +76,7 @@ pnpm run package
 
 之后，DeepSeek 就能直接从侧边栏启动调试器、设置断点、单步执行、检查运行时变量、修复代码并验证结果。
 
-需要 DeepSeek Harness `0.1.0-rc.8` 或更新版本。
+需要 DeepSeek Harness `0.1.2-rc.1` 或兼容的更新版本，已使用 `0.1.5-rc.1` 测试。
 
 💬 如果哪里用着不顺手，或者你有想加的功能，欢迎来 [Issue](https://github.com/Lixxx1/dsh-vscode/issues) 里聊聊，也欢迎直接提 PR！
 
