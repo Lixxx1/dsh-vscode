@@ -5,6 +5,7 @@ import { pickRuntimeSettingsNamespace } from './runtime-settings-picker.js'
 import { PLUGIN_STATUS_ICONS, PLUGIN_STATUS_LABELS, runtimePluginGroups } from './runtime-plugin-inventory.js'
 import { resolveLaunch } from './launch.js'
 import { terminateProcessTree } from './process-tree.js'
+import { isCurrentRuntimeTarget, restartAfterRuntimeChange, runtimeChangeTarget, type RuntimeChangeController, type RuntimeChangeTarget } from './runtime-change.js'
 import {
   COMMUNITY_REGISTRY_URL,
   parseCommunityRuntimePlugins,
@@ -38,26 +39,11 @@ interface CatalogCache {
   plugins: CommunityRuntimePlugin[]
 }
 
-interface PluginController {
+interface PluginController extends RuntimeChangeController {
   readonly onDidChangeRuntimeSettings: vscode.Event<void>
-  readonly cwd: string
-  readonly runtimeOwnership: 'external' | 'managed' | undefined
-  readonly runtimeIdentity: object | undefined
-  readonly hasRunningTasks: boolean
-  readonly state: {
-    phase: 'loading' | 'ready' | 'error'
-    statusText: string
-    running: boolean
-  }
   pluginInventory(): Promise<PluginInventorySnapshot>
   settings(): Promise<SettingsDescription>
   mutateSettings(namespace: SettingsNamespace, ops: SettingsMutation[]): Promise<SettingsNamespace>
-  restart(): Promise<void>
-}
-
-interface RuntimeChangeTarget {
-  readonly identity: object | undefined
-  readonly cwd: string
 }
 
 type PluginPick = vscode.QuickPickItem & (
@@ -520,47 +506,29 @@ export class DshPluginManager {
   }
 
   private async requireIdle(): Promise<boolean> {
+    if (this.controller.isDisposed) return false
     if (this.controller.state.phase === 'loading'
       || (this.controller.runtimeOwnership !== undefined && this.controller.state.phase !== 'ready')) {
       await vscode.window.showWarningMessage('Wait for DeepSeek Harness to reconnect before changing runtime plugins.')
       return false
     }
     if (this.controller.hasRunningTasks) {
-      await vscode.window.showWarningMessage('Finish or stop all running DeepSeek tasks, including background conversations, before changing runtime plugins.')
+      await vscode.window.showWarningMessage('Finish or stop all running DeepSeek tasks, including background conversations and Background Jobs, before changing runtime plugins.')
       return false
     }
     return true
   }
 
   private changeTarget(): RuntimeChangeTarget {
-    return { identity: this.controller.runtimeIdentity, cwd: this.controller.cwd }
+    return runtimeChangeTarget(this.controller)
   }
 
   private isCurrentTarget(target: RuntimeChangeTarget): boolean {
-    return target.identity === this.controller.runtimeIdentity && target.cwd === this.controller.cwd
+    return isCurrentRuntimeTarget(this.controller, target)
   }
 
   private async restartAfterChange(successMessage: string, target: RuntimeChangeTarget): Promise<void> {
-    if (!this.isCurrentTarget(target) || this.controller.state.phase === 'loading'
-      || (this.controller.runtimeOwnership !== undefined && this.controller.state.phase !== 'ready')) {
-      await vscode.window.showWarningMessage(`${successMessage}. The runtime connection changed; no runtime was restarted. Restart the intended runtime when ready to apply the change.`)
-      return
-    }
-    if (this.controller.runtimeOwnership === 'external') {
-      await vscode.window.showWarningMessage(
-        `${successMessage}. Restart the external DeepSeek Harness process to apply this change, then reconnect from VS Code.`,
-      )
-      return
-    }
-    if (this.controller.hasRunningTasks) {
-      await vscode.window.showWarningMessage(`${successMessage}. DeepSeek tasks are still running, so the runtime was not restarted. Restart it after those tasks finish to apply the change.`)
-      return
-    }
-    await this.controller.restart()
-    if (this.controller.state.phase === 'error') {
-      throw new Error(`${successMessage}, but DSH could not restart: ${this.controller.state.statusText}`)
-    }
-    await vscode.window.showInformationMessage(`${successMessage}. DeepSeek Harness restarted.`)
+    await restartAfterRuntimeChange(this.controller, target, successMessage)
   }
 
   private async runOfficialPluginCommand(args: readonly string[], title: string): Promise<RuntimeChangeTarget> {

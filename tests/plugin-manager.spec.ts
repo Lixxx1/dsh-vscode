@@ -22,11 +22,11 @@ import { DshPluginManager } from '../src/plugin-manager.js'
 function harness(ownership: 'external' | 'managed' = 'managed') {
   const controller = {
     runtimeOwnership: ownership, cwd: '/workspace', state: { phase: 'ready', statusText: '', running: false },
-    runtimeIdentity: {}, backgroundRunning: false,
+    runtimeIdentity: {}, backgroundRunning: false, isDisposed: false,
     get hasRunningTasks() { return this.state.running || this.backgroundRunning },
     pluginInventory: vi.fn(async () => ({ entries: [], agentPresets: [{ id: 'coding', trust: 'system', isDefault: true,
       rows: [{ entryId: 'mcp', moduleName: '@deepseek-ai/dsh-mcp-client', enabled: true, fiberPhase: null }] }] })),
-    restart: vi.fn(), mutateSettings: vi.fn(),
+    restart: vi.fn(async () => true), mutateSettings: vi.fn(),
   }
   const manager = new DshPluginManager({ extensionUri: { fsPath: '/extension' } } as any, controller as any,
     { appendLine: vi.fn(), append: vi.fn() } as any)

@@ -18,7 +18,7 @@ import {
   type PermissionPresetItem,
   type PlanModeState,
 } from './collaboration-state.js'
-import { DEEPSEEK_API_KEY_SECRET, normalizeDeepSeekApiKey } from './credentials.js'
+import { configureApiKey, clearApiKey, watchDebugConfiguration } from './runtime-configuration.js'
 import { DiffReviewManager, type ChangedFileGroup } from './diff-review.js'
 import { DebugRuntimeContribution } from './debug-runtime-contribution.js'
 import { DebugSessionManager } from './debug-session-manager.js'
@@ -280,7 +280,10 @@ export class DshChatController implements vscode.Disposable {
   get hasRunningTasks(): boolean {
     return this._state.running || this.summaries.some(summary => summary.running)
       || [...this.runtimeActivity.values()].some(activity => activity.running)
+      || [...this.jobsBySession.values()].some(jobs => jobs.some(job => job.status === 'running' || job.status === 'stopping'))
   }
+
+  get isDisposed(): boolean { return this.disposed }
 
   /** Opaque connection identity for deferred plugin/settings completion checks. */
   get runtimeIdentity(): object | undefined {
@@ -373,15 +376,18 @@ export class DshChatController implements vscode.Disposable {
     }
   }
 
-  async restart(target?: RuntimeTarget): Promise<void> {
-    if (this.disposed) return
+  async restart(target?: RuntimeTarget): Promise<boolean> {
+    if (this.disposed) return false
     const revision = ++this.runtimeSwitchRevision
     this.cancelRecovery()
     ++this.generation
     this.disconnectClient()
+    this.publish({ phase: 'loading', statusText: 'Restarting DeepSeek Harness…', canReconnect: false })
     await this.runtime.stop()
-    if (revision !== this.runtimeSwitchRevision) return
+    if (revision !== this.runtimeSwitchRevision) return false
+    const startGeneration = this.generation + 1
     await this.start(target)
+    return !this.disposed && this.runtimeSwitchRevision === revision + 1 && this.generation === startGeneration
   }
 
   assertCanSelectRuntime(): void {
@@ -815,6 +821,7 @@ export class DshChatController implements vscode.Disposable {
 
   private disconnectClient(): void {
     this.runtimeActivity.clear()
+    this.jobsBySession.clear()
     ++this.sessionListGeneration
     this.sessionAttention.clear()
     for (const dispose of this.clientDisposables.splice(0)) dispose()
@@ -2247,39 +2254,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.connectExistingRuntime', () => chooseRuntime('external')))
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.startManagedRuntime', () => chooseRuntime('managed')))
   if (workspace !== undefined) {
-    let debugRestartTimer: NodeJS.Timeout | undefined
-    let debugRestartTask = Promise.resolve()
-    context.subscriptions.push(
-      vscode.workspace.onDidChangeConfiguration(event => {
-        const currentWorkspace = controller.cwd === '' ? workspace.uri : vscode.Uri.file(controller.cwd)
-        if (!event.affectsConfiguration('deepseekHarness.autonomousDebugging', currentWorkspace)) return
-        const enabled = vscode.workspace
-          .getConfiguration('deepseekHarness', currentWorkspace)
-          .get<boolean>('autonomousDebugging', false)
-
-        if (debugRestartTimer !== undefined) clearTimeout(debugRestartTimer)
-        debugRestartTimer = setTimeout(() => {
-          debugRestartTimer = undefined
-          if (runtime.state.kind === 'stopped') {
-            output.appendLine(`[debug] Autonomous debugging ${enabled ? 'enabled' : 'disabled'}; it will apply the next time DSH starts.`)
-            return
-          }
-          debugRestartTask = debugRestartTask
-            .catch(() => undefined)
-            .then(async () => {
-              output.appendLine(`[debug] Autonomous debugging ${enabled ? 'enabled' : 'disabled'}; restarting DSH to apply the change.`)
-              await controller.restart()
-              void vscode.window.showInformationMessage(`VS Code debugging ${enabled ? 'enabled' : 'disabled'}. DeepSeek Harness restarted.`)
-            })
-            .catch(error => {
-              const message = error instanceof Error ? error.message : String(error)
-              output.appendLine(`[debug] Failed to restart DSH after the setting changed: ${message}`)
-              void vscode.window.showErrorMessage(`Could not apply the VS Code debugging setting: ${message}`)
-            })
-        }, 200)
-      }),
-      { dispose: () => { if (debugRestartTimer !== undefined) clearTimeout(debugRestartTimer) } },
-    )
+    context.subscriptions.push(watchDebugConfiguration(controller, workspace.uri, output))
   }
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.managePlugins', async () => {
     await pluginManager.show().catch(error => {
@@ -2335,55 +2310,11 @@ export function activate(context: vscode.ExtensionContext): void {
   }))
 
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.configureApiKey', async () => {
-    if (controller.runtimeOwnership === undefined) await controller.start()
-    if (controller.runtimeOwnership === 'external') {
-      void vscode.window.showInformationMessage(
-        'This sidebar is using an external DeepSeek Harness runtime. Configure its API key where that process is started.',
-      )
-      return
-    }
-    const value = await vscode.window.showInputBox({
-      title: 'Configure DeepSeek API Key',
-      prompt: 'Paste the key here. It is stored in VS Code SecretStorage and passed only to the official DSH child process.',
-      placeHolder: 'sk-…',
-      password: true,
-      ignoreFocusOut: true,
-      validateInput: (candidate) => {
-        try {
-          normalizeDeepSeekApiKey(candidate)
-          return undefined
-        } catch (error) {
-          return error instanceof Error ? error.message : String(error)
-        }
-      },
-    })
-    if (value === undefined) return
-
-    const apiKey = normalizeDeepSeekApiKey(value)
-    await context.secrets.store(DEEPSEEK_API_KEY_SECRET, apiKey)
-    output.appendLine('[credentials] DeepSeek API key stored in VS Code SecretStorage.')
-    await controller.restart()
-    void vscode.window.showInformationMessage('DeepSeek API key configured. DeepSeek Harness restarted.')
+    await configureApiKey(controller, context.secrets, output)
   }))
 
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.clearApiKey', async () => {
-    const choice = await vscode.window.showWarningMessage(
-      'Remove the DeepSeek API key stored by this extension?',
-      { modal: true },
-      'Remove',
-    )
-    if (choice !== 'Remove') return
-
-    await context.secrets.delete(DEEPSEEK_API_KEY_SECRET)
-    output.appendLine('[credentials] DeepSeek API key removed from VS Code SecretStorage.')
-    if (controller.runtimeOwnership === 'external') {
-      void vscode.window.showInformationMessage(
-        'Stored DeepSeek API key removed. The reused external DSH keeps its own credentials.',
-      )
-      return
-    }
-    await controller.restart()
-    void vscode.window.showInformationMessage('Stored DeepSeek API key removed. DeepSeek Harness restarted.')
+    await clearApiKey(controller, context.secrets, output)
   }))
 
   const welcomeKey = 'deepseekHarness.welcome.openChat.v1'

@@ -256,7 +256,7 @@ export class DshSessionFeed {
       if (this.follow?.active) this.mux({ type: 'session/queue', sessionId: id, items: this.queueItems(id) })
     } else if (frame.type === 'jobs' && Array.isArray(frame.jobs)) {
       this.jobs.set(id, frame.jobs)
-      if (this.follow?.active) this.mux({ type: 'session/jobs', sessionId: id, jobs: frame.jobs })
+      this.publishJobs(id, frame.jobs)
     } else if (frame.type === 'projection' && typeof frame.key === 'string' && Number.isSafeInteger(frame.seq)) {
       if ((frame.seq as number) < (this.projectionFloors.get(id) ?? -1)) return
       const map = this.projections.get(id) ?? new Map<string, Projection>()
@@ -346,7 +346,7 @@ export class DshSessionFeed {
         this.projectionFloors.delete(id)
         for (const [eventId, question] of this.questions) if (question.sessionId === id) this.dismissQuestion(eventId)
         this.mux({ type: 'session/queue', sessionId: id, items: [] })
-        this.mux({ type: 'session/jobs', sessionId: id, jobs: [] })
+        this.publishJobs(id, [])
         this.host({ type: 'host/session-removed', sessionId: id })
       } else if (frame.event === 'api-session/error') this.host({ type: 'host/agent-error', sessionId: id, message: value })
     }
@@ -394,6 +394,12 @@ export class DshSessionFeed {
   private result(eventId: string, outcome: unknown): Promise<void> {
     if (this.clientId === undefined) return Promise.reject(new Error('DSH event stream is not ready.'))
     return this.connection.call('$events/result', { clientId: this.clientId, eventId, outcome })
+  }
+
+  private publishJobs(sessionId: string, jobs: unknown[]): void {
+    // Runtime-wide control state must arrive even before any session is opened.
+    // Do not journal-buffer it: activation would replay old jobs after the latest snapshot.
+    this.emit({ channel: 'mux', rpcId: '', payload: { type: 'session/jobs', sessionId, jobs } })
   }
 
   private mux(payload: Record<string, unknown>): void {

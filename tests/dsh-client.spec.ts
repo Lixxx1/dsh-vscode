@@ -16,7 +16,7 @@ const snapshot = (id = 's', cursor = 5, values: Record<string, unknown> = {}) =>
   type: 'snapshot', header: { id }, cursor, records: [event(cursor)], hasMore: true, projections: { asOfSeq: cursor, values },
 })
 
-function harness(autoSnapshot = true) {
+function harness(autoSnapshot = true, initialJobs: Record<string, unknown[]> = {}) {
   const requests: { endpoint: string; args: any }[] = []
   const outgoing: any[] = []
   const ids = new Map<string, string>()
@@ -39,7 +39,7 @@ function harness(autoSnapshot = true) {
     ids.set(frame.endpoint, frame.streamId)
     queueMicrotask(() => {
       if (frame.endpoint === '$events') receive(frame.streamId, { type: 'ready', clientId: 'client-1', host: { home: '/isolated' } })
-      if (frame.endpoint === 'session/control') receive(frame.streamId, { type: 'baseline', value: { queues: {}, jobs: {}, projections: {} } })
+      if (frame.endpoint === 'session/control') receive(frame.streamId, { type: 'baseline', value: { queues: {}, jobs: initialJobs, projections: {} } })
       if (frame.endpoint === 'workspace/follow') receive(frame.streamId, { type: 'baseline', value: { items: [], archivedSessionIds: ['archived'] } })
       if (frame.endpoint === 'session/follow' && autoSnapshot) receive(frame.streamId, snapshot(frame.payload.args.request.address.sessionId))
     })
@@ -66,6 +66,30 @@ function harness(autoSnapshot = true) {
 }
 
 describe('DSH 0.1.2 chat transport', () => {
+  it('publishes every session’s baseline jobs before opening any conversation', async () => {
+    const job = { id: 'job', status: 'running', kind: 'bash', label: 'Server', startedAt: 1 }
+    const h = harness(true, { s: [job], foreign: [job] })
+    await h.client.startStreams()
+    expect(h.frames.filter(frame => frame.payload.type === 'session/jobs').map(frame => frame.payload)).toEqual([
+      { type: 'session/jobs', sessionId: 's', jobs: [job] },
+      { type: 'session/jobs', sessionId: 'foreign', jobs: [job] },
+    ])
+    h.push('session/control', { type: 'jobs', sessionId: 'foreign', jobs: [] })
+    expect(h.frames.at(-1)?.payload).toEqual({ type: 'session/jobs', sessionId: 'foreign', jobs: [] })
+  })
+
+  it('does not replay obsolete running jobs when a conversation activates', async () => {
+    const h = harness(); await h.client.startStreams()
+    const opening = await h.client.openSession('s')
+    const running = { id: 'job', status: 'running', kind: 'bash', label: 'Server', startedAt: 1 }
+    const completed = { ...running, status: 'completed' }
+    h.push('session/control', { type: 'jobs', sessionId: 's', jobs: [running] })
+    h.push('session/control', { type: 'jobs', sessionId: 's', jobs: [completed] })
+    const before = h.frames.length
+    opening.activate()
+    expect(h.frames.slice(before).filter(frame => frame.payload.type === 'session/jobs').map(frame => frame.payload.jobs)).toEqual([[completed]])
+  })
+
   it('forwards the actual discovery events and does not publish credential references', async () => {
     const h = harness()
     await h.client.startStreams()

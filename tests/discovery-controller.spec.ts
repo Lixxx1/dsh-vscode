@@ -72,6 +72,81 @@ async function harness() {
 }
 
 describe('runtime selection', () => {
+  it('marks a restart in progress before stopping the runtime and reports only the current completion', async () => {
+    const h = await harness(), stopped = Promise.withResolvers<void>()
+    h.runtime.stop.mockReturnValueOnce(stopped.promise)
+    const earlier = h.controller.restart()
+    expect(h.controller.state.phase).toBe('loading')
+    const latest = h.controller.restart()
+    expect(await latest).toBe(true)
+    stopped.resolve()
+    expect(await earlier).toBe(false)
+    h.controller.dispose()
+    expect(await h.controller.restart()).toBe(false)
+  })
+
+  it('does not report an old restart as current when a reconnect supersedes its session load', async () => {
+    const h = await harness(), next = h.next(), opening = Promise.withResolvers<any>()
+    next.client.openSession.mockReturnValueOnce(opening.promise)
+    const restart = h.controller.restart()
+    await vi.waitFor(() => expect(next.client.openSession).toHaveBeenCalledTimes(1))
+    h.next()
+    await h.controller.reconnect()
+    opening.resolve({ events: [], hasMore: false, projections: {}, isCurrent: () => true, activate() {} })
+    expect(await restart).toBe(false)
+    expect(h.controller.state.phase).toBe('ready')
+  })
+
+  it.each(['running', 'stopping'])('protects a %s job even after its agent and foreground session are idle', async status => {
+    const h = await harness()
+    h.emit({ type: 'session/jobs', sessionId: 'foreign', jobs: [{ id: 'server', kind: 'bash', label: 'Server', startedAt: 1, status }] }, 'mux')
+    expect(h.controller.state.running).toBe(false)
+    expect(h.controller.state.jobs).toEqual([])
+    expect(h.controller.hasRunningTasks).toBe(true)
+    await expect(h.controller.switchWorkspace('/elsewhere')).rejects.toThrow('running DeepSeek tasks')
+    await expect(h.controller.selectRuntime({ kind: 'managed' })).rejects.toThrow('running DeepSeek tasks')
+    expect(h.runtime.stop).not.toHaveBeenCalled()
+    h.emit({ type: 'host/session-removed', sessionId: 'foreign' })
+    expect(h.controller.hasRunningTasks).toBe(false)
+  })
+
+  it.each(['completed', 'failed', 'killed'])('unblocks changes after a job becomes %s', async status => {
+    const h = await harness()
+    const job = { id: 'server', kind: 'bash', label: 'Server', startedAt: 1, status: 'running' }
+    h.emit({ type: 'session/jobs', sessionId: 'b', jobs: [job] }, 'mux')
+    expect(h.controller.hasRunningTasks).toBe(true)
+    h.emit({ type: 'session/jobs', sessionId: 'b', jobs: [{ ...job, status }] }, 'mux')
+    expect(h.controller.hasRunningTasks).toBe(false)
+    expect(() => h.controller.assertCanSelectRuntime()).not.toThrow()
+  })
+
+  it('restores other sessions’ jobs on reconnect and discards jobs missing from the new baseline', async () => {
+    const h = await harness()
+    const job = { id: 'server', kind: 'bash', label: 'Server', startedAt: 1, status: 'running' }
+    h.emit({ type: 'session/jobs', sessionId: 'stale', jobs: [job] }, 'mux')
+    const next = h.next()
+    next.client.startStreams.mockImplementationOnce(async () => {
+      next.emit({ type: 'session/jobs', sessionId: 'b', jobs: [job] }, 'mux')
+    })
+    await h.controller.reconnect()
+    expect(h.controller.state.jobs).toEqual([])
+    expect(h.controller.hasRunningTasks).toBe(true)
+    await h.controller.selectSession('b')
+    expect(h.controller.state.jobs).toEqual([job])
+    h.emit({ type: 'session/jobs', sessionId: 'stale', jobs: [job] }, 'mux')
+    next.emit({ type: 'session/jobs', sessionId: 'b', jobs: [] }, 'mux')
+    expect(h.controller.hasRunningTasks).toBe(false)
+  })
+
+  it('blocks restart-required settings while a job outlives its agent', async () => {
+    const h = await harness()
+    h.client.settings.mockResolvedValue({ namespaces: [{ ns: 'plugin', revision: 1, applies: 'restart' }] })
+    const [ns] = (await h.controller.settings()).namespaces
+    h.emit({ type: 'session/jobs', sessionId: 'b', jobs: [{ id: 'server', kind: 'bash', label: 'Server', startedAt: 1, status: 'running' }] }, 'mux')
+    expect(() => h.controller.mutateSettings(ns!, [])).toThrow('all running DeepSeek tasks')
+    expect(h.client.mutateSettings).not.toHaveBeenCalled()
+  })
+
   it('blocks switching projects while another conversation is running', async () => {
     const h = await harness()
     h.emit({ type: 'host/session-status', sessionId: 'b', running: true })
