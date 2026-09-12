@@ -140,7 +140,7 @@ export class DshClient {
   private readonly skills = new Map<string, RemoteRead<SkillDescriptor[]>>()
   private readonly presets: RemoteRead<AgentPresetRoster>
 
-  constructor(private readonly connection: DshConnection) {
+  constructor(private readonly connection: DshConnection, requestSessions: readonly string[] = []) {
     this.api = new DshRemoteApi(connection, this.lifetime.signal)
     this.catalog = new RemoteRead(() => this.call('session/modelCatalog', {}), this.lifetime.signal)
     this.presets = new RemoteRead(() => this.call('agentPresets/list', {}, 10_000), this.lifetime.signal)
@@ -150,7 +150,10 @@ export class DshClient {
         for (const listener of this.frameListeners) listener(frame)
       },
       error => { for (const listener of this.errorListeners) listener(error) })
+    for (const sessionId of requestSessions) this.feed.handleRequestsFor(sessionId)
   }
+
+  get handledSessionIds(): string[] { return this.feed.handledSessionIds }
 
   onFrame(listener: (frame: DshFrame) => void): () => void {
     this.frameListeners.add(listener)

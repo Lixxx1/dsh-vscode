@@ -67,6 +67,8 @@ import {
 } from './chat-state-patch.js'
 import { sessionItems, type SessionItem, type SessionAttention } from './session-center.js'
 import { wireRecord } from './dsh-streams.js'
+import type { DshConnection } from './dsh-connection.js'
+import { canRetryConnection, reconnectAttempts } from './dsh-reconnect.js'
 
 let activeRuntime: DshRuntime | undefined
 
@@ -126,6 +128,7 @@ interface ChatViewState {
   phase: 'loading' | 'ready' | 'error'
   statusText: string
   setup: SetupKind
+  canReconnect: boolean
   workspaceName: string
   cwd: string
   sessions: SessionItem[]
@@ -185,6 +188,7 @@ function initialState(cwd: string): ChatViewState {
     phase: cwd === '' ? 'error' : 'loading',
     statusText: cwd === '' ? 'Open a project folder to start using DeepSeek Harness.' : 'Starting the official DeepSeek Harness runtime…',
     setup: setupKindFor(cwd, cwd === '' ? 'error' : 'loading', ''),
+    canReconnect: false,
     workspaceName: path.basename(cwd),
     cwd,
     sessions: [],
@@ -232,6 +236,9 @@ export class DshChatController implements vscode.Disposable {
   private archivedSessionIds = new Set<string>()
   private readonly unreadSessionIds: Set<string>
   private readonly sessionAttention = new Map<string, SessionAttention>()
+  private readonly reconnectSessions = new Set<string>()
+  private automaticReconnects: number[] = []
+  private recovery: { abort: AbortController; task: Promise<void>; failure: Error | undefined } | undefined
 
   private static readonly unreadStorageKey = 'deepseekHarness.unreadSessions'
 
@@ -269,18 +276,29 @@ export class DshChatController implements vscode.Disposable {
   }
 
   observeRuntime(state: RuntimeState): void {
+    if (state.kind === 'stopped' || state.kind === 'failed') {
+      this.cancelRecovery()
+      ++this.generation
+      this.disconnectClient()
+      for (const summary of this.summaries) summary.running = false
+      this.clearLiveControls()
+      this.publish({ canReconnect: false, running: false })
+    }
     if (state.kind === 'starting') this.publish({ phase: 'loading', statusText: state.detail, setup: null })
     if (state.kind === 'failed') this.publish({
       phase: 'error',
       statusText: state.message,
       setup: setupKindFor(this.cwd, 'error', state.message),
     })
-    if (state.kind === 'stopped' && this._state.phase === 'ready') {
+    if (state.kind === 'stopped') {
       this.publish({ phase: 'error', statusText: 'DeepSeek Harness stopped.', setup: null })
     }
   }
 
   async start(): Promise<void> {
+    this.cancelRecovery()
+    this.reconnectSessions.clear()
+    this.automaticReconnects = []
     const generation = ++this.generation
     this.disconnectClient()
     this.projector.reset([])
@@ -295,6 +313,7 @@ export class DshChatController implements vscode.Disposable {
       phase: this.cwd === '' ? 'error' : 'loading',
       statusText: this.cwd === '' ? 'Open a project folder to start using DeepSeek Harness.' : 'Starting the official DeepSeek Harness runtime…',
       setup: this.cwd === '' ? 'workspace' : null,
+      canReconnect: false,
       messages: [],
       sessions: [],
       sessionId: '',
@@ -321,21 +340,8 @@ export class DshChatController implements vscode.Disposable {
       if (generation !== this.generation) return
       const connection = this.runtime.connection
       if (connection === undefined) throw new Error('DSH did not establish an authenticated connection.')
-      const client = new DshClient(connection)
-      this.client = client
-      this.clientDisposables.push(
-        client.onFrame(frame => {
-          const type = frame.payload.type
-          if (typeof type === 'string' && (type.startsWith('approval/') || type.startsWith('question/'))) {
-            this.output.appendLine(`[protocol] ${type} for ${String(frame.payload.sessionId ?? 'unknown session')}`)
-          }
-          this.acceptFrame(frame)
-        }),
-        client.onError(error => {
-          this.output.appendLine(`[protocol] ${error.message}`)
-          this.publish({ phase: 'error', statusText: `Lost the DSH event stream: ${error.message}` })
-        }),
-      )
+      const client = this.connectClient(connection)
+      this.publish({ canReconnect: true })
       await client.startStreams()
       if (generation !== this.generation || this.client !== client) return
       await this.loadSessions()
@@ -348,10 +354,115 @@ export class DshChatController implements vscode.Disposable {
   }
 
   async restart(): Promise<void> {
+    this.cancelRecovery()
     ++this.generation
     this.disconnectClient()
     await this.runtime.stop()
     await this.start()
+  }
+
+  /** Rebuild subscriptions on the same runtime; never resubmit a user action. */
+  reconnect(automatic = false): Promise<void> {
+    if (this.recovery !== undefined) return this.recovery.task
+    if (this.runtime.state.kind !== 'ready') {
+      this.publish({ phase: 'error', setup: null, canReconnect: false,
+        statusText: 'The DSH runtime is not running. Use Restart Runtime to start it.' })
+      return Promise.resolve()
+    }
+    const connection = this.runtime.connection
+    if (!automatic) this.automaticReconnects = []
+    const generation = ++this.generation
+    const selectedId = this._state.sessionId
+    for (const id of this.client?.handledSessionIds ?? []) this.reconnectSessions.add(id)
+    if (selectedId !== '') this.reconnectSessions.add(selectedId)
+    this.disconnectClient()
+    this.clearLiveControls()
+    this.publish({ phase: 'loading', setup: null, canReconnect: true, statusText: 'Reconnecting to the existing DSH runtime…' })
+    const recovery = { abort: new AbortController(), task: Promise.resolve(), failure: undefined as Error | undefined }
+    this.recovery = recovery
+    recovery.task = reconnectAttempts(async attempt => {
+      if (this.runtime.state.kind !== 'ready' || this.runtime.connection !== connection) throw new Error('The DSH runtime changed. Reconnect to its new instance.')
+      this.disconnectClient()
+      recovery.failure = undefined
+      if (automatic) {
+        this.automaticReconnects = this.automaticReconnects.filter(time => Date.now() - time < 30_000)
+        if (this.automaticReconnects.length >= 3) throw new Error('The DSH connection keeps dropping. Check the runtime, then reconnect manually.')
+        this.automaticReconnects.push(Date.now())
+      }
+      this.publish({ phase: 'loading', statusText: `Reconnecting to DSH${automatic ? ` (${String(attempt)}/3)` : ''}…` })
+      // A manual retry can renew an expired cookie using the existing launch URL.
+      // An automatic retry never changes credentials or starts a process.
+      if (!automatic) await connection.reauthenticate(recovery.abort.signal)
+      recovery.abort.signal.throwIfAborted()
+      const client = this.connectClient(connection, [...this.reconnectSessions])
+      try {
+        await client.startStreams()
+        recovery.abort.signal.throwIfAborted()
+        await this.loadSessions(selectedId || undefined, false)
+        recovery.abort.signal.throwIfAborted()
+        if (recovery.failure !== undefined) throw recovery.failure
+        if (this.client !== client || this._state.phase !== 'ready') throw new Error('DSH did not restore the conversation. Reconnect to try again.')
+      } catch (error) {
+        throw recovery.failure ?? error
+      }
+    }, recovery.abort.signal, automatic).catch((error: unknown) => {
+      if (recovery.abort.signal.aborted || generation !== this.generation) return
+      this.disconnectClient()
+      this.clearLiveControls()
+      const message = error instanceof Error ? error.message : String(error)
+      this.output.appendLine(`[reconnect] ${message}`)
+      this.publish({ phase: 'error', setup: null, statusText: `Could not reconnect to DSH: ${message} No tasks were resent.` })
+    }).finally(() => {
+      if (this.recovery === recovery) this.recovery = undefined
+    })
+    return recovery.task
+  }
+
+  private connectClient(connection: DshConnection, requestSessions: readonly string[] = []): DshClient {
+    const client = new DshClient(connection, requestSessions)
+    this.client = client
+    this.clientDisposables.push(
+      client.onFrame(frame => {
+        if (this.client !== client) return
+        const type = frame.payload.type
+        if (typeof type === 'string' && (type.startsWith('approval/') || type.startsWith('question/'))) {
+          this.output.appendLine(`[protocol] ${type} for ${String(frame.payload.sessionId ?? 'unknown session')}`)
+        }
+        this.acceptFrame(frame)
+      }),
+      client.onError(error => {
+        if (this.client !== client) return
+        this.output.appendLine(`[protocol] ${error.message}`)
+        for (const id of client.handledSessionIds) this.reconnectSessions.add(id)
+        if (this.recovery !== undefined) {
+          this.recovery.failure = error
+          client.dispose()
+          return
+        }
+        if (canRetryConnection(error) && this.runtime.state.kind === 'ready') {
+          void this.reconnect(true)
+        } else {
+          this.disconnectClient()
+          this.clearLiveControls()
+          this.publish({ phase: 'error', setup: null, statusText: `Lost the DSH event stream: ${error.message}` })
+        }
+      }),
+    )
+    return client
+  }
+
+  private clearLiveControls(): void {
+    ++this.sessionLoadGeneration
+    this.queueRawText.clear()
+    this.jobsBySession.clear()
+    this.sessionAttention.clear()
+    this.publish({ approval: null, question: null, queue: [], jobs: [], loadingHistory: false })
+    this.publishSessionItems()
+  }
+
+  private cancelRecovery(): void {
+    this.recovery?.abort.abort()
+    this.recovery = undefined
   }
 
   async switchWorkspace(cwd: string): Promise<void> {
@@ -370,12 +481,16 @@ export class DshChatController implements vscode.Disposable {
   }
 
   async newSession(): Promise<void> {
+    this.requireReady()
     const client = this.requireClient()
+    const generation = this.sessionLoadGeneration
     const created = await client.createSession(this.cwd)
+    if (this.client !== client || generation !== this.sessionLoadGeneration) return
     await this.loadSessions(created.sessionId)
   }
 
   async selectSession(sessionId: string): Promise<void> {
+    this.requireReady()
     if (!this.summaries.some(summary => summary.sessionId === sessionId && summary.cwd === this.cwd)
       || this.archivedSessionIds.has(sessionId)) return
     this.markRead(sessionId)
@@ -383,19 +498,25 @@ export class DshChatController implements vscode.Disposable {
   }
 
   async renameSession(sessionId: string, title: string): Promise<void> {
+    this.requireReady()
     const summary = this.summaries.find(item => item.sessionId === sessionId)
     const normalized = title.trim()
     if (summary === undefined || summary.blank || normalized === '') return
-    const result = await this.requireClient().renameSession(sessionId, normalized)
+    const client = this.requireClient()
+    const result = await client.renameSession(sessionId, normalized)
+    if (this.client !== client) return
     summary.projections = { values: { ...summary.projections?.values, title: result.title } }
     summary.updatedAt = Date.now()
     this.publishSessionItems()
   }
 
   async archiveSession(sessionId: string): Promise<void> {
+    this.requireReady()
     const summary = this.summaries.find(item => item.sessionId === sessionId)
     if (summary === undefined || summary.blank) return
-    const result = await this.requireClient().archiveSession(sessionId)
+    const client = this.requireClient()
+    const result = await client.archiveSession(sessionId)
+    if (this.client !== client) return
     this.archivedSessionIds = new Set(result.archivedSessionIds)
     this.unreadSessionIds.delete(sessionId)
     this.persistUnreadSessions()
@@ -403,6 +524,7 @@ export class DshChatController implements vscode.Disposable {
   }
 
   async loadOlderHistory(): Promise<void> {
+    this.requireReady()
     if (this._state.sessionId === '' || !this._state.hasMoreHistory || this._state.loadingHistory) return
     const sessionId = this._state.sessionId
     const client = this.requireClient()
@@ -441,13 +563,14 @@ export class DshChatController implements vscode.Disposable {
     ideContext?: IdeContextSnapshot,
     mode: PromptMode = 'queue',
   ): Promise<void> {
+    this.requireReady()
     const normalized = text.trim()
     if ((normalized === '' && images.length === 0) || this._state.sessionId === '') return
     const client = this.requireClient()
     const sessionId = this._state.sessionId
     const generation = this.sessionLoadGeneration
     const { route: slash, command } = await this.resolveInput(normalized)
-    if (this.client !== client || generation !== this.sessionLoadGeneration) throw new Error('The conversation changed. Send the message again in the intended conversation.')
+    if (this.client !== client || generation !== this.sessionLoadGeneration || this._state.phase !== 'ready') throw new Error('The conversation changed. Check its history before sending again.')
     if (slash.kind === 'command') {
       if (images.length > 0 && (command?.input?.attachments ?? command?.input?.images) !== true) {
         throw new Error(`${slash.token} does not accept image attachments; remove them first.`)
@@ -494,6 +617,7 @@ export class DshChatController implements vscode.Disposable {
   }
 
   async selectAgentPreset(id: string): Promise<void> {
+    this.requireReady()
     const current = this._state.agentPreset
     if (!current.available || current.locked || current.busy || id === current.current) return
     if (!current.options.some(option => option.id === id)) throw new Error(`Unknown DeepSeek agent preset: ${id}`)
@@ -526,6 +650,7 @@ export class DshChatController implements vscode.Disposable {
   }
 
   async cancel(): Promise<void> {
+    this.requireReady()
     if (this._state.sessionId === '') return
     await this.requireClient().cancel(this._state.sessionId)
   }
@@ -557,6 +682,7 @@ export class DshChatController implements vscode.Disposable {
   }
 
   async selectModel(selection: ModelSelection): Promise<void> {
+    this.requireReady()
     const sessionId = this._state.sessionId
     const client = this.requireClient()
     const generation = this.sessionLoadGeneration
@@ -581,22 +707,28 @@ export class DshChatController implements vscode.Disposable {
   }
 
   mutateSettings(namespace: SettingsNamespace, ops: SettingsMutation[]): Promise<SettingsNamespace> {
+    this.requireReady()
     const client = this.requireClient()
     if (this.settingsOwners.get(namespace) !== client) throw new Error('The DSH runtime changed. Reopen runtime settings before saving.')
     return client.mutateSettings(namespace.ns, ops, namespace.revision)
   }
 
   async answerApproval(rpcId: string, approvalId: string, outcome: 'allowed-once' | 'rejected'): Promise<void> {
+    this.requireReady()
+    if (this._state.approval?.rpcId !== rpcId || this._state.approval.approvalId !== approvalId) throw new Error('This approval is no longer pending.')
     if (this._state.sessionId === '') return
-    await this.requireClient().respond(rpcId, {
+    const client = this.requireClient()
+    const generation = this.sessionLoadGeneration
+    await client.respond(rpcId, {
       sessionId: this._state.sessionId,
       approvalId,
       outcome,
     })
-    if (this._state.approval?.rpcId === rpcId) this.publish({ approval: null })
+    if (this.client === client && generation === this.sessionLoadGeneration && this._state.approval?.rpcId === rpcId) this.publish({ approval: null })
   }
 
   async answerQuestions(rpcId: string, answers: readonly QuestionAnswer[]): Promise<void> {
+    this.requireReady()
     if (this._state.sessionId === '') return
     const pending = this._state.question
     if (pending?.rpcId !== rpcId) throw new Error('This question is no longer pending.')
@@ -604,11 +736,13 @@ export class DshChatController implements vscode.Disposable {
     if (answers.length !== expected.size || answers.some(answer => !expected.has(answer.id))) {
       throw new Error('Every DeepSeek question needs an answer.')
     }
-    await this.requireClient().respond(rpcId, {
+    const client = this.requireClient()
+    const generation = this.sessionLoadGeneration
+    await client.respond(rpcId, {
       sessionId: this._state.sessionId,
       answer: { answers },
     })
-    if (this._state.question?.rpcId === rpcId) this.publish({ question: null })
+    if (this.client === client && generation === this.sessionLoadGeneration && this._state.question?.rpcId === rpcId) this.publish({ question: null })
   }
 
   report(error: unknown): void {
@@ -619,6 +753,7 @@ export class DshChatController implements vscode.Disposable {
   }
 
   dispose(): void {
+    this.cancelRecovery()
     ++this.generation
     this.disconnectClient()
     this.changes.dispose()
@@ -630,6 +765,10 @@ export class DshChatController implements vscode.Disposable {
     return this.client
   }
 
+  private requireReady(): void {
+    if (this._state.phase !== 'ready') throw new Error('DSH is not connected. Wait for the conversation to reconnect before continuing.')
+  }
+
   private disconnectClient(): void {
     ++this.sessionListGeneration
     this.sessionAttention.clear()
@@ -639,7 +778,7 @@ export class DshChatController implements vscode.Disposable {
     this.settingsChanges.fire()
   }
 
-  private async loadSessions(preferredId?: string): Promise<void> {
+  private async loadSessions(preferredId?: string, allowCreate = true): Promise<void> {
     const client = this.requireClient()
     const cwd = this.cwd
     const listGeneration = ++this.sessionListGeneration
@@ -667,6 +806,7 @@ export class DshChatController implements vscode.Disposable {
     if (selectedId !== undefined && this.unreadSessionIds.delete(selectedId)) this.persistUnreadSessions()
     this.publish({ sessions: sessionItems(this.summaries, this.archivedSessionIds, selectedId, this.unreadSessionIds, this.sessionAttention) })
     if (selectedId === undefined) {
+      if (!allowCreate) throw new Error('No conversation is available to restore. Start a new conversation after reconnecting the runtime.')
       const created = await client.createSession(this.cwd)
       if (this.client !== client || listGeneration !== this.sessionListGeneration || selectionGeneration !== this.sessionLoadGeneration) return
       await this.loadSessions(created.sessionId)
@@ -1505,6 +1645,7 @@ class DshSurface implements vscode.Disposable {
           }
           return
         case 'restart': await this.controller.restart(); return
+        case 'reconnect': await this.controller.reconnect(); return
         case 'output': this.output.show(true); return
         case 'open-workspace': await this.chooseWorkspace(); return
         case 'configure-api-key':
@@ -2023,6 +2164,9 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.restart', async () => {
     await controller.restart().catch(error => { void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error)) })
+  }))
+  context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.reconnect', async () => {
+    await controller.reconnect().catch(error => { void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error)) })
   }))
   if (workspace !== undefined) {
     let debugRestartTimer: NodeJS.Timeout | undefined

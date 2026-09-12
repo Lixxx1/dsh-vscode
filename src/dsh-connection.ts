@@ -60,6 +60,21 @@ export class DshConnection {
     return new URL(this.#launchUrl?.href ?? this.#origin)
   }
 
+  /** Explicit reconnect only; never replays the RPC that lost its response. */
+  async reauthenticate(signal?: AbortSignal): Promise<void> {
+    if (this.authenticated) return
+    if (this.#launchUrl === undefined) throw new DshConnectionError('authentication-required', 'No DSH launch token is available. Restart the runtime explicitly to obtain one.')
+    const launchUrl = this.#launchUrl
+    try {
+      await this.authenticate(launchUrl, signal)
+    } catch (error) {
+      // A failed reconnect must not discard the previously verified launch URL.
+      // The cookie stays invalid; another explicit attempt can authenticate again.
+      if (!this.#lifetime.signal.aborted) this.#launchUrl = launchUrl
+      throw error
+    }
+  }
+
   async authenticate(launchUrl: URL, signal?: AbortSignal): Promise<void> {
     const url = dshLocalUrl(launchUrl)
     if (url.origin !== this.#origin || !url.searchParams.has('token')) {
@@ -162,7 +177,9 @@ export class DshConnection {
     })
     this.#sockets.add(socket)
     // Avoid an unhandled EventEmitter error if the owner disposes while connecting.
-    socket.on('error', () => {})
+    socket.on('error', error => {
+      if (/^Unexpected server response: (?:401|403)$/.test(error.message)) this.#cookie = undefined
+    })
     socket.once('close', () => { this.#sockets.delete(socket) })
     return socket
   }

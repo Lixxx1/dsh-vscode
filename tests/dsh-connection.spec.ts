@@ -46,6 +46,56 @@ afterEach(async () => {
 })
 
 describe('DSH authenticated Remote connection', () => {
+  it('renews a refused cookie only on explicit reconnect without replaying a mutation', async () => {
+    let authentications = 0
+    let mutations = 0
+    let failAuthentication = false
+    const url = await serve((request, response) => {
+      if (request.method === 'GET') {
+        authentications++
+        if (failAuthentication) response.writeHead(503)
+        else response.writeHead(303, { location: '/', 'set-cookie': cookieFor(request.headers.host!) })
+      } else { mutations++; response.writeHead(401) }
+      response.end()
+    })
+    const connection = connect(url)
+    await connection.authenticate(launchUrl(url))
+    await expect(new DshRemoteApi(connection).prompt('s', 'One task')).rejects.toMatchObject({ code: 'authentication-required' })
+    expect(connection.authenticated).toBe(false)
+    expect(authentications).toBe(1)
+    failAuthentication = true
+    await expect(connection.reauthenticate()).rejects.toMatchObject({ code: 'authentication-failed' })
+    expect(connection.authenticated).toBe(false)
+    failAuthentication = false
+    await connection.reauthenticate()
+    expect(connection.authenticated).toBe(true)
+    expect(authentications).toBe(3)
+    expect(mutations).toBe(1)
+    await connection.reauthenticate()
+    expect(authentications).toBe(3)
+    expect(JSON.stringify(connection)).not.toContain(TOKEN)
+    expect(JSON.stringify(connection)).not.toContain(COOKIE_VALUE)
+    const noToken = connect(url)
+    await expect(noToken.reauthenticate()).rejects.toMatchObject({ code: 'authentication-required' })
+    expect(authentications).toBe(3)
+  })
+
+  it('invalidates a cookie refused by the WebSocket upgrade and permits explicit reauthentication', async () => {
+    const url = await serve((request, response) => {
+      if (request.url?.includes('token=')) response.writeHead(303, { location: '/', 'set-cookie': cookieFor(request.headers.host!) })
+      else response.writeHead(401)
+      response.end()
+    })
+    const connection = connect(url)
+    await connection.authenticate(launchUrl(url))
+    const socket = connection.openStreamSocket()
+    const failed = once(socket, 'error')
+    await failed
+    expect(connection.authenticated).toBe(false)
+    await connection.reauthenticate()
+    expect(connection.authenticated).toBe(true)
+  })
+
   it('exchanges the root token, sends named RPC arguments, and authenticates the multiplexed WebSocket', async () => {
     const requests: Array<{ path: string; cookie: string | undefined; body: any }> = []
     const url = await serve((request, response) => {

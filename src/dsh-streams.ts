@@ -2,6 +2,13 @@ import { randomUUID } from 'node:crypto'
 import WebSocket from 'ws'
 import type { DshConnection } from './dsh-connection.js'
 
+export class DshStreamError extends Error {
+  constructor(message: string, readonly retryable = false) {
+    super(message)
+    this.name = 'DshStreamError'
+  }
+}
+
 export function wireRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -33,7 +40,7 @@ export class DshStreams {
       if (this.socket === undefined) this.connect()
       else if (this.socket.readyState === WebSocket.OPEN) this.sendOpen(id, stream)
     } catch {
-      this.abort(new Error('Could not open the DSH event stream.'))
+      this.abort(new DshStreamError('Could not open the DSH event stream.', true))
     }
     return () => {
       if (!this.streams.delete(id)) return
@@ -64,16 +71,21 @@ export class DshStreams {
         else if (frame.type === 'end' || frame.type === 'error') {
           this.streams.delete(frame.streamId)
           // Do not put arbitrary remote error text (or credentials) in logs.
-          const error = new Error(`DSH ${stream.endpoint} subscription ended. Reconnect the runtime.`)
+          const error = new DshStreamError(`DSH ${stream.endpoint} subscription ended. Reconnect to refresh its snapshot.`)
           stream.fail(error)
           this.abort(error)
         } else throw new Error('Unknown envelope')
       } catch {
-        this.abort(new Error('DSH sent an invalid event stream frame. Reconnect the runtime.'))
+        this.abort(new DshStreamError('DSH sent an invalid event stream frame. Reconnect to refresh its snapshot.'))
       }
     })
-    socket.once('error', () => { this.abort(new Error('The DSH event stream connection failed.')) })
-    socket.once('close', () => { this.abort(new Error('The DSH event stream connection closed.')) })
+    socket.once('error', error => {
+      const refused = /^Unexpected server response: (?:401|403)$/.test(error.message)
+      this.abort(new DshStreamError(refused
+        ? 'DSH authentication was refused. Reconnect to authenticate again.'
+        : 'The DSH event stream connection failed.', !refused))
+    })
+    socket.once('close', () => { this.abort(new DshStreamError('The DSH event stream connection closed.', true)) })
   }
 
   private sendOpen(id: string, stream: Stream): void {

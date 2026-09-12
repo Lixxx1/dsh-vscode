@@ -89,6 +89,10 @@ export class DshSessionFeed {
   /** Register before dispatch: a task can ask for approval before its RPC returns. */
   handleRequestsFor(sessionId: string): void { this.requestSessions.add(sessionId) }
 
+  get handledSessionIds(): string[] {
+    return [...new Set([...this.requestSessions, ...(this.follow === undefined ? [] : [this.follow.sessionId])])]
+  }
+
   get listRevision(): number { return this.addedRevision }
 
   summaries(items: SessionSummary[], sinceRevision: number): SessionSummary[] {

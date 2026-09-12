@@ -1,9 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { DshFrame, SessionModels, SkillDescriptor } from '../src/dsh-client.js'
 import { withIdeContext } from '../src/ide-context.js'
+import { DshStreamError } from '../src/dsh-streams.js'
 
 const mocks = vi.hoisted(() => ({ client: undefined as any }))
-vi.mock('../src/dsh-client.js', () => ({ DshClient: class { constructor() { return mocks.client } } }))
+vi.mock('../src/dsh-client.js', () => ({ DshClient: class {
+  constructor(_connection: unknown, requestSessions: string[] = []) {
+    mocks.client.handledSessionIds = requestSessions
+    return mocks.client
+  }
+} }))
 vi.mock('vscode', () => ({
   EventEmitter: class {
     listeners = new Set<(value: unknown) => void>()
@@ -16,16 +22,18 @@ vi.mock('vscode', () => ({
 import { DshChatController } from '../src/extension.js'
 
 const controllers: DshChatController[] = []
-afterEach(() => { controllers.splice(0).forEach(controller => controller.dispose()) })
+afterEach(() => { controllers.splice(0).forEach(controller => controller.dispose()); vi.useRealTimers() })
 const models = (id = 'model'): SessionModels => ({ current: { provider: 'p', model: id }, routable: true,
   groups: [{ id: 'p', name: 'Provider', models: [{ id, name: id }] }], failures: [] })
 
-async function harness() {
+function testClient() {
   const listeners = new Set<(frame: DshFrame) => void>()
+  const errors = new Set<(error: Error) => void>()
   const projections = { agentPreset: 'standard', plan: { active: false, pending: false } }
   const client = {
     onFrame: vi.fn((callback: (frame: DshFrame) => void) => { listeners.add(callback); return () => listeners.delete(callback) }),
-    onError: vi.fn(() => () => {}), startStreams: vi.fn(async () => {}), dispose: vi.fn(),
+    onError: vi.fn((callback: (error: Error) => void) => { errors.add(callback); return () => errors.delete(callback) }),
+    startStreams: vi.fn(async () => {}), dispose: vi.fn(), handledSessionIds: [] as string[], respond: vi.fn(async () => ({ accepted: true })),
     listWorkspaces: vi.fn(async () => ({ archivedSessionIds: [] })),
     listSessions: vi.fn(async () => ({ items: ['a', 'b'].map(sessionId => ({ sessionId, cwd: '/workspace', updatedAt: 1,
       blank: true, running: false, agentPreset: 'standard', projections: { values: { ...projections } } })) })),
@@ -39,19 +47,186 @@ async function harness() {
     updateQueue: vi.fn(async () => ({ accepted: true })),
     executeCommand: vi.fn(async () => ({ result: { kind: 'success' } })),
   }
+  const emit = (payload: Record<string, unknown>, channel: 'host' | 'mux' = 'host', rpcId = '') => {
+    for (const listener of listeners) listener({ channel, rpcId, payload })
+  }
+  const fail = (error: Error) => { for (const listener of [...errors]) listener(error) }
+  return { client, emit, fail }
+}
+
+async function harness() {
+  const { client, emit, fail } = testClient()
   mocks.client = client
   const output = { appendLine: vi.fn() }
-  const controller = new DshChatController({ start: vi.fn(async () => {}), connection: {}, state: { kind: 'ready' } } as any,
-    output as any, {} as any, { clear() {}, rebuild: () => [], accept: () => false, dispose() {} } as any,
+  const runtime = { start: vi.fn(async () => {}), stop: vi.fn(async () => {}), connection: { reauthenticate: vi.fn(async () => {}) }, state: { kind: 'ready' } }
+  const reviews = { clear: vi.fn(), rebuild: vi.fn(() => []), accept: () => false, dispose() {} }
+  const controller = new DshChatController(runtime as any,
+    output as any, {} as any, reviews as any,
     { get: () => [], update: async () => {} } as any, '/workspace')
   controllers.push(controller)
   await controller.start()
   await vi.waitFor(() => expect(controller.state.commands).toHaveLength(1))
-  const emit = (payload: Record<string, unknown>, channel: 'host' | 'mux' = 'host') => {
-    for (const listener of listeners) listener({ channel, rpcId: '', payload })
-  }
-  return { client, controller, output, emit }
+  const next = () => { const next = testClient(); mocks.client = next.client; return next }
+  return { client, controller, output, emit, fail, runtime, reviews, next }
 }
+
+describe('sidebar reconnect', () => {
+  it('restores the selected conversation and background request scope without restarting or resending', async () => {
+    const h = await harness()
+    h.client.handledSessionIds.push('a')
+    await h.controller.selectSession('b')
+    h.emit({ type: 'session/event', sessionId: 'b', event: { type: 'user/message', seq: 1, time: 30,
+      data: { content: [{ type: 'text', text: 'Already submitted' }] } } }, 'mux')
+    const messages = h.controller.state.messages
+    const oldListener = h.client.onFrame.mock.calls[0]![0]
+    const next = h.next()
+    next.client.openSession.mockResolvedValue({ events: [{ event: { type: 'assistant/message', seq: 2, time: 50,
+      data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: 'Completed while offline' }] }, stream: [] } } }],
+      hasMore: false, projections: {}, isCurrent: () => true, activate() {} } as any)
+    vi.useFakeTimers()
+    h.fail(new DshStreamError('Connection lost', true))
+    expect(h.controller.state).toMatchObject({ phase: 'loading', sessionId: 'b', messages, approval: null, question: null })
+    await expect(h.controller.send('Do not send')).rejects.toThrow('not connected')
+    const reconnect = h.controller.reconnect()
+    expect(h.controller.reconnect()).toBe(reconnect)
+    await vi.advanceTimersByTimeAsync(500)
+    await reconnect
+    expect(h.controller.state).toMatchObject({ phase: 'ready', sessionId: 'b' })
+    expect(h.controller.state.messages[0]?.text).toBe('Completed while offline')
+    expect(next.client.handledSessionIds).toEqual(['a', 'b'])
+    expect(h.runtime.start).toHaveBeenCalledTimes(1)
+    expect(h.runtime.stop).not.toHaveBeenCalled()
+    expect(h.runtime.connection.reauthenticate).not.toHaveBeenCalled()
+    expect(h.reviews.clear).toHaveBeenCalledTimes(1)
+    expect(next.client.prompt).not.toHaveBeenCalled()
+    expect(next.client.respond).not.toHaveBeenCalled()
+    expect(next.client.executeCommand).not.toHaveBeenCalled()
+    expect(next.client.updateQueue).not.toHaveBeenCalled()
+    oldListener({ channel: 'host', rpcId: '', payload: { type: 'host/session-activity', sessionId: 'b', updatedAt: 999 } })
+    expect(h.controller.state.sessions.find(s => s.id === 'b')?.updatedAt).not.toBe(999)
+  })
+
+  it('bounds retry attempts and keeps the transcript when reconnection fails', async () => {
+    const h = await harness()
+    const next = h.next()
+    next.client.startStreams.mockRejectedValue(new DshStreamError('Still offline', true))
+    vi.useFakeTimers()
+    h.fail(new DshStreamError('Connection lost', true))
+    const reconnect = h.controller.reconnect()
+    await vi.advanceTimersByTimeAsync(5000)
+    await reconnect
+    expect(next.client.startStreams).toHaveBeenCalledTimes(3)
+    expect(h.controller.state).toMatchObject({ phase: 'error', sessionId: 'a', canReconnect: true, setup: null })
+    expect(h.controller.state.statusText).toContain('No tasks were resent')
+    expect(h.runtime.stop).not.toHaveBeenCalled()
+    expect(next.client.prompt).not.toHaveBeenCalled()
+  })
+
+  it('does not loop indefinitely when the stream repeatedly drops just after recovery', async () => {
+    const h = await harness()
+    let active = { fail: h.fail }
+    vi.useFakeTimers()
+    for (let index = 0; index < 4; index++) {
+      const next = h.next()
+      active.fail(new DshStreamError('Flapping', true))
+      const reconnect = h.controller.reconnect()
+      await vi.advanceTimersByTimeAsync(500)
+      await reconnect
+      expect(next.client.startStreams).toHaveBeenCalledTimes(index < 3 ? 1 : 0)
+      active = next
+    }
+    expect(h.controller.state.phase).toBe('error')
+    expect(h.controller.state.statusText).toContain('keeps dropping')
+    expect(h.runtime.stop).not.toHaveBeenCalled()
+  })
+
+  it('retries a stream failure during snapshot restoration without replaying commands', async () => {
+    const h = await harness()
+    const next = h.next()
+    next.client.listSessions.mockImplementationOnce(async () => {
+      next.fail(new DshStreamError('Lost during restore', true))
+      throw new Error('Read cancelled by disposal')
+    })
+    vi.useFakeTimers()
+    h.fail(new DshStreamError('Connection lost', true))
+    const reconnect = h.controller.reconnect()
+    await vi.advanceTimersByTimeAsync(2000)
+    await reconnect
+    expect(h.controller.state.phase).toBe('ready')
+    expect(next.client.startStreams).toHaveBeenCalledTimes(2)
+    expect(next.client.executeCommand).not.toHaveBeenCalled()
+    expect(next.client.prompt).not.toHaveBeenCalled()
+  })
+
+  it('requires manual retry for protocol errors and never creates a replacement conversation', async () => {
+    const h = await harness()
+    const next = h.next()
+    next.client.listSessions.mockResolvedValue({ items: [] })
+    vi.useFakeTimers()
+    h.fail(new DshStreamError('Invalid frame'))
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(next.client.startStreams).not.toHaveBeenCalled()
+    const reconnect = h.controller.reconnect()
+    await vi.advanceTimersByTimeAsync(0)
+    await reconnect
+    expect(h.runtime.connection.reauthenticate).toHaveBeenCalledTimes(1)
+    expect(h.controller.state.phase).toBe('error')
+    expect(h.controller.state.statusText).toContain('No conversation is available')
+    expect(h.runtime.start).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['dispose', 'stop', 'restart'])('cancels a scheduled reconnect on %s', async action => {
+    const h = await harness()
+    const next = h.next()
+    vi.useFakeTimers()
+    h.fail(new DshStreamError('Connection lost', true))
+    const reconnect = h.controller.reconnect()
+    if (action === 'dispose') h.controller.dispose()
+    if (action === 'stop') { h.runtime.state.kind = 'stopped'; h.controller.observeRuntime({ kind: 'stopped' }) }
+    if (action === 'restart') await h.controller.restart()
+    await vi.advanceTimersByTimeAsync(5000)
+    await reconnect
+    expect(next.client.startStreams).toHaveBeenCalledTimes(action === 'restart' ? 1 : 0)
+    expect(h.runtime.stop).toHaveBeenCalledTimes(action === 'restart' ? 1 : 0)
+  })
+
+  it('ignores a late snapshot from a reconnect superseded by an explicit restart', async () => {
+    const h = await harness()
+    const old = h.next()
+    const opening = Promise.withResolvers<any>()
+    old.client.openSession.mockReturnValueOnce(opening.promise)
+    vi.useFakeTimers()
+    h.fail(new DshStreamError('Connection lost', true))
+    const reconnect = h.controller.reconnect()
+    await vi.advanceTimersByTimeAsync(500)
+    const fresh = h.next()
+    await h.controller.restart()
+    opening.resolve({ events: [], hasMore: false, projections: { title: 'Stale' }, isCurrent: () => true, activate() {} })
+    await reconnect
+    expect(h.controller.state.phase).toBe('ready')
+    expect(fresh.client.openSession).toHaveBeenCalledTimes(1)
+    expect(h.controller.state.sessions.some(s => s.title === 'Stale')).toBe(false)
+  })
+
+  it('does not let an old approval response clear a redelivered request after reconnecting', async () => {
+    const h = await harness()
+    const pending = Promise.withResolvers<any>()
+    h.client.respond.mockReturnValueOnce(pending.promise)
+    const payload = { type: 'approval/requested', sessionId: 'a', approvalId: 'same-id', toolName: 'Write' }
+    h.emit(payload, 'mux', 'same-id')
+    const response = h.controller.answerApproval('same-id', 'same-id', 'allowed-once')
+    const next = h.next()
+    vi.useFakeTimers()
+    h.fail(new DshStreamError('Connection lost', true))
+    const reconnect = h.controller.reconnect()
+    await vi.advanceTimersByTimeAsync(500)
+    await reconnect
+    next.emit(payload, 'mux', 'same-id')
+    pending.resolve({ accepted: true }); await response
+    expect(h.controller.state.approval?.rpcId).toBe('same-id')
+    expect(next.client.respond).not.toHaveBeenCalled()
+  })
+})
 
 describe('sidebar discovery notifications', () => {
   it('shows pending background requests without moving focus or clearing them just by visiting', async () => {

@@ -3,6 +3,12 @@ import type * as vscode from 'vscode'
 import { chatHtml } from '../src/webview.js'
 
 describe('chat webview', () => {
+  it('offers separate reconnect and explicit runtime restart actions', () => {
+    const html = chatHtml({ cspSource: 'vscode-webview:' } as vscode.Webview, { toString: () => 'mark' } as vscode.Uri)
+    expect(html).toContain("'Reconnect'); retry.addEventListener('click', () => vscode.postMessage({ type: 'reconnect' }))")
+    expect(html).toContain("'Restart Runtime'); restart.addEventListener('click', () => vscode.postMessage({ type: 'restart' }))")
+    expect(html).toContain('if (current.canReconnect)')
+  })
   it('emits valid browser JavaScript', () => {
     const webview = { cspSource: 'vscode-webview:' } as vscode.Webview
     const mark = { toString: () => 'vscode-resource:/deepseek.svg' } as vscode.Uri

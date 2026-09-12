@@ -45,6 +45,7 @@
     "onCommand:deepseekHarness.fixWithDeepSeek",
     "onCommand:deepseekHarness.sendProblem",
     "onCommand:deepseekHarness.restart",
+    "onCommand:deepseekHarness.reconnect",
     "onCommand:deepseekHarness.managePlugins",
     "onCommand:deepseekHarness.configureApiKey",
     "onCommand:deepseekHarness.clearApiKey"
@@ -86,8 +87,12 @@
       },
       {
         "command": "deepseekHarness.restart",
-        "title": "DeepSeek Harness: Reconnect / Restart Runtime",
+        "title": "DeepSeek Harness: Restart Runtime",
         "icon": "$(debug-restart)"
+      },
+      {
+        "command": "deepseekHarness.reconnect",
+        "title": "DeepSeek Harness: Reconnect"
       },
       {
         "command": "deepseekHarness.managePlugins",
