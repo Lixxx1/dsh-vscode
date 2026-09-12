@@ -282,6 +282,30 @@ describe('runtime selection', () => {
 })
 
 describe('sidebar reconnect', () => {
+  it('discards live assistant state after a terminal stream error', async () => {
+    const h = await harness()
+    h.emit({ type: 'session/event', sessionId: 'a', event: {
+      type: 'user/message', seq: 1, time: 10,
+      data: { id: 'durable-user', source: { kind: 'user' }, content: [{ type: 'text', text: 'Durable prompt' }] },
+    } }, 'mux')
+    h.emit({ type: 'session/assistant-stream', sessionId: 'a', update: {
+      kind: 'start', attemptId: 'a:1', turn: 1, step: 1,
+    } }, 'mux')
+    h.emit({ type: 'session/assistant-stream', sessionId: 'a', update: {
+      kind: 'chunk', attemptId: 'a:1', chunk: { type: 'text-delta', text: 'Transient partial answer' },
+    } }, 'mux')
+    expect(h.controller.state.messages.some(message => message.streaming)).toBe(true)
+
+    h.fail(new DshStreamError('Invalid stream frame'))
+
+    expect(h.controller.state).toMatchObject({ phase: 'error', sessionId: 'a', setup: null })
+    expect(h.controller.state.statusText).toContain('Invalid stream frame')
+    expect(h.controller.state.messages).toEqual([{ id: 'durable-user', role: 'user', text: 'Durable prompt' }])
+    expect(h.controller.state.messages.some(message => message.streaming)).toBe(false)
+    expect(h.client.dispose).toHaveBeenCalled()
+    expect(h.runtime.stop).not.toHaveBeenCalled()
+  })
+
   it('restores the selected conversation and background request scope without restarting or resending', async () => {
     const h = await harness()
     h.client.handledSessionIds.push('a')

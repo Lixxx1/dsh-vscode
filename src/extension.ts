@@ -501,7 +501,16 @@ export class DshChatController implements vscode.Disposable {
         } else {
           this.disconnectClient()
           this.clearLiveControls()
-          this.publish({ phase: 'error', setup: null, statusText: `Lost the DSH event stream: ${error.message}` })
+          // A terminal stream error abandons process-local assistant deltas.
+          // Restore only durable session events so no message remains stuck
+          // in a streaming state that can never settle.
+          this.projector.reset(this.historyEntries)
+          this.publish({
+            phase: 'error',
+            setup: null,
+            messages: this.projectedMessages(),
+            statusText: `Lost the DSH event stream: ${error.message}`,
+          })
         }
       }),
     )
