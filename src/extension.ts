@@ -302,7 +302,7 @@ export class DshChatController implements vscode.Disposable {
       this.disconnectClient()
       for (const summary of this.summaries) summary.running = false
       this.clearLiveControls()
-      this.publish({ canReconnect: false, running: false })
+      this.publish({ canReconnect: false, running: false, messages: this.resetToDurableMessages() })
     }
     if (state.kind === 'starting') this.publish({ phase: 'loading', statusText: state.detail, setup: null })
     if (state.kind === 'failed') this.publish({
@@ -394,6 +394,9 @@ export class DshChatController implements vscode.Disposable {
     if (this.disposed) throw new Error('The DeepSeek sidebar has closed. Reopen it before selecting a runtime.')
     if (this.cwd === '') throw new Error('Open a project folder before selecting a DSH runtime.')
     if (this._state.phase === 'loading') throw new Error('Wait for the current connection attempt to finish before selecting a runtime.')
+    if (this.runtime.state.kind === 'ready' && this._state.phase !== 'ready') {
+      throw new Error('Reconnect to DeepSeek Harness to check running tasks before switching projects or runtimes.')
+    }
     if (this.hasRunningTasks) {
       throw new Error('Finish or stop the running DeepSeek tasks before switching runtimes.')
     }
@@ -418,7 +421,6 @@ export class DshChatController implements vscode.Disposable {
     if (!automatic) this.automaticReconnects = []
     const generation = ++this.generation
     const selectedId = this._state.sessionId
-    const retainedHistory = this.historyEntries
     for (const id of this.client?.handledSessionIds ?? []) this.reconnectSessions.add(id)
     if (selectedId !== '') this.reconnectSessions.add(selectedId)
     this.disconnectClient()
@@ -455,18 +457,12 @@ export class DshChatController implements vscode.Disposable {
       if (recovery.abort.signal.aborted || generation !== this.generation) return
       this.disconnectClient()
       this.clearLiveControls()
-      // Live assistant deltas are process-local and cannot finish after the
-      // stream is abandoned. Rebuild from durable events so the transcript
-      // never remains stuck in a streaming state. A failed session open may
-      // have cleared historyEntries before producing a replacement snapshot.
-      if (this.historyEntries.length === 0) this.historyEntries = retainedHistory
-      this.projector.reset(this.historyEntries)
       const message = error instanceof Error ? error.message : String(error)
       this.output.appendLine(`[reconnect] ${message}`)
       this.publish({
         phase: 'error',
         setup: null,
-        messages: this.projectedMessages(),
+        messages: this.resetToDurableMessages(),
         statusText: `Could not reconnect to DSH: ${message} No tasks were resent.`,
       })
     }).finally(() => {
@@ -501,14 +497,10 @@ export class DshChatController implements vscode.Disposable {
         } else {
           this.disconnectClient()
           this.clearLiveControls()
-          // A terminal stream error abandons process-local assistant deltas.
-          // Restore only durable session events so no message remains stuck
-          // in a streaming state that can never settle.
-          this.projector.reset(this.historyEntries)
           this.publish({
             phase: 'error',
             setup: null,
-            messages: this.projectedMessages(),
+            messages: this.resetToDurableMessages(),
             statusText: `Lost the DSH event stream: ${error.message}`,
           })
         }
@@ -524,6 +516,13 @@ export class DshChatController implements vscode.Disposable {
     this.sessionAttention.clear()
     this.publish({ approval: null, question: null, queue: [], jobs: [], loadingHistory: false })
     this.publishSessionItems()
+  }
+
+  private resetToDurableMessages(): ConversationMessage[] {
+    // Process-local assistant deltas cannot settle once their stream or runtime
+    // is abandoned. Preserve only the selected session's durable history.
+    this.projector.reset(this.historyEntries)
+    return this.projectedMessages()
   }
 
   private cancelRecovery(): void {
@@ -846,8 +845,15 @@ export class DshChatController implements vscode.Disposable {
     ++this.sessionListGeneration
     this.sessionAttention.clear()
     for (const dispose of this.clientDisposables.splice(0)) dispose()
-    this.client?.dispose()
+    const client = this.client
     this.client = undefined
+    this.attachmentLoads.clear()
+    // Successful images can survive a reconnect to the same runtime. Failed
+    // or cancelled loads must be retried by the replacement client.
+    for (const [key, result] of this.attachmentResults) {
+      if (result.error !== undefined) this.attachmentResults.delete(key)
+    }
+    client?.dispose()
     this.settingsChanges.fire()
   }
 
@@ -936,12 +942,19 @@ export class DshChatController implements vscode.Disposable {
   private async loadSession(sessionId: string): Promise<void> {
     const client = this.requireClient()
     const loadGeneration = ++this.sessionLoadGeneration
-    this.historyEntries = []
+    const sessionChanged = sessionId !== this._state.sessionId
+    // Keep the last durable snapshot while reopening the same conversation.
+    // A different conversation must never inherit that snapshot on failure.
+    if (sessionChanged) {
+      this.historyEntries = []
+      this.projector.reset([])
+    }
     this.queueRawText.clear()
     this.publish({
       phase: 'loading',
       statusText: 'Loading project conversation…',
       sessionId,
+      ...(sessionChanged ? { messages: [], changedFiles: [] } : {}),
       queue: [],
       approval: null,
       question: null,
@@ -1371,17 +1384,20 @@ export class DshChatController implements vscode.Disposable {
       if (this.attachmentResults.has(key) || this.attachmentLoads.has(key)) continue
       const load = client.attachment(sessionId, image.attachmentId)
         .then((result) => {
+          if (this.client !== client || this.attachmentLoads.get(key) !== load) return
           if (result.attachment.attachmentId !== image.attachmentId || result.attachment.mediaType !== image.mediaType) {
             throw new Error('DeepSeek Harness returned mismatched image metadata.')
           }
           this.attachmentResults.set(key, { data: result.data })
         })
         .catch((error: unknown) => {
+          if (this.client !== client || this.attachmentLoads.get(key) !== load) return
           const detail = error instanceof Error ? error.message : String(error)
           this.output.appendLine(`[attachment] ${image.attachmentId}: ${detail}`)
           this.attachmentResults.set(key, { error: 'Image unavailable.' })
         })
         .finally(() => {
+          if (this.attachmentLoads.get(key) !== load) return
           this.attachmentLoads.delete(key)
           if (this.client === client && this._state.sessionId === sessionId) {
             this.publish({ messages: this.projectedMessages() })

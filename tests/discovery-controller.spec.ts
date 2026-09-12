@@ -43,7 +43,7 @@ function testClient() {
     listCommands: vi.fn(async () => [{ name: 'plan', description: 'Plan' }]),
     listSkills: vi.fn(async (): Promise<SkillDescriptor[]> => []),
     listAgentPresets: vi.fn(async () => ({ presets: [{ id: 'standard', trust: 'system', isDefault: true }, { id: 'minimal', trust: 'system', isDefault: false }] })),
-    selectModel: vi.fn(async () => ({})), settings: vi.fn(), mutateSettings: vi.fn(), pluginInventory: vi.fn(),
+    selectModel: vi.fn(async () => ({})), settings: vi.fn(), mutateSettings: vi.fn(), pluginInventory: vi.fn(), attachment: vi.fn(),
     selectAgentPreset: vi.fn(), prompt: vi.fn(async () => ({})),
     updateQueue: vi.fn(async () => ({ accepted: true })),
     executeCommand: vi.fn(async () => ({ result: { kind: 'success' } })),
@@ -72,6 +72,36 @@ async function harness() {
 }
 
 describe('runtime selection', () => {
+  it.each(['terminal error', 'exhausted retries'])('blocks workspace and runtime switches until task state is restored after %s', async failure => {
+    const h = await harness()
+    h.emit({ type: 'session/jobs', sessionId: 'foreign', jobs: [
+      { id: 'server', kind: 'bash', label: 'Server', startedAt: 1, status: 'running' },
+    ] }, 'mux')
+    vi.useFakeTimers()
+    if (failure === 'exhausted retries') {
+      const next = h.next()
+      next.client.startStreams.mockRejectedValue(new DshStreamError('Still offline', true))
+      h.fail(new DshStreamError('Connection lost', true))
+      const reconnect = h.controller.reconnect()
+      await vi.advanceTimersByTimeAsync(5000)
+      await reconnect
+    } else h.fail(new DshStreamError('Invalid stream frame'))
+    expect(h.controller.state.phase).toBe('error')
+    await expect(h.controller.switchWorkspace('/other-workspace')).rejects.toThrow('Reconnect')
+    await expect(h.controller.selectRuntime({ kind: 'managed' })).rejects.toThrow('Reconnect')
+    expect(h.controller.cwd).toBe('/workspace')
+    expect(h.runtime.stop).not.toHaveBeenCalled()
+
+    // A fresh idle baseline makes switching available again.
+    h.next()
+    const reconnect = h.controller.reconnect()
+    await vi.advanceTimersByTimeAsync(0)
+    await reconnect
+    expect(h.controller.state.phase).toBe('ready')
+    expect(h.controller.hasRunningTasks).toBe(false)
+    expect(() => h.controller.assertCanSelectRuntime()).not.toThrow()
+  })
+
   it('marks a restart in progress before stopping the runtime and reports only the current completion', async () => {
     const h = await harness(), stopped = Promise.withResolvers<void>()
     h.runtime.stop.mockReturnValueOnce(stopped.promise)
@@ -282,7 +312,7 @@ describe('runtime selection', () => {
 })
 
 describe('sidebar reconnect', () => {
-  it('discards live assistant state after a terminal stream error', async () => {
+  it.each(['stream error', 'failed', 'stopped'])('discards live assistant state and preserves durable messages after %s', async failure => {
     const h = await harness()
     h.emit({ type: 'session/event', sessionId: 'a', event: {
       type: 'user/message', seq: 1, time: 10,
@@ -296,14 +326,57 @@ describe('sidebar reconnect', () => {
     } }, 'mux')
     expect(h.controller.state.messages.some(message => message.streaming)).toBe(true)
 
-    h.fail(new DshStreamError('Invalid stream frame'))
+    if (failure === 'stream error') h.fail(new DshStreamError('Invalid stream frame'))
+    else {
+      h.runtime.state.kind = failure
+      h.controller.observeRuntime(failure === 'failed' ? { kind: 'failed', message: 'DSH exited (code 1).' } : { kind: 'stopped' })
+    }
 
     expect(h.controller.state).toMatchObject({ phase: 'error', sessionId: 'a', setup: null })
-    expect(h.controller.state.statusText).toContain('Invalid stream frame')
+    if (failure === 'stream error') expect(h.controller.state.statusText).toContain('Invalid stream frame')
+    else expect(h.controller.state).toMatchObject({ canReconnect: false, running: false })
     expect(h.controller.state.messages).toEqual([{ id: 'durable-user', role: 'user', text: 'Durable prompt' }])
     expect(h.controller.state.messages.some(message => message.streaming)).toBe(false)
     expect(h.client.dispose).toHaveBeenCalled()
     expect(h.runtime.stop).not.toHaveBeenCalled()
+  })
+
+  it('retains the same session transcript when reopening its snapshot fails', async () => {
+    const h = await harness()
+    h.emit({ type: 'session/event', sessionId: 'a', event: { type: 'user/message', seq: 1, time: 10,
+      data: { id: 'a-prompt', source: { kind: 'user' }, content: [{ type: 'text', text: 'Durable A' }] },
+    } }, 'mux')
+    const next = h.next()
+    next.client.openSession.mockRejectedValue(new DshStreamError('Invalid session snapshot'))
+    await h.controller.reconnect()
+    expect(h.controller.state).toMatchObject({ sessionId: 'a', phase: 'error',
+      messages: [{ id: 'a-prompt', role: 'user', text: 'Durable A' }] })
+  })
+
+  it.each(['snapshot', 'models'])('does not restore an archived session transcript when the fallback %s fails', async stage => {
+    const h = await harness()
+    h.emit({ type: 'session/event', sessionId: 'a', event: { type: 'user/message', seq: 1, time: 10,
+      data: { id: 'a-prompt', source: { kind: 'user' }, content: [{ type: 'text', text: 'Only belongs to A' }] },
+    } }, 'mux')
+    h.controller.publish({ changedFiles: [{ turn: 1, files: [{ path: 'a.ts', additions: 1, deletions: 0, canRevert: false }] }] })
+    const next = h.next()
+    next.client.listWorkspaces.mockResolvedValue({ archivedSessionIds: ['a'] })
+    if (stage === 'snapshot') next.client.openSession.mockRejectedValue(new DshStreamError('Invalid session snapshot'))
+    else next.client.models.mockRejectedValue(new Error('Model catalog unavailable'))
+    await h.controller.reconnect()
+    expect(h.controller.state).toMatchObject({ sessionId: 'b', phase: 'error', messages: [], changedFiles: [] })
+  })
+
+  it('keeps a restored empty snapshot authoritative if the stream then fails', async () => {
+    const h = await harness()
+    h.emit({ type: 'session/event', sessionId: 'a', event: { type: 'user/message', seq: 1, time: 10,
+      data: { id: 'old-prompt', source: { kind: 'user' }, content: [{ type: 'text', text: 'Obsolete history' }] },
+    } }, 'mux')
+    const next = h.next()
+    next.client.openSession.mockResolvedValue({ events: [], hasMore: false, projections: {}, isCurrent: () => true,
+      activate: () => next.fail(new DshStreamError('Invalid stream frame')) })
+    await h.controller.reconnect()
+    expect(h.controller.state).toMatchObject({ sessionId: 'a', phase: 'error', messages: [] })
   })
 
   it('restores the selected conversation and background request scope without restarting or resending', async () => {
@@ -473,6 +546,70 @@ describe('sidebar reconnect', () => {
     pending.resolve({ accepted: true }); await response
     expect(h.controller.state.approval?.rpcId).toBe('same-id')
     expect(next.client.respond).not.toHaveBeenCalled()
+  })
+})
+
+describe('sidebar attachments after reconnect', () => {
+  const attachment = { attachmentId: 'picture', mediaType: 'image/png', bytes: 8, width: 1, height: 1 }
+  const event = { type: 'assistant/message', seq: 1, time: 10, data: {
+    turn: 1, step: 1, message: { content: [{ type: 'image', attachment }] },
+  } }
+  const opening = { events: [{ event }], hasMore: false, projections: {}, isCurrent: () => true, activate() {} }
+
+  it('retries an image request cancelled by disconnecting', async () => {
+    const h = await harness()
+    const pending = Promise.withResolvers<any>()
+    h.client.attachment.mockReturnValue(pending.promise)
+    h.emit({ type: 'session/event', sessionId: 'a', event }, 'mux')
+    h.client.dispose.mockImplementationOnce(() => pending.reject(new Error('Attachment request cancelled')))
+    const next = h.next()
+    next.client.attachment.mockResolvedValue({ attachment, data: 'aW1hZ2U=' })
+    next.client.openSession.mockResolvedValue(opening as any)
+    await h.controller.reconnect()
+    expect(next.client.attachment).toHaveBeenCalledExactlyOnceWith('a', 'picture')
+    await vi.waitFor(() => expect(h.controller.state.messages[0]?.images?.[0]?.data).toBe('aW1hZ2U='))
+    expect(h.controller.state.messages[0]?.images?.[0]?.error).toBeUndefined()
+  })
+
+  it.each(['failed', 'cached'])('restores a previously %s image after reconnecting', async status => {
+    const h = await harness()
+    if (status === 'failed') h.client.attachment.mockRejectedValue(new Error('Network unavailable'))
+    else h.client.attachment.mockResolvedValue({ attachment, data: 'aW1hZ2U=' })
+    h.emit({ type: 'session/event', sessionId: 'a', event }, 'mux')
+    await vi.waitFor(() => expect(h.controller.state.messages[0]?.images?.[0]).toMatchObject(
+      status === 'failed' ? { error: 'Image unavailable.' } : { data: 'aW1hZ2U=' },
+    ))
+    const next = h.next()
+    next.client.attachment.mockResolvedValue({ attachment, data: 'aW1hZ2U=' })
+    next.client.openSession.mockResolvedValue(opening as any)
+    await h.controller.reconnect()
+    await vi.waitFor(() => expect(h.controller.state.messages[0]?.images?.[0]?.data).toBe('aW1hZ2U='))
+    expect(h.controller.state.messages[0]?.images?.[0]?.error).toBeUndefined()
+    expect(next.client.attachment).toHaveBeenCalledTimes(status === 'failed' ? 1 : 0)
+  })
+
+  it.each(['resolves', 'rejects'])('ignores an old image request that %s after its replacement starts', async outcome => {
+    const h = await harness()
+    const old = Promise.withResolvers<any>()
+    h.client.attachment.mockReturnValue(old.promise)
+    h.emit({ type: 'session/event', sessionId: 'a', event }, 'mux')
+    const next = h.next()
+    const fresh = Promise.withResolvers<any>()
+    next.client.attachment.mockReturnValue(fresh.promise)
+    next.client.openSession.mockResolvedValue(opening as any)
+    await h.controller.reconnect()
+    expect(next.client.attachment).toHaveBeenCalledTimes(1)
+    if (outcome === 'resolves') old.resolve({ attachment, data: 'b2xk' })
+    else old.reject(new Error('Old connection cancelled'))
+    await new Promise<void>(resolve => setImmediate(resolve))
+    next.emit({ type: 'session/event', sessionId: 'a', event: { type: 'user/message', seq: 2, time: 20,
+      data: { id: 'new-prompt', source: { kind: 'user' }, content: [{ type: 'text', text: 'Another message' }] },
+    } }, 'mux')
+    expect(next.client.attachment).toHaveBeenCalledTimes(1)
+    expect(h.controller.state.messages[0]?.images?.[0]?.data).toBeUndefined()
+    expect(h.controller.state.messages[0]?.images?.[0]?.error).toBeUndefined()
+    fresh.resolve({ attachment, data: 'aW1hZ2U=' })
+    await vi.waitFor(() => expect(h.controller.state.messages[0]?.images?.[0]?.data).toBe('aW1hZ2U='))
   })
 })
 
