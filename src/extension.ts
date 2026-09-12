@@ -227,6 +227,8 @@ export class DshChatController implements vscode.Disposable {
   private generation = 0
   private runtimeSwitchRevision = 0
   private disposed = false
+  private activityRevision = 0
+  private readonly runtimeActivity = new Map<string, { running: boolean; revision: number }>()
   private sessionLoadGeneration = 0
   private sessionListGeneration = 0
   private readonly discoveryRequests = new Map<string, number>()
@@ -274,6 +276,17 @@ export class DshChatController implements vscode.Disposable {
     return state.kind === 'ready' ? state.ownership : undefined
   }
 
+  /** Includes hidden, archived and other-workspace sessions on this runtime. */
+  get hasRunningTasks(): boolean {
+    return this._state.running || this.summaries.some(summary => summary.running)
+      || [...this.runtimeActivity.values()].some(activity => activity.running)
+  }
+
+  /** Opaque connection identity for deferred plugin/settings completion checks. */
+  get runtimeIdentity(): object | undefined {
+    return this.runtime.state.kind === 'ready' ? this.runtime.connection : undefined
+  }
+
   publish(patch: Partial<ChatViewState>): void {
     this._state = { ...this._state, ...patch }
     this.changes.fire(this._state)
@@ -300,6 +313,7 @@ export class DshChatController implements vscode.Disposable {
   }
 
   async start(target?: RuntimeTarget): Promise<void> {
+    if (this.disposed) return
     ++this.runtimeSwitchRevision
     this.cancelRecovery()
     this.reconnectSessions.clear()
@@ -360,6 +374,7 @@ export class DshChatController implements vscode.Disposable {
   }
 
   async restart(target?: RuntimeTarget): Promise<void> {
+    if (this.disposed) return
     const revision = ++this.runtimeSwitchRevision
     this.cancelRecovery()
     ++this.generation
@@ -373,7 +388,7 @@ export class DshChatController implements vscode.Disposable {
     if (this.disposed) throw new Error('The DeepSeek sidebar has closed. Reopen it before selecting a runtime.')
     if (this.cwd === '') throw new Error('Open a project folder before selecting a DSH runtime.')
     if (this._state.phase === 'loading') throw new Error('Wait for the current connection attempt to finish before selecting a runtime.')
-    if (this._state.running || this.summaries.some(summary => summary.running)) {
+    if (this.hasRunningTasks) {
       throw new Error('Finish or stop the running DeepSeek tasks before switching runtimes.')
     }
   }
@@ -491,7 +506,7 @@ export class DshChatController implements vscode.Disposable {
 
   async switchWorkspace(cwd: string): Promise<void> {
     if (cwd === '' || cwd === this.cwd) return
-    if (this._state.running) throw new Error('Wait for the current DeepSeek task to finish before switching projects.')
+    this.assertCanSelectRuntime()
     this._cwd = cwd
     this.summaries = []
     this.projector.reset([])
@@ -734,6 +749,9 @@ export class DshChatController implements vscode.Disposable {
     this.requireReady()
     const client = this.requireClient()
     if (this.settingsOwners.get(namespace) !== client) throw new Error('The DSH runtime changed. Reopen runtime settings before saving.')
+    if (namespace.applies === 'restart' && this.hasRunningTasks) {
+      throw new Error('Finish or stop all running DeepSeek tasks before changing settings that require a runtime restart.')
+    }
     return client.mutateSettings(namespace.ns, ops, namespace.revision)
   }
 
@@ -796,6 +814,7 @@ export class DshChatController implements vscode.Disposable {
   }
 
   private disconnectClient(): void {
+    this.runtimeActivity.clear()
     ++this.sessionListGeneration
     this.sessionAttention.clear()
     for (const dispose of this.clientDisposables.splice(0)) dispose()
@@ -809,12 +828,20 @@ export class DshChatController implements vscode.Disposable {
     const cwd = this.cwd
     const listGeneration = ++this.sessionListGeneration
     const selectionGeneration = this.sessionLoadGeneration
+    const activityRevision = this.activityRevision
     const [{ items }] = await Promise.all([
       client.listSessions(),
       this.refreshArchivedSessions(client, listGeneration),
     ])
     if (this.client !== client || this.cwd !== cwd || listGeneration !== this.sessionListGeneration) return
+    for (const summary of items) {
+      // A list response must not undo a status notification received while it was in flight.
+      if ((this.runtimeActivity.get(summary.sessionId)?.revision ?? -1) <= activityRevision) {
+        this.runtimeActivity.set(summary.sessionId, { running: summary.running, revision: activityRevision })
+      }
+    }
     this.summaries = items.filter(summary => summary.cwd === cwd && summary.origin !== 'subagent')
+      .map(summary => ({ ...summary, running: this.runtimeActivity.get(summary.sessionId)?.running ?? summary.running }))
     if (selectionGeneration !== this.sessionLoadGeneration) {
       this.publishSessionItems()
       return
@@ -1048,6 +1075,10 @@ export class DshChatController implements vscode.Disposable {
     const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : ''
 
     if (frame.channel === 'host') {
+      if (sessionId !== '' && (type === 'host/session-added' || type === 'host/session-status' || type === 'host/session-removed')) {
+        this.runtimeActivity.set(sessionId, { running: type !== 'host/session-removed' && payload.running === true,
+          revision: ++this.activityRevision })
+      }
       if (type === 'host/settings-changed' || type === 'host/credentials-changed') this.settingsChanges.fire()
       if (this.client !== undefined && this._state.phase === 'ready' && this._state.sessionId !== '') {
         const activeId = this._state.sessionId

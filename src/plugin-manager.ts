@@ -42,6 +42,8 @@ interface PluginController {
   readonly onDidChangeRuntimeSettings: vscode.Event<void>
   readonly cwd: string
   readonly runtimeOwnership: 'external' | 'managed' | undefined
+  readonly runtimeIdentity: object | undefined
+  readonly hasRunningTasks: boolean
   readonly state: {
     phase: 'loading' | 'ready' | 'error'
     statusText: string
@@ -51,6 +53,11 @@ interface PluginController {
   settings(): Promise<SettingsDescription>
   mutateSettings(namespace: SettingsNamespace, ops: SettingsMutation[]): Promise<SettingsNamespace>
   restart(): Promise<void>
+}
+
+interface RuntimeChangeTarget {
+  readonly identity: object | undefined
+  readonly cwd: string
 }
 
 type PluginPick = vscode.QuickPickItem & (
@@ -239,7 +246,7 @@ export class DshPluginManager {
     displayName: string,
     before: readonly InstalledPlugin[] = readInstalledPlugins(resolveDshHome()),
   ): Promise<void> {
-    await this.runOfficialPluginCommand(['add', spec], `Installing ${displayName}`)
+    const target = await this.runOfficialPluginCommand(['add', spec], `Installing ${displayName}`)
     const installed = readInstalledPlugins(resolveDshHome())
     const added = findAddedPlugin(before, installed)
     if (added !== undefined && !added.bundle) {
@@ -247,7 +254,7 @@ export class DshPluginManager {
         `${added.name} installed, but it does not declare a DSH bundle and was not activated.`,
       )
     }
-    await this.restartAfterChange(`Installed ${added?.name ?? spec}`)
+    await this.restartAfterChange(`Installed ${added?.name ?? spec}`, target)
   }
 
   private async browseCatalog(): Promise<void> {
@@ -352,8 +359,8 @@ export class DshPluginManager {
       'Remove',
     )
     if (confirmed !== 'Remove') return
-    await this.runOfficialPluginCommand(['remove', plugin.name], `Removing ${plugin.name}`)
-    await this.restartAfterChange(`Removed ${plugin.name}`)
+    const target = await this.runOfficialPluginCommand(['remove', plugin.name], `Removing ${plugin.name}`)
+    await this.restartAfterChange(`Removed ${plugin.name}`, target)
   }
 
   private async configureSettings(): Promise<void> {
@@ -364,6 +371,7 @@ export class DshPluginManager {
     while (true) {
       const selected = await pickRuntimeSettingsNamespace(this.controller)
       if (selected === undefined) return
+      const target = this.changeTarget()
       let changed: boolean
       try {
         changed = await this.configureNamespace(selected)
@@ -374,7 +382,7 @@ export class DshPluginManager {
       }
       if (!changed) continue
       if (selected.applies === 'restart') {
-        await this.restartAfterChange(`${selected.ns} updated`)
+        await this.restartAfterChange(`${selected.ns} updated`, target)
         return
       }
       await vscode.window.showInformationMessage(`${selected.ns} updated.`)
@@ -512,16 +520,40 @@ export class DshPluginManager {
   }
 
   private async requireIdle(): Promise<boolean> {
-    if (!this.controller.state.running) return true
-    await vscode.window.showWarningMessage('Wait for the current DeepSeek task to finish before changing runtime plugins.')
-    return false
+    if (this.controller.state.phase === 'loading'
+      || (this.controller.runtimeOwnership !== undefined && this.controller.state.phase !== 'ready')) {
+      await vscode.window.showWarningMessage('Wait for DeepSeek Harness to reconnect before changing runtime plugins.')
+      return false
+    }
+    if (this.controller.hasRunningTasks) {
+      await vscode.window.showWarningMessage('Finish or stop all running DeepSeek tasks, including background conversations, before changing runtime plugins.')
+      return false
+    }
+    return true
   }
 
-  private async restartAfterChange(successMessage: string): Promise<void> {
+  private changeTarget(): RuntimeChangeTarget {
+    return { identity: this.controller.runtimeIdentity, cwd: this.controller.cwd }
+  }
+
+  private isCurrentTarget(target: RuntimeChangeTarget): boolean {
+    return target.identity === this.controller.runtimeIdentity && target.cwd === this.controller.cwd
+  }
+
+  private async restartAfterChange(successMessage: string, target: RuntimeChangeTarget): Promise<void> {
+    if (!this.isCurrentTarget(target) || this.controller.state.phase === 'loading'
+      || (this.controller.runtimeOwnership !== undefined && this.controller.state.phase !== 'ready')) {
+      await vscode.window.showWarningMessage(`${successMessage}. The runtime connection changed; no runtime was restarted. Restart the intended runtime when ready to apply the change.`)
+      return
+    }
     if (this.controller.runtimeOwnership === 'external') {
       await vscode.window.showWarningMessage(
         `${successMessage}. Restart the external DeepSeek Harness process to apply this change, then reconnect from VS Code.`,
       )
+      return
+    }
+    if (this.controller.hasRunningTasks) {
+      await vscode.window.showWarningMessage(`${successMessage}. DeepSeek tasks are still running, so the runtime was not restarted. Restart it after those tasks finish to apply the change.`)
       return
     }
     await this.controller.restart()
@@ -531,11 +563,12 @@ export class DshPluginManager {
     await vscode.window.showInformationMessage(`${successMessage}. DeepSeek Harness restarted.`)
   }
 
-  private async runOfficialPluginCommand(args: readonly string[], title: string): Promise<void> {
+  private async runOfficialPluginCommand(args: readonly string[], title: string): Promise<RuntimeChangeTarget> {
     if (this.controller.runtimeOwnership === 'external') {
       throw new Error('Install or remove plugins using the CLI of the external DSH runtime, or switch to a managed runtime. No local profile was changed.')
     }
-    if (!await this.requireIdle()) throw new Error('Plugin operation cancelled because a DeepSeek task is running.')
+    if (!await this.requireIdle()) throw new Error('Plugin operation cancelled. Reconnect DSH or finish its running tasks before trying again.')
+    const target = this.changeTarget()
     const defaultWorkspace = vscode.workspace.workspaceFolders?.[0]?.uri
     const cwd = this.controller.cwd || defaultWorkspace?.fsPath || process.cwd()
     const workspace = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(cwd))?.uri ?? defaultWorkspace
@@ -556,7 +589,9 @@ export class DshPluginManager {
       title,
       cancellable: true,
     }, async (_progress, token) => new Promise<void>((resolvePromise, rejectPromise) => {
-      if (this.controller.runtimeOwnership === 'external' || this.controller.state.running) {
+      if (!this.isCurrentTarget(target) || this.controller.runtimeOwnership === 'external'
+        || this.controller.state.phase === 'loading' || this.controller.hasRunningTasks
+        || (this.controller.runtimeOwnership !== undefined && this.controller.state.phase !== 'ready')) {
         rejectPromise(new Error('The runtime changed or a task started. Reopen plugin management before making changes.'))
         return
       }
@@ -606,6 +641,7 @@ export class DshPluginManager {
         rejectPromise(new Error(`The official DSH plugin command failed with code ${String(code)}. Open DeepSeek Harness output for details.`))
       })
     }))
+    return target
   }
 
   private message(error: unknown): string {

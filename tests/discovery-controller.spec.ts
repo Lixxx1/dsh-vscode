@@ -72,6 +72,75 @@ async function harness() {
 }
 
 describe('runtime selection', () => {
+  it('blocks switching projects while another conversation is running', async () => {
+    const h = await harness()
+    h.emit({ type: 'host/session-status', sessionId: 'b', running: true })
+    expect(h.controller.state.running).toBe(false)
+    expect(h.controller.hasRunningTasks).toBe(true)
+    await expect(h.controller.switchWorkspace('/another-project')).rejects.toThrow('running DeepSeek tasks')
+    expect(h.controller.cwd).toBe('/workspace')
+    expect(h.runtime.stop).not.toHaveBeenCalled()
+    h.emit({ type: 'host/session-status', sessionId: 'b', running: false })
+    expect(h.controller.hasRunningTasks).toBe(false)
+    expect(() => h.controller.assertCanSelectRuntime()).not.toThrow()
+  })
+
+  it('protects sessions outside the visible project, including child agents', async () => {
+    const h = await harness()
+    h.emit({ type: 'host/session-added', sessionId: 'foreign', cwd: '/elsewhere', updatedAt: 1, blank: false, running: true })
+    h.emit({ type: 'host/session-added', sessionId: 'child', origin: 'subagent', cwd: '/workspace', updatedAt: 1, blank: false, running: true })
+    expect(h.controller.state.sessions.every(item => !['foreign', 'child'].includes(item.id))).toBe(true)
+    expect(h.controller.hasRunningTasks).toBe(true)
+    await expect(h.controller.selectRuntime({ kind: 'managed' })).rejects.toThrow('running DeepSeek tasks')
+    h.emit({ type: 'host/session-removed', sessionId: 'child' })
+    expect(h.controller.hasRunningTasks).toBe(true)
+    h.emit({ type: 'host/session-status', sessionId: 'foreign', running: false })
+    expect(h.controller.hasRunningTasks).toBe(false)
+  })
+
+  it('includes already-running foreign sessions from the initial runtime snapshot', async () => {
+    const h = await harness()
+    const snapshot = await h.client.listSessions()
+    h.client.listSessions.mockResolvedValue({ items: [...snapshot.items, { ...snapshot.items[0]!, sessionId: 'foreign', cwd: '/elsewhere', running: true }] })
+    await h.controller.start()
+    expect(h.controller.hasRunningTasks).toBe(true)
+    expect(h.controller.state.sessions.every(item => item.id !== 'foreign')).toBe(true)
+    h.controller.observeRuntime({ kind: 'stopped' })
+    expect(h.controller.hasRunningTasks).toBe(false)
+  })
+
+  it.each([true, false])('keeps the latest running=%s event when session/list returns an older snapshot', async running => {
+    const h = await harness()
+    const snapshot = await h.client.listSessions()
+    const pending = Promise.withResolvers<any>()
+    h.client.listSessions.mockReturnValueOnce(pending.promise)
+    const before = h.client.listSessions.mock.calls.length
+    const loading = h.controller.start()
+    await vi.waitFor(() => expect(h.client.listSessions.mock.calls.length).toBeGreaterThan(before))
+    h.emit({ type: 'host/session-status', sessionId: 'b', running })
+    pending.resolve({ items: snapshot.items.map(summary => summary.sessionId === 'b' ? { ...summary, running: !running } : summary) })
+    await loading
+    expect(h.controller.hasRunningTasks).toBe(running)
+    h.emit({ type: 'host/session-status', sessionId: 'b', running: false })
+    expect(h.controller.hasRunningTasks).toBe(false)
+  })
+
+  it('rechecks background tasks before saving restart-required settings, but allows live settings', async () => {
+    const h = await harness()
+    const restart = { ns: 'restart-setting', revision: 1, applies: 'restart' }
+    const live = { ns: 'live-setting', revision: 1, applies: 'live' }
+    h.client.settings.mockResolvedValue({ namespaces: [restart, live] })
+    const [restartDraft, liveDraft] = (await h.controller.settings()).namespaces
+    h.emit({ type: 'host/session-status', sessionId: 'b', running: true })
+    expect(() => h.controller.mutateSettings(restartDraft!, [])).toThrow('all running DeepSeek tasks')
+    expect(h.client.mutateSettings).not.toHaveBeenCalled()
+    await h.controller.mutateSettings(liveDraft!, [])
+    expect(h.client.mutateSettings).toHaveBeenCalledWith('live-setting', [], 1)
+    h.emit({ type: 'host/session-status', sessionId: 'b', running: false })
+    await h.controller.mutateSettings(restartDraft!, [])
+    expect(h.client.mutateSettings).toHaveBeenCalledWith('restart-setting', [], 1)
+  })
+
   it('disconnects the old client and passes the explicit target without publishing its credentials', async () => {
     const h = await harness()
     const next = h.next()
@@ -130,7 +199,10 @@ describe('runtime selection', () => {
     stop(); await switching
     expect(h.runtime.start).toHaveBeenCalledTimes(1)
     await expect(h.controller.selectRuntime({ kind: 'managed' })).rejects.toThrow('sidebar has closed')
+    await h.controller.restart()
+    await h.controller.start()
     expect(h.runtime.stop).toHaveBeenCalledTimes(1)
+    expect(h.runtime.start).toHaveBeenCalledTimes(1)
   })
 })
 
