@@ -136,6 +136,10 @@ describe('chat webview', () => {
     expect(html).toContain('Install DeepSeek Harness')
     expect(html).toContain('https://github.com/deepseek-ai/deepseek-harness')
     expect(html).toContain("type: 'configure-api-key'")
+    expect(html).toContain("setup === 'runtime-auth'")
+    expect(html).toContain("vscode.postMessage({ type: 'connect-existing-runtime' })")
+    expect(html).toContain("vscode.postMessage({ type: 'start-managed-runtime' })")
+    expect(html).not.toContain('launchUrl')
   })
 
   it('uses append-only output and streaming paths', () => {

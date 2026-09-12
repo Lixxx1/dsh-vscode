@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { DshFrame, SessionModels, SkillDescriptor } from '../src/dsh-client.js'
 import { withIdeContext } from '../src/ide-context.js'
 import { DshStreamError } from '../src/dsh-streams.js'
+import { ExistingRuntimeConnectionError } from '../src/runtime-target.js'
 
 const mocks = vi.hoisted(() => ({ client: undefined as any }))
 vi.mock('../src/dsh-client.js', () => ({ DshClient: class {
@@ -69,6 +70,69 @@ async function harness() {
   const next = () => { const next = testClient(); mocks.client = next.client; return next }
   return { client, controller, output, emit, fail, runtime, reviews, next }
 }
+
+describe('runtime selection', () => {
+  it('disconnects the old client and passes the explicit target without publishing its credentials', async () => {
+    const h = await harness()
+    const next = h.next()
+    const states: unknown[] = []
+    h.controller.onDidChangeState(state => states.push(state))
+    const target = { kind: 'external' as const, launchUrl: new URL('http://127.0.0.1:43127/?token=private-token') }
+    await h.controller.selectRuntime(target)
+    expect(h.runtime.stop).toHaveBeenCalledTimes(1)
+    expect(h.client.dispose).toHaveBeenCalledTimes(1)
+    expect(h.runtime.start).toHaveBeenLastCalledWith(expect.objectContaining({ fsPath: '/workspace' }), target)
+    expect(next.client.startStreams).toHaveBeenCalledTimes(1)
+    expect(h.controller.state.phase).toBe('ready')
+    expect(JSON.stringify(states)).not.toContain('private-token')
+    expect(h.reviews.clear).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not switch during a background task or another connection attempt', async () => {
+    const h = await harness()
+    h.emit({ type: 'host/session-status', sessionId: 'b', running: true })
+    await expect(h.controller.selectRuntime({ kind: 'managed' })).rejects.toThrow('running DeepSeek tasks')
+    expect(h.runtime.stop).not.toHaveBeenCalled()
+    h.controller.publish({ phase: 'loading' })
+    await expect(h.controller.selectRuntime({ kind: 'managed' })).rejects.toThrow('connection attempt')
+    expect(h.runtime.stop).not.toHaveBeenCalled()
+  })
+
+  it('renders the external connection choice from both startup rejection and runtime state', async () => {
+    const h = await harness()
+    h.runtime.start.mockRejectedValueOnce(new ExistingRuntimeConnectionError())
+    await h.controller.restart()
+    expect(h.controller.state).toMatchObject({ phase: 'error', setup: 'runtime-auth' })
+    h.controller.observeRuntime({ kind: 'failed', reason: 'runtime-auth', message: 'Try another launch URL' })
+    expect(h.controller.state).toMatchObject({ phase: 'error', setup: 'runtime-auth', statusText: 'Try another launch URL' })
+  })
+
+  it('does not complete a superseded switch after a newer restart', async () => {
+    const h = await harness()
+    let stop!: () => void
+    const stopped = new Promise<void>(resolve => { stop = resolve })
+    h.runtime.stop.mockReturnValue(stopped)
+    const switching = h.controller.selectRuntime({ kind: 'external', launchUrl: new URL('http://127.0.0.1:43127/?token=old') })
+    const restart = h.controller.restart({ kind: 'managed' })
+    h.next()
+    stop()
+    await Promise.all([switching, restart])
+    expect(h.runtime.start).toHaveBeenCalledTimes(2)
+    expect(h.runtime.start).toHaveBeenLastCalledWith(expect.anything(), { kind: 'managed' })
+  })
+
+  it('does not connect to a selected runtime after disposal', async () => {
+    const h = await harness()
+    let stop!: () => void
+    h.runtime.stop.mockReturnValue(new Promise<void>(resolve => { stop = resolve }))
+    const switching = h.controller.selectRuntime({ kind: 'managed' })
+    h.controller.dispose()
+    stop(); await switching
+    expect(h.runtime.start).toHaveBeenCalledTimes(1)
+    await expect(h.controller.selectRuntime({ kind: 'managed' })).rejects.toThrow('sidebar has closed')
+    expect(h.runtime.stop).toHaveBeenCalledTimes(1)
+  })
+})
 
 describe('sidebar reconnect', () => {
   it('restores the selected conversation and background request scope without restarting or resending', async () => {

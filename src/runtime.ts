@@ -17,6 +17,7 @@ import { terminateProcessTree } from './process-tree.js'
 import { DshConnection } from './dsh-connection.js'
 import { assertSupportedDshVersion, DSH_UPGRADE_MESSAGE } from './runtime-endpoint.js'
 import { redactDshSecrets, RuntimeOutput } from './runtime-output.js'
+import { existingRuntimeUrl, ExistingRuntimeConnectionError, type RuntimeTarget } from './runtime-target.js'
 
 export type RuntimeOwnership = 'external' | 'managed'
 
@@ -24,7 +25,7 @@ export type RuntimeState =
   | { kind: 'stopped' }
   | { kind: 'starting'; detail: string }
   | { kind: 'ready'; localUri: vscode.Uri; ownership: RuntimeOwnership }
-  | { kind: 'failed'; message: string }
+  | { kind: 'failed'; message: string; reason?: 'runtime-auth' }
 
 interface PendingStart {
   resolve(uri: vscode.Uri): void
@@ -124,16 +125,19 @@ export class DshRuntime implements vscode.Disposable {
     this.changes.fire(state)
   }
 
-  start(workspaceUri?: vscode.Uri): Promise<vscode.Uri> {
+  start(workspaceUri?: vscode.Uri, target?: RuntimeTarget): Promise<vscode.Uri> {
+    if (target !== undefined && (this.startTask !== undefined || this._state.kind === 'ready')) {
+      return Promise.reject(new Error('Disconnect the current runtime before selecting a different connection.'))
+    }
     if (this.startTask !== undefined) return this.startTask
-    const task = this.startRuntime(workspaceUri)
+    const task = this.startRuntime(workspaceUri, target)
     this.startTask = task
     const clear = (): void => { if (this.startTask === task) this.startTask = undefined }
     void task.then(clear, clear)
     return task
   }
 
-  private async startRuntime(workspaceUri?: vscode.Uri): Promise<vscode.Uri> {
+  private async startRuntime(workspaceUri?: vscode.Uri, target?: RuntimeTarget): Promise<vscode.Uri> {
     const revision = this.stopRevision
     if (this.stopTask !== undefined) await this.stopTask
     if (revision !== this.stopRevision) throw new Error('DSH runtime stopped.')
@@ -169,6 +173,14 @@ export class DshRuntime implements vscode.Disposable {
     let version: string | undefined
     let storedApiKey: string | undefined
     try {
+      if (target?.kind === 'external') {
+        if (config.get<boolean>('autonomousDebugging', false)) {
+          throw new Error('Autonomous debugging requires a managed runtime. Disable it before connecting to an existing DSH runtime.')
+        }
+        const launchUrl = existingRuntimeUrl(target.launchUrl.href)
+        void this.connectExternal(launchUrl, pending)
+        return pending.promise
+      }
       const launchPreparation = await this.launchContributor?.prepare({
         workspacePath: workspace.fsPath,
         configuredExecutable,
@@ -183,6 +195,7 @@ export class DshRuntime implements vscode.Disposable {
       // A nested deepseek-harness checkout is the documented empty-executable
       // launch; an unrelated stock DSH on 3080 must not silently pre-empt it.
       if (launchPreparation === undefined
+        && target?.kind !== 'managed'
         && shouldProbeExistingDsh(reuseExistingRuntime, configuredExecutable, hasCustomArguments)
         && findSourceRoot(this.context.extensionUri.fsPath) === undefined) {
         const existingUrl = new URL(DEFAULT_DSH_SERVER_URL)
@@ -204,7 +217,7 @@ export class DshRuntime implements vscode.Disposable {
         }
         connection.dispose()
         if (probe.kind === 'authentication-required') {
-          this.output.appendLine('[runtime] existing endpoint requires authentication; starting a separate managed DSH runtime.')
+          throw new ExistingRuntimeConnectionError()
         } else if (probe.kind === 'unsupported') {
           this.output.appendLine('[runtime] existing endpoint does not support the required DSH Remote protocol; starting a separate managed runtime.')
         }
@@ -303,6 +316,31 @@ export class DshRuntime implements vscode.Disposable {
     return pending.promise
   }
 
+  private async connectExternal(launchUrl: URL, pending: PendingStart): Promise<void> {
+    const connection = new DshConnection(new URL(launchUrl.origin))
+    this.authenticating = connection
+    this.publish({ kind: 'starting', detail: 'Connecting to the existing DeepSeek Harness runtime…' })
+    try {
+      await connection.authenticate(launchUrl)
+      const probe = await probeDshServer(connection, 10_000)
+      if (probe.kind !== 'ready') throw new Error(probe.kind === 'unsupported' ? DSH_UPGRADE_MESSAGE
+        : `Could not verify the existing DSH Remote service (${probe.kind}). Check its launch URL and try again.`)
+      if (this.pending !== pending) { connection.dispose(); return }
+      this.authenticating = undefined
+      this._connection = connection
+      this.pending = undefined
+      const localUri = vscode.Uri.parse(connection.baseUrl.href)
+      this.output.appendLine(`[runtime] connected to existing DSH: ${connection.baseUrl.origin}`)
+      this.publish({ kind: 'ready', localUri, ownership: 'external' })
+      pending.resolve(localUri)
+    } catch (error) {
+      connection.dispose()
+      if (this.authenticating === connection) this.authenticating = undefined
+      this.failStart(new ExistingRuntimeConnectionError(error instanceof Error ? error.message
+        : 'Could not connect to the existing DSH runtime. Check its launch URL and try again.'), pending)
+    }
+  }
+
   private acceptOutputLine(line: string, pending: PendingStart): void {
     if (this.pending !== pending || this.authenticating !== undefined) return
     const url = parseDshWebUrl(line)
@@ -353,7 +391,8 @@ export class DshRuntime implements vscode.Disposable {
     if (this.pending !== pending) return
     this.pending = undefined
     this.clearStartupTimer()
-    this.publish({ kind: 'failed', message: error.message })
+    this.publish({ kind: 'failed', message: error.message,
+      ...(error instanceof ExistingRuntimeConnectionError ? { reason: 'runtime-auth' as const } : {}) })
     void this.releaseLaunchPreparation()
     pending.reject(error)
   }

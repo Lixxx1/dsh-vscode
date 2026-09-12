@@ -69,6 +69,8 @@ import { sessionItems, type SessionItem, type SessionAttention } from './session
 import { wireRecord } from './dsh-streams.js'
 import type { DshConnection } from './dsh-connection.js'
 import { canRetryConnection, reconnectAttempts } from './dsh-reconnect.js'
+import { ExistingRuntimeConnectionError, existingRuntimeUrl, type RuntimeTarget } from './runtime-target.js'
+import { pickExistingRuntime, pickManagedRuntime } from './runtime-picker.js'
 
 let activeRuntime: DshRuntime | undefined
 
@@ -223,6 +225,8 @@ export class DshChatController implements vscode.Disposable {
   private summaries: SessionSummary[] = []
   private _state: ChatViewState
   private generation = 0
+  private runtimeSwitchRevision = 0
+  private disposed = false
   private sessionLoadGeneration = 0
   private sessionListGeneration = 0
   private readonly discoveryRequests = new Map<string, number>()
@@ -288,14 +292,15 @@ export class DshChatController implements vscode.Disposable {
     if (state.kind === 'failed') this.publish({
       phase: 'error',
       statusText: state.message,
-      setup: setupKindFor(this.cwd, 'error', state.message),
+      setup: state.reason === 'runtime-auth' ? 'runtime-auth' : setupKindFor(this.cwd, 'error', state.message),
     })
     if (state.kind === 'stopped') {
       this.publish({ phase: 'error', statusText: 'DeepSeek Harness stopped.', setup: null })
     }
   }
 
-  async start(): Promise<void> {
+  async start(target?: RuntimeTarget): Promise<void> {
+    ++this.runtimeSwitchRevision
     this.cancelRecovery()
     this.reconnectSessions.clear()
     this.automaticReconnects = []
@@ -336,7 +341,7 @@ export class DshChatController implements vscode.Disposable {
     })
     if (this.cwd === '') return
     try {
-      await this.runtime.start(this.cwd === '' ? undefined : vscode.Uri.file(this.cwd))
+      await this.runtime.start(this.cwd === '' ? undefined : vscode.Uri.file(this.cwd), target)
       if (generation !== this.generation) return
       const connection = this.runtime.connection
       if (connection === undefined) throw new Error('DSH did not establish an authenticated connection.')
@@ -349,16 +354,35 @@ export class DshChatController implements vscode.Disposable {
       if (generation !== this.generation) return
       const message = error instanceof Error ? error.message : String(error)
       this.output.appendLine(`[chat] ${message}`)
-      this.publish({ phase: 'error', statusText: message, setup: setupKindFor(this.cwd, 'error', message) })
+      this.publish({ phase: 'error', statusText: message,
+        setup: error instanceof ExistingRuntimeConnectionError ? 'runtime-auth' : setupKindFor(this.cwd, 'error', message) })
     }
   }
 
-  async restart(): Promise<void> {
+  async restart(target?: RuntimeTarget): Promise<void> {
+    const revision = ++this.runtimeSwitchRevision
     this.cancelRecovery()
     ++this.generation
     this.disconnectClient()
     await this.runtime.stop()
-    await this.start()
+    if (revision !== this.runtimeSwitchRevision) return
+    await this.start(target)
+  }
+
+  assertCanSelectRuntime(): void {
+    if (this.disposed) throw new Error('The DeepSeek sidebar has closed. Reopen it before selecting a runtime.')
+    if (this.cwd === '') throw new Error('Open a project folder before selecting a DSH runtime.')
+    if (this._state.phase === 'loading') throw new Error('Wait for the current connection attempt to finish before selecting a runtime.')
+    if (this._state.running || this.summaries.some(summary => summary.running)) {
+      throw new Error('Finish or stop the running DeepSeek tasks before switching runtimes.')
+    }
+  }
+
+  async selectRuntime(target: RuntimeTarget): Promise<void> {
+    this.assertCanSelectRuntime()
+    if (target.kind === 'external') existingRuntimeUrl(target.launchUrl.href)
+    this.publish({ phase: 'loading', setup: null, statusText: 'Switching DeepSeek Harness runtime…' })
+    await this.restart(target)
   }
 
   /** Rebuild subscriptions on the same runtime; never resubmit a user action. */
@@ -753,6 +777,8 @@ export class DshChatController implements vscode.Disposable {
   }
 
   dispose(): void {
+    this.disposed = true
+    ++this.runtimeSwitchRevision
     this.cancelRecovery()
     ++this.generation
     this.disconnectClient()
@@ -1646,6 +1672,12 @@ class DshSurface implements vscode.Disposable {
           return
         case 'restart': await this.controller.restart(); return
         case 'reconnect': await this.controller.reconnect(); return
+        case 'connect-existing-runtime':
+          await vscode.commands.executeCommand('deepseekHarness.connectExistingRuntime')
+          return
+        case 'start-managed-runtime':
+          await vscode.commands.executeCommand('deepseekHarness.startManagedRuntime')
+          return
         case 'output': this.output.show(true); return
         case 'open-workspace': await this.chooseWorkspace(); return
         case 'configure-api-key':
@@ -2168,6 +2200,21 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.reconnect', async () => {
     await controller.reconnect().catch(error => { void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error)) })
   }))
+  let runtimePickerBusy = false
+  const chooseRuntime = async (kind: 'external' | 'managed'): Promise<void> => {
+    if (runtimePickerBusy) return
+    runtimePickerBusy = true
+    try {
+      if (kind === 'external') await pickExistingRuntime(controller)
+      else await pickManagedRuntime(controller)
+    } catch (error) {
+      void vscode.window.showErrorMessage(error instanceof Error ? error.message : 'Could not select the DSH runtime.')
+    } finally {
+      runtimePickerBusy = false
+    }
+  }
+  context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.connectExistingRuntime', () => chooseRuntime('external')))
+  context.subscriptions.push(vscode.commands.registerCommand('deepseekHarness.startManagedRuntime', () => chooseRuntime('managed')))
   if (workspace !== undefined) {
     let debugRestartTimer: NodeJS.Timeout | undefined
     let debugRestartTask = Promise.resolve()

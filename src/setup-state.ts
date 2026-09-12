@@ -1,4 +1,4 @@
-export type SetupKind = 'workspace' | 'dsh' | 'api-key' | null
+export type SetupKind = 'workspace' | 'dsh' | 'api-key' | 'runtime-auth' | null
 
 type ChatPhase = 'loading' | 'ready' | 'error'
 

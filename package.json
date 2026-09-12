@@ -46,6 +46,8 @@
     "onCommand:deepseekHarness.sendProblem",
     "onCommand:deepseekHarness.restart",
     "onCommand:deepseekHarness.reconnect",
+    "onCommand:deepseekHarness.connectExistingRuntime",
+    "onCommand:deepseekHarness.startManagedRuntime",
     "onCommand:deepseekHarness.managePlugins",
     "onCommand:deepseekHarness.configureApiKey",
     "onCommand:deepseekHarness.clearApiKey"
@@ -93,6 +95,14 @@
       {
         "command": "deepseekHarness.reconnect",
         "title": "DeepSeek Harness: Reconnect"
+      },
+      {
+        "command": "deepseekHarness.connectExistingRuntime",
+        "title": "DeepSeek Harness: Connect to Existing Runtime"
+      },
+      {
+        "command": "deepseekHarness.startManagedRuntime",
+        "title": "DeepSeek Harness: Start Managed Runtime"
       },
       {
         "command": "deepseekHarness.managePlugins",
@@ -204,7 +214,7 @@
           "type": "boolean",
           "scope": "resource",
           "default": true,
-          "description": "Reuse a healthy official DSH Web runtime on 127.0.0.1:3080 when no custom executable or arguments are configured."
+          "description": "Look for an existing DSH Web runtime on 127.0.0.1:3080 when no custom executable or arguments are configured. Authenticated runtimes prompt you to connect with their launch URL or start a separate managed runtime."
         },
         "deepseekHarness.autonomousDebugging": {
           "type": "boolean",
