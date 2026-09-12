@@ -11,7 +11,7 @@ function escapeHtml(value: string): string {
   return value.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
 }
 
-export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): string {
+export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, markdownAssets: { script: vscode.Uri; style: vscode.Uri }): string {
   const token = nonce()
   const mark = escapeHtml(deepseekMarkUri.toString(true))
   return `<!doctype html>
@@ -19,7 +19,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data:; style-src ${webview.cspSource} 'nonce-${token}'; script-src 'nonce-${token}';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data:; font-src ${webview.cspSource}; style-src ${webview.cspSource} 'nonce-${token}'; script-src 'nonce-${token}';">
+  <link rel="stylesheet" href="${escapeHtml(markdownAssets.style.toString(true))}">
   <style nonce="${token}">
     :root { color-scheme: light dark; }
     * { box-sizing: border-box; }
@@ -72,7 +73,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     .job-detail { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--vscode-descriptionForeground); font-size: 10px; }
     .job-duration { grid-column: 3; grid-row: 1 / 3; align-self: center; color: var(--vscode-descriptionForeground); font: 10px var(--vscode-editor-font-family); }
     .icon-button:focus-visible, select:focus-visible, textarea:focus-visible, input:focus-visible, button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
-    svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+    svg:where(:not(.katex svg)) { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
     .scroll { min-width: 0; min-height: 0; overflow-x: hidden; overflow-y: auto; overflow-anchor: none; scrollbar-color: var(--vscode-scrollbarSlider-background) transparent; }
     .conversation { width: 100%; min-width: 0; max-width: 760px; margin: 0 auto; padding: 12px 14px 30px; overflow: hidden; }
     .conversation-slot, .messages { display: contents; }
@@ -108,6 +109,17 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     .markdown h1 { font-size: 17px; } .markdown h2 { font-size: 15px; } .markdown h3 { font-size: 13px; }
     .markdown ul, .markdown ol { margin: 5px 0 10px; padding-left: 22px; }
     .markdown blockquote { margin: 8px 0; padding: 2px 10px; border-left: 2px solid var(--vscode-textBlockQuote-border); color: var(--vscode-descriptionForeground); background: var(--vscode-textBlockQuote-background); }
+    .markdown-table { max-width: 100%; overflow-x: auto; margin: 10px 0; border: 1px solid var(--vscode-widget-border, #8886); border-radius: 6px; }
+    .markdown table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .markdown th, .markdown td { min-width: 80px; padding: 7px 10px; border: 1px solid var(--vscode-widget-border, #8886); vertical-align: top; }
+    .markdown th { font-weight: 600; background: var(--vscode-textCodeBlock-background); }
+    .markdown th:not([align]), .markdown td:not([align]) { text-align: left; }
+    .markdown tbody tr:nth-child(even) { background: color-mix(in srgb, var(--vscode-foreground) 3%, transparent); }
+    .markdown-math-inline { display: inline-block; max-width: 100%; overflow-x: auto; vertical-align: middle; padding: 2px 0; }
+    .markdown-math-display { display: block; max-width: 100%; overflow-x: auto; margin: 10px 0; }
+    .markdown .katex { font-size: 1.1em; overflow-wrap: normal; word-break: normal; }
+    .markdown .katex-display { margin: 0; padding: 5px 2px; text-align: left; }
+    .markdown .katex-display > .katex { text-align: left; }
     code { padding: 1px 4px; border-radius: 4px; font-family: var(--vscode-editor-font-family); background: var(--vscode-textCodeBlock-background); }
     pre { max-width: 100%; margin: 7px 0; padding: 9px 10px; overflow: auto; white-space: pre; border-radius: 6px; color: var(--vscode-editor-foreground); background: var(--vscode-textCodeBlock-background); font: 12px/1.55 var(--vscode-editor-font-family); }
     pre code { padding: 0; background: transparent; }
@@ -307,6 +319,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       </div>
     </footer>
   </div>
+  <script nonce="${token}" src="${escapeHtml(markdownAssets.script.toString(true))}"></script>
   <script nonce="${token}">
     const vscode = acquireVsCodeApi();
     window.addEventListener('error', event => {
@@ -524,87 +537,24 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
       if (last < text.length) parent.append(document.createTextNode(text.slice(last)));
     }
 
-    function appendInline(parent, text) {
-      const pattern = /(\\*\\*[^*]+\\*\\*|\\*[^*]+\\*|\\[[^\\]]+\\]\\(https?:\\/\\/[^)\\s]+\\)|\\x60[^\\x60]+\\x60)/g;
-      let last = 0;
-      for (const match of text.matchAll(pattern)) {
-        const index = match.index || 0;
-        if (index > last) appendFileText(parent, text.slice(last, index));
-        const token = match[0];
-        if (token.startsWith('**')) { const strong = node('strong'); appendFileText(strong, token.slice(2, -2)); parent.append(strong); }
-        else if (token.startsWith('*')) { const em = node('em'); appendFileText(em, token.slice(1, -1)); parent.append(em); }
-        else if (token.charCodeAt(0) === 96) {
-          const value = token.slice(1, -1); const reference = fileReference(value);
-          parent.append(reference ? fileButton(reference.path, reference.line, value, 'code-link') : node('code', '', value));
-        }
-        else {
-          const split = token.indexOf('](');
-          parent.append(link(token.slice(split + 2, -1), token.slice(1, split)));
-        }
-        last = index + token.length;
-      }
-      if (last < text.length) appendFileText(parent, text.slice(last));
-    }
-
     function renderMarkdown(text) {
-      const root = node('div', 'markdown');
-      const lines = String(text || '').replace(/\\r/g, '').split('\\n');
-      let index = 0;
-      while (index < lines.length) {
-        const lineValue = lines[index];
-        if (!lineValue.trim()) { index += 1; continue; }
-        if (lineValue.startsWith(String.fromCharCode(96).repeat(3))) {
-          const language = lineValue.slice(3).trim();
-          const body = [];
-          index += 1;
-          while (index < lines.length && !lines[index].startsWith(String.fromCharCode(96).repeat(3))) body.push(lines[index++]);
-          if (index < lines.length) index += 1;
-          const pre = node('pre');
-          const code = node('code', language ? 'language-' + language : '', body.join('\\n'));
-          pre.append(code); root.append(pre); continue;
-        }
-        const heading = /^(#{1,3})\\s+(.+)$/.exec(lineValue);
-        if (heading) { const h = node('h' + heading[1].length); appendInline(h, heading[2]); root.append(h); index += 1; continue; }
-        if (/^>\\s?/.test(lineValue)) {
-          const quote = node('blockquote'); appendInline(quote, lineValue.replace(/^>\\s?/, '')); root.append(quote); index += 1; continue;
-        }
-        if (/^[-*]\\s+/.test(lineValue) || /^\\d+\\.\\s+/.test(lineValue)) {
-          const ordered = /^\\d+\\./.test(lineValue);
-          const list = node(ordered ? 'ol' : 'ul');
-          while (index < lines.length && (ordered ? /^\\d+\\.\\s+/.test(lines[index]) : /^[-*]\\s+/.test(lines[index]))) {
-            const item = node('li'); appendInline(item, lines[index].replace(ordered ? /^\\d+\\.\\s+/ : /^[-*]\\s+/, '')); list.append(item); index += 1;
-          }
-          root.append(list); continue;
-        }
-        const paragraph = [];
-        while (index < lines.length && lines[index].trim() && !lines[index].startsWith(String.fromCharCode(96).repeat(3)) && !/^(#{1,3})\\s+/.test(lines[index]) && !/^>\\s?/.test(lines[index]) && !/^[-*]\\s+/.test(lines[index]) && !/^\\d+\\.\\s+/.test(lines[index])) paragraph.push(lines[index++]);
-        const p = node('p'); appendInline(p, paragraph.join('\\n')); root.append(p);
-      }
-      return root;
+      return dshMarkdown.renderMarkdown(String(text || ''), {
+        appendFileText, link,
+        inlineCode(value) {
+          const reference = fileReference(value);
+          return reference ? fileButton(reference.path, reference.line, value, 'code-link') : node('code', '', value);
+        },
+      });
     }
 
     function createMarkdownStream(text) {
       const stream = {
-        root: node('div', 'markdown'), text: '', committedOffset: 0, scanOffset: 0,
-        safeBoundary: 0, fenced: false, linePrefix: '', lineHasContent: false, tailNode: undefined, marker: document.createComment('stream-end'),
+        root: node('div', 'markdown'), text: '', committedOffset: 0, ...dshMarkdown.createMarkdownScanState(),
+        tailNode: undefined, marker: document.createComment('stream-end'),
       };
       stream.root.append(stream.marker);
       appendMarkdownStream(stream, String(text || ''), true);
       return stream;
-    }
-    function scanMarkdownStream(stream, text) {
-      for (let index = stream.scanOffset; index < text.length; index += 1) {
-        const character = text[index];
-        if (character === '\\n') {
-          if (stream.linePrefix === String.fromCharCode(96).repeat(3)) stream.fenced = !stream.fenced;
-          else if (!stream.lineHasContent && !stream.fenced) stream.safeBoundary = index + 1;
-          stream.linePrefix = ''; stream.lineHasContent = false;
-        } else {
-          if (stream.linePrefix.length < 3) stream.linePrefix += character;
-          if (!/\\s/.test(character)) stream.lineHasContent = true;
-        }
-      }
-      stream.scanOffset = text.length;
     }
     function appendMarkdownNodes(parent, text, before) {
       if (!text) return [];
@@ -616,7 +566,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     function appendMarkdownStream(stream, delta, streaming) {
       const previousBoundary = stream.safeBoundary;
       stream.text += String(delta || '');
-      scanMarkdownStream(stream, stream.text);
+      dshMarkdown.scanMarkdownStream(stream, stream.text);
       const boundary = streaming ? stream.safeBoundary : stream.text.length;
       if (boundary > stream.committedOffset) {
         if (stream.tailNode) stream.tailNode.remove();

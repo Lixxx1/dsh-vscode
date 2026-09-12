@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import type * as vscode from 'vscode'
-import { chatHtml } from '../src/webview.js'
+import { chatHtml as createChatHtml } from '../src/webview.js'
+
+function chatHtml(webview: vscode.Webview, mark: vscode.Uri): string {
+  return createChatHtml(webview, mark, {
+    script: { toString: () => 'vscode-resource:/dist/webview/markdown.js' } as vscode.Uri,
+    style: { toString: () => 'vscode-resource:/dist/webview/katex.min.css' } as vscode.Uri,
+  })
+}
 
 describe('chat webview', () => {
   it('offers separate reconnect and explicit runtime restart actions', () => {
@@ -8,6 +15,18 @@ describe('chat webview', () => {
     expect(html).toContain("'Reconnect'); retry.addEventListener('click', () => vscode.postMessage({ type: 'reconnect' }))")
     expect(html).toContain("'Restart Runtime'); restart.addEventListener('click', () => vscode.postMessage({ type: 'restart' }))")
     expect(html).toContain('if (current.canReconnect)')
+  })
+
+  it('loads bundled Markdown, math CSS and fonts without remote scripts or unsafe script execution', () => {
+    const html = chatHtml({ cspSource: 'vscode-webview:' } as vscode.Webview, { toString: () => 'mark.svg' } as vscode.Uri)
+    expect(html).toContain('src="vscode-resource:/dist/webview/markdown.js"')
+    expect(html).toContain('href="vscode-resource:/dist/webview/katex.min.css"')
+    expect(html).toContain('font-src vscode-webview:')
+    expect(html).toMatch(/script-src 'nonce-[A-Za-z0-9]+';/)
+    expect(html).not.toContain('unsafe-eval')
+    expect(html).not.toContain('unsafe-inline')
+    expect(html).toContain('dshMarkdown.renderMarkdown')
+    expect(html).toContain('dshMarkdown.scanMarkdownStream')
   })
   it('emits valid browser JavaScript', () => {
     const webview = { cspSource: 'vscode-webview:' } as vscode.Webview
