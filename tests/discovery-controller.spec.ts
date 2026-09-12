@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { DshFrame, SessionModels, SkillDescriptor } from '../src/dsh-client.js'
 import { withIdeContext } from '../src/ide-context.js'
 import { DshStreamError } from '../src/dsh-streams.js'
+import { DshConnection } from '../src/dsh-connection.js'
 import { ExistingRuntimeConnectionError } from '../src/runtime-target.js'
 
 const mocks = vi.hoisted(() => ({ client: undefined as any }))
@@ -23,7 +24,12 @@ vi.mock('vscode', () => ({
 import { DshChatController } from '../src/extension.js'
 
 const controllers: DshChatController[] = []
-afterEach(() => { controllers.splice(0).forEach(controller => controller.dispose()); vi.useRealTimers() })
+const connections: DshConnection[] = []
+afterEach(() => {
+  controllers.splice(0).forEach(controller => controller.dispose())
+  connections.splice(0).forEach(connection => connection.dispose())
+  vi.useRealTimers()
+})
 const models = (id = 'model'): SessionModels => ({ current: { provider: 'p', model: id }, routable: true,
   groups: [{ id: 'p', name: 'Provider', models: [{ id, name: id }] }], failures: [] })
 
@@ -55,11 +61,12 @@ function testClient() {
   return { client, emit, fail }
 }
 
-async function harness() {
+async function harness(connection?: DshConnection) {
+  if (connection !== undefined) connections.push(connection)
   const { client, emit, fail } = testClient()
   mocks.client = client
   const output = { appendLine: vi.fn() }
-  const runtime = { start: vi.fn(async () => {}), stop: vi.fn(async () => {}), connection: { reauthenticate: vi.fn(async () => {}) }, state: { kind: 'ready' } }
+  const runtime = { start: vi.fn(async () => {}), stop: vi.fn(async () => {}), connection: connection ?? { canReauthenticate: true, reauthenticate: vi.fn(async () => {}) }, state: { kind: 'ready' } }
   const reviews = { clear: vi.fn(), rebuild: vi.fn(() => []), accept: () => false, dispose() {} }
   const controller = new DshChatController(runtime as any,
     output as any, {} as any, reviews as any,
@@ -312,6 +319,57 @@ describe('runtime selection', () => {
 })
 
 describe('sidebar reconnect', () => {
+  it.each(['healthy', 'disconnected'])('manually reconnects a %s tokenless runtime without authenticating or resending', async state => {
+    const connection = new DshConnection(new URL('http://127.0.0.1:3080'))
+    const reauthenticate = vi.spyOn(connection, 'reauthenticate')
+    const h = await harness(connection)
+    await h.controller.selectSession('b')
+    if (state === 'disconnected') h.fail(new DshStreamError('Invalid stream frame'))
+    const next = h.next()
+    await h.controller.reconnect()
+    expect(h.controller.state).toMatchObject({ phase: 'ready', sessionId: 'b' })
+    expect(reauthenticate).not.toHaveBeenCalled()
+    expect(connection.authenticated).toBe(false)
+    expect(h.client.dispose).toHaveBeenCalledTimes(1)
+    expect(next.client.startStreams).toHaveBeenCalledTimes(1)
+    expect(next.client.openSession).toHaveBeenCalledWith('b')
+    expect(h.runtime.start).toHaveBeenCalledTimes(1)
+    expect(h.runtime.stop).not.toHaveBeenCalled()
+    expect(next.client.prompt).not.toHaveBeenCalled()
+    expect(next.client.respond).not.toHaveBeenCalled()
+    expect(next.client.executeCommand).not.toHaveBeenCalled()
+    expect(next.client.updateQueue).not.toHaveBeenCalled()
+  })
+
+  it('reports authentication refusal when a tokenless runtime no longer accepts its subscriptions', async () => {
+    const connection = new DshConnection(new URL('http://127.0.0.1:3080'))
+    const reauthenticate = vi.spyOn(connection, 'reauthenticate')
+    const h = await harness(connection)
+    const next = h.next()
+    next.client.startStreams.mockRejectedValue(new DshStreamError('DSH authentication was refused. Reconnect to authenticate again.'))
+    await h.controller.reconnect()
+    expect(h.controller.state).toMatchObject({ phase: 'error', canReconnect: true })
+    expect(h.controller.state.statusText).toContain('DSH authentication was refused')
+    expect(reauthenticate).not.toHaveBeenCalled()
+    expect(next.client.startStreams).toHaveBeenCalledTimes(1)
+    expect(next.client.openSession).not.toHaveBeenCalled()
+    expect(h.runtime.start).toHaveBeenCalledTimes(1)
+    expect(h.runtime.stop).not.toHaveBeenCalled()
+  })
+
+  it('does not rebuild subscriptions after token-backed reauthentication fails', async () => {
+    const h = await harness()
+    vi.spyOn(h.runtime.connection, 'reauthenticate').mockRejectedValue(new Error('DSH did not accept its launch token'))
+    const next = h.next()
+    await h.controller.reconnect()
+    expect(h.controller.state.phase).toBe('error')
+    expect(h.controller.state.statusText).toContain('DSH did not accept its launch token')
+    expect(h.runtime.connection.reauthenticate).toHaveBeenCalledTimes(1)
+    expect(next.client.startStreams).not.toHaveBeenCalled()
+    expect(h.runtime.start).toHaveBeenCalledTimes(1)
+    expect(h.runtime.stop).not.toHaveBeenCalled()
+  })
+
   it.each(['stream error', 'failed', 'stopped'])('discards live assistant state and preserves durable messages after %s', async failure => {
     const h = await harness()
     h.emit({ type: 'session/event', sessionId: 'a', event: {

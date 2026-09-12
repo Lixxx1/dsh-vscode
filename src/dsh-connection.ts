@@ -54,6 +54,8 @@ export class DshConnection {
 
   get baseUrl(): URL { return new URL(this.#origin) }
   get authenticated(): boolean { return this.#cookie !== undefined && !this.#lifetime.signal.aborted }
+  /** A verified launch token is retained even when its cookie expires. */
+  get canReauthenticate(): boolean { return this.#launchUrl !== undefined && !this.#lifetime.signal.aborted }
 
   /** Called only by the explicit Open in Browser action, never published to the Webview. */
   browserUrl(): URL {

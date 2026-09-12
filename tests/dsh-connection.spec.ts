@@ -59,16 +59,21 @@ describe('DSH authenticated Remote connection', () => {
       response.end()
     })
     const connection = connect(url)
+    expect(connection.canReauthenticate).toBe(false)
     await connection.authenticate(launchUrl(url))
+    expect(connection.canReauthenticate).toBe(true)
     await expect(new DshRemoteApi(connection).prompt('s', 'One task')).rejects.toMatchObject({ code: 'authentication-required' })
     expect(connection.authenticated).toBe(false)
+    expect(connection.canReauthenticate).toBe(true)
     expect(authentications).toBe(1)
     failAuthentication = true
     await expect(connection.reauthenticate()).rejects.toMatchObject({ code: 'authentication-failed' })
     expect(connection.authenticated).toBe(false)
+    expect(connection.canReauthenticate).toBe(true)
     failAuthentication = false
     await connection.reauthenticate()
     expect(connection.authenticated).toBe(true)
+    expect(connection.canReauthenticate).toBe(true)
     expect(authentications).toBe(3)
     expect(mutations).toBe(1)
     await connection.reauthenticate()
@@ -76,8 +81,11 @@ describe('DSH authenticated Remote connection', () => {
     expect(JSON.stringify(connection)).not.toContain(TOKEN)
     expect(JSON.stringify(connection)).not.toContain(COOKIE_VALUE)
     const noToken = connect(url)
+    expect(noToken.canReauthenticate).toBe(false)
     await expect(noToken.reauthenticate()).rejects.toMatchObject({ code: 'authentication-required' })
     expect(authentications).toBe(3)
+    connection.dispose()
+    expect(connection.canReauthenticate).toBe(false)
   })
 
   it('invalidates a cookie refused by the WebSocket upgrade and permits explicit reauthentication', async () => {
@@ -92,6 +100,7 @@ describe('DSH authenticated Remote connection', () => {
     const failed = once(socket, 'error')
     await failed
     expect(connection.authenticated).toBe(false)
+    expect(connection.canReauthenticate).toBe(true)
     await connection.reauthenticate()
     expect(connection.authenticated).toBe(true)
   })

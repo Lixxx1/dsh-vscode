@@ -439,8 +439,9 @@ export class DshChatController implements vscode.Disposable {
       }
       this.publish({ phase: 'loading', statusText: `Reconnecting to DSH${automatic ? ` (${String(attempt)}/3)` : ''}…` })
       // A manual retry can renew an expired cookie using the existing launch URL.
+      // Tokenless reused runtimes only need their subscriptions rebuilt.
       // An automatic retry never changes credentials or starts a process.
-      if (!automatic) await connection.reauthenticate(recovery.abort.signal)
+      if (!automatic && connection.canReauthenticate) await connection.reauthenticate(recovery.abort.signal)
       recovery.abort.signal.throwIfAborted()
       const client = this.connectClient(connection, [...this.reconnectSessions])
       try {
