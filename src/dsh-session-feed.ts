@@ -39,10 +39,19 @@ export class DshSessionFeed {
   private readonly running = new Map<string, boolean>()
   private readonly questions = new Map<string, PendingQuestion>()
   private readonly displayedQuestions = new Map<string, string>()
+  private readonly requestSessions = new Set<string>()
+  private readonly addedSessions = new Map<string, { revision: number; summary: SessionSummary }>()
+  private addedRevision = 0
+  private readonly activity = new Map<string, number>()
+  private readonly nonBlankSessions = new Set<string>()
 
   constructor(private readonly connection: DshConnection, private readonly emit: (frame: DshFrame) => void,
     private readonly error: (error: Error) => void) {
-    this.streams = new DshStreams(connection, failure => { this.closeFollow(failure); this.error(failure) })
+    this.streams = new DshStreams(connection, failure => {
+      this.closeFollow(failure)
+      for (const id of this.questions.keys()) this.dismissQuestion(id)
+      this.error(failure)
+    })
   }
 
   start(): Promise<void> {
@@ -77,13 +86,31 @@ export class DshSessionFeed {
     return { archivedSessionIds: [...this.archived] }
   }
 
-  summary(summary: SessionSummary): SessionSummary {
+  /** Register before dispatch: a task can ask for approval before its RPC returns. */
+  handleRequestsFor(sessionId: string): void { this.requestSessions.add(sessionId) }
+
+  get listRevision(): number { return this.addedRevision }
+
+  summaries(items: SessionSummary[], sinceRevision: number): SessionSummary[] {
+    const summaries = new Map(items.map(summary => [summary.sessionId, summary]))
+    // Do not lose a new conversation when its notification races session/list.
+    for (const [id, added] of this.addedSessions) {
+      if (added.revision > sinceRevision && !summaries.has(id)) summaries.set(id, added.summary)
+    }
+    return [...summaries.values()].map(summary => this.summary(summary))
+  }
+
+  private summary(summary: SessionSummary): SessionSummary {
     const values = { ...summary.projections?.values }
     const watermark = summary.projections?.asOfSeq ?? -1
     for (const [key, projection] of this.projections.get(summary.sessionId) ?? []) {
       if (projection.seq >= watermark) values[key] = projection.value
     }
-    return { ...summary, running: this.running.get(summary.sessionId) ?? summary.running,
+    const activity = this.activity.get(summary.sessionId)
+    if (!summary.blank || summary.running) this.nonBlankSessions.add(summary.sessionId)
+    return { ...summary, updatedAt: Math.max(summary.updatedAt, activity ?? 0),
+      blank: !this.nonBlankSessions.has(summary.sessionId),
+      running: this.running.get(summary.sessionId) ?? summary.running,
       projections: { values }, ...(typeof values.agentPreset === 'string' ? { agentPreset: values.agentPreset } : {}) }
   }
 
@@ -172,6 +199,7 @@ export class DshSessionFeed {
   dispose(): void {
     this.closeFollow()
     this.questions.clear()
+    this.requestSessions.clear()
     this.streams.dispose()
   }
 
@@ -232,7 +260,7 @@ export class DshSessionFeed {
       map.set(frame.key, { seq: frame.seq as number, value: frame.value })
       this.projections.set(id, map)
       // Replayed from the newest cached value on activation, never from stale buffered values.
-      if (this.follow?.active) this.mux({ type: 'session/projection', sessionId: id, key: frame.key, value: frame.value })
+      if (this.follow?.sessionId !== id || this.follow.active) this.mux({ type: 'session/projection', sessionId: id, key: frame.key, value: frame.value })
     } else throw new Error('Invalid control update.')
   }
 
@@ -259,13 +287,15 @@ export class DshSessionFeed {
     if (frame.type === 'cancel' && typeof frame.eventId === 'string') { this.dismissQuestion(frame.eventId); return }
     if (frame.type === 'waterfall' && typeof frame.eventId === 'string' && typeof frame.agentId === 'string'
       && typeof frame.event === 'string' && wireRecord(frame.request)) {
-      if (frame.agentId !== this.follow?.sessionId || (frame.event !== 'approval/request' && frame.event !== 'user-questions/request')) {
+      if ((frame.agentId !== this.follow?.sessionId && !this.requestSessions.has(frame.agentId))
+        || (frame.event !== 'approval/request' && frame.event !== 'user-questions/request')) {
         void this.result(frame.eventId, { kind: 'next' }).catch(this.error)
         return
       }
       const question = { sessionId: frame.agentId, event: frame.event, request: frame.request }
       this.questions.set(frame.eventId, question)
-      if (this.follow.active) this.presentQuestions()
+      this.publishAttention(frame.agentId)
+      this.presentQuestions()
       return
     }
     if (frame.type !== 'emit' || typeof frame.event !== 'string' || !Array.isArray(frame.args)) throw new Error('Invalid remote event.')
@@ -284,11 +314,36 @@ export class DshSessionFeed {
       // Selection itself comes from the sequenced projection, not this unsequenced hint.
       this.host({ type: 'host/session-composition-changed', sessionId: id })
     }
-    if (frame.event === 'api-session/added' && wireRecord(id)) this.host({ ...id, type: 'host/session-added' })
+    if (frame.event === 'api-session/added' && wireRecord(id) && typeof id.sessionId === 'string'
+      && typeof id.updatedAt === 'number' && Number.isFinite(id.updatedAt)
+      && typeof id.running === 'boolean' && typeof id.blank === 'boolean') {
+      const summary = id as unknown as SessionSummary
+      this.addedSessions.set(summary.sessionId, { revision: ++this.addedRevision, summary })
+      this.running.set(summary.sessionId, summary.running)
+      this.host({ ...this.summary(summary), type: 'host/session-added' })
+    }
     else if (typeof id === 'string') {
       if (frame.event === 'api-session/status' && typeof value === 'boolean') {
         this.running.set(id, value)
+        if (value) this.nonBlankSessions.add(id)
         this.host({ type: 'host/session-status', sessionId: id, running: value })
+      } else if (frame.event === 'api-session/activity' && typeof value === 'number' && Number.isFinite(value)) {
+        const updatedAt = Math.max(this.activity.get(id) ?? 0, value)
+        this.activity.set(id, updatedAt)
+        this.nonBlankSessions.add(id)
+        this.host({ type: 'host/session-activity', sessionId: id, updatedAt })
+      } else if (frame.event === 'api-session/removed') {
+        // A disposed live instance is not a deletion of its persisted history.
+        this.running.set(id, false)
+        this.requestSessions.delete(id)
+        this.queues.delete(id)
+        this.jobs.delete(id)
+        this.projections.delete(id)
+        this.projectionFloors.delete(id)
+        for (const [eventId, question] of this.questions) if (question.sessionId === id) this.dismissQuestion(eventId)
+        this.mux({ type: 'session/queue', sessionId: id, items: [] })
+        this.mux({ type: 'session/jobs', sessionId: id, jobs: [] })
+        this.host({ type: 'host/session-removed', sessionId: id })
       } else if (frame.event === 'api-session/error') this.host({ type: 'host/agent-error', sessionId: id, message: value })
     }
   }
@@ -318,10 +373,18 @@ export class DshSessionFeed {
     const pending = this.questions.get(id)
     if (pending === undefined) return
     this.questions.delete(id)
+    this.publishAttention(pending.sessionId)
     if (this.displayedQuestions.get(pending.event) === id) this.displayedQuestions.delete(pending.event)
     this.mux({ type: pending.event === 'approval/request' ? 'approval/resolved' : 'question/resolved',
       sessionId: pending.sessionId, approvalId: id, questionRpcId: id })
     this.presentQuestions()
+  }
+
+  private publishAttention(sessionId: string): void {
+    const pending = [...this.questions.values()].filter(question => question.sessionId === sessionId)
+    this.host({ type: 'host/session-attention', sessionId,
+      approvals: pending.filter(question => question.event === 'approval/request').length,
+      questions: pending.filter(question => question.event === 'user-questions/request').length })
   }
 
   private result(eventId: string, outcome: unknown): Promise<void> {

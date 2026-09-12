@@ -1,5 +1,7 @@
 import type { SessionSummary } from './dsh-client.js'
 
+export interface SessionAttention { approvals: number; questions: number }
+
 export interface SessionItem {
   id: string
   title: string
@@ -7,6 +9,7 @@ export interface SessionItem {
   running: boolean
   blank: boolean
   unread: boolean
+  attention?: SessionAttention
 }
 
 export function sessionTitle(summary: SessionSummary): string {
@@ -19,10 +22,11 @@ export function sessionItems(
   archivedSessionIds: ReadonlySet<string>,
   selectedId: string | undefined,
   unreadSessionIds: ReadonlySet<string>,
+  attention: ReadonlyMap<string, SessionAttention> = new Map(),
 ): SessionItem[] {
   return summaries
     .filter(summary => !archivedSessionIds.has(summary.sessionId))
-    .filter(summary => !summary.blank || summary.sessionId === selectedId)
+    .filter(summary => !summary.blank || summary.sessionId === selectedId || attention.has(summary.sessionId))
     .map(summary => ({
       id: summary.sessionId,
       title: sessionTitle(summary),
@@ -30,6 +34,7 @@ export function sessionItems(
       running: summary.running,
       blank: summary.blank,
       unread: unreadSessionIds.has(summary.sessionId),
+      ...(attention.has(summary.sessionId) ? { attention: attention.get(summary.sessionId)! } : {}),
     }))
     .sort((left, right) => right.updatedAt - left.updatedAt)
 }

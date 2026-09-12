@@ -173,8 +173,9 @@ export class DshClient {
     return this.feed.open(sessionId)
   }
   async listSessions(): Promise<{ items: SessionSummary[] }> {
+    const revision = this.feed.listRevision
     const result = await this.api.listSessions()
-    return { items: result.items.map(summary => this.feed.summary(summary)) }
+    return { items: this.feed.summaries(result.items, revision) }
   }
   listWorkspaces(): Promise<{ archivedSessionIds: string[] }> { return this.feed.listWorkspaces() }
   renameSession(sessionId: string, title: string): Promise<{ title: string; seq?: number }> { return this.api.renameSession(sessionId, title) }
@@ -208,6 +209,7 @@ export class DshClient {
     return this.call('settings/mutate', { ns, ops, expectedRevision })
   }
   prompt(sessionId: string, text: string, images: readonly PromptImage[] = [], mode: PromptMode = 'queue'): Promise<{ accepted: true }> {
+    this.feed.handleRequestsFor(sessionId)
     return this.api.prompt(sessionId, text, images, mode)
   }
   respond(rpcId: string, value: unknown): Promise<RpcReceipt> { return this.feed.respond(rpcId, value) }
@@ -240,6 +242,7 @@ export class DshClient {
     return { agentPreset: selected }
   }
   executeCommand(sessionId: string, line: string, images: readonly PromptImage[] = []): Promise<CommandExecution | undefined> {
+    this.feed.handleRequestsFor(sessionId)
     return this.commandTransport.execute(sessionId, line, images)
   }
   dispose(): void {

@@ -45,6 +45,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     .session-indicator { grid-row: 1 / 3; align-self: center; width: 6px; height: 6px; border-radius: 50%; background: transparent; }
     .session-indicator.running { background: var(--vscode-charts-blue, #4d6bfe); box-shadow: 0 0 0 2px color-mix(in srgb, var(--vscode-charts-blue, #4d6bfe) 20%, transparent); }
     .session-indicator.unread { background: var(--vscode-notificationsInfoIcon-foreground, #4d6bfe); }
+    .session-indicator.attention { background: var(--vscode-notificationsWarningIcon-foreground, #cca700); }
+    .session-attention-count { flex: 0 0 auto; min-width: 16px; padding: 0 4px; border-radius: 8px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); font-size: 10px; text-align: center; }
     .session-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12px; font-weight: 600; }
     .session-meta { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--vscode-descriptionForeground); font-size: 10px; }
     .session-more { width: 24px; height: 24px; min-width: 24px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 5px; color: var(--vscode-descriptionForeground); background: transparent; font-size: 17px; line-height: 1; }
@@ -263,7 +265,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     <header class="toolbar">
       <button id="githubStar" class="icon-button github-star" title="Star dsh-vscode on GitHub" aria-label="Star dsh-vscode on GitHub"><svg viewBox="0 0 24 24"><path d="m12 3 2.8 5.7 6.3.9-4.6 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2-4.6-4.4 6.3-.9z"/></svg></button>
       <div id="sessionControl" class="session-control">
-        <button id="sessionTrigger" class="session-trigger" aria-label="Project conversations" aria-haspopup="dialog" aria-expanded="false"><span id="sessionTriggerTitle" class="session-trigger-title">New conversation</span><svg viewBox="0 0 24 24"><path d="m7 9.5 5 5 5-5"/></svg></button>
+        <button id="sessionTrigger" class="session-trigger" aria-label="Project conversations" aria-haspopup="dialog" aria-expanded="false"><span id="sessionTriggerTitle" class="session-trigger-title">New conversation</span><span id="sessionAttentionCount" class="session-attention-count hidden"></span><svg viewBox="0 0 24 24"><path d="m7 9.5 5 5 5-5"/></svg></button>
         <div id="sessionMenu" class="session-menu hidden" role="dialog" aria-label="Project conversations">
           <input id="sessionSearch" class="session-search" type="search" placeholder="Search conversations" aria-label="Search conversations">
           <div id="sessionList" class="session-list" role="listbox"></div>
@@ -422,8 +424,14 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
     function renderSessionCenter(current) {
       const sessions = array(current.sessions);
       const selected = sessions.find(session => session.id === current.sessionId);
+      const waiting = sessions.filter(session => session.id !== current.sessionId && session.attention && (session.attention.approvals > 0 || session.attention.questions > 0)).length;
+      const attentionCount = document.getElementById('sessionAttentionCount');
+      attentionCount.textContent = String(waiting);
+      attentionCount.classList.toggle('hidden', waiting === 0);
+      attentionCount.title = waiting + ' other conversation(s) need your response';
       elements.sessionTriggerTitle.textContent = selected ? selected.title : 'New conversation';
       elements.sessionTrigger.title = selected ? selected.title : 'Project conversations';
+      elements.sessionTrigger.setAttribute('aria-label', waiting ? 'Project conversations — ' + attentionCount.title : 'Project conversations');
       elements.sessionList.replaceChildren();
       const query = elements.sessionSearch.value.trim().toLocaleLowerCase();
       const visible = sessions.filter(session => !query || string(session.title).toLocaleLowerCase().includes(query));
@@ -435,10 +443,12 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri): 
         const row = node('div', 'session-row' + (session.id === current.sessionId ? ' active' : ''));
         row.setAttribute('role', 'option'); row.setAttribute('aria-selected', String(session.id === current.sessionId));
         const main = node('button', 'session-main'); main.type = 'button';
-        const indicator = node('span', 'session-indicator' + (session.running ? ' running' : session.unread ? ' unread' : ''));
-        indicator.title = session.running ? 'Running' : session.unread ? 'New activity' : '';
+        const attention = session.attention;
+        const waitingFor = attention && attention.approvals > 0 ? 'Awaiting approval' : attention && attention.questions > 0 ? 'Awaiting your answer' : '';
+        const indicator = node('span', 'session-indicator' + (waitingFor ? ' attention' : session.running ? ' running' : session.unread ? ' unread' : ''));
+        indicator.title = waitingFor || (session.running ? 'Running' : session.unread ? 'New activity' : '');
         const title = node('span', 'session-name', string(session.title, 'New conversation'));
-        const meta = node('span', 'session-meta', session.running ? 'Running' : session.unread ? 'New activity' : relativeSessionTime(session.updatedAt));
+        const meta = node('span', 'session-meta', waitingFor || (session.running ? 'Running' : session.unread ? 'New activity' : relativeSessionTime(session.updatedAt)));
         main.append(indicator, title, meta);
         main.addEventListener('click', () => {
           if (state && state.sessionId) sessionDrafts.set(state.sessionId, elements.prompt.value);

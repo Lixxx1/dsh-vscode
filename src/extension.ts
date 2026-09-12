@@ -65,7 +65,8 @@ import {
   messagesPatchForWebview,
   type ConversationMessagesPatch,
 } from './chat-state-patch.js'
-import { sessionItems, type SessionItem } from './session-center.js'
+import { sessionItems, type SessionItem, type SessionAttention } from './session-center.js'
+import { wireRecord } from './dsh-streams.js'
 
 let activeRuntime: DshRuntime | undefined
 
@@ -219,6 +220,7 @@ export class DshChatController implements vscode.Disposable {
   private _state: ChatViewState
   private generation = 0
   private sessionLoadGeneration = 0
+  private sessionListGeneration = 0
   private readonly discoveryRequests = new Map<string, number>()
   private readonly settingsOwners = new WeakMap<SettingsNamespace, DshClient>()
   private readonly guardedDirtyCalls = new Set<string>()
@@ -229,6 +231,7 @@ export class DshChatController implements vscode.Disposable {
   private historyEntries: HistoryEntry[] = []
   private archivedSessionIds = new Set<string>()
   private readonly unreadSessionIds: Set<string>
+  private readonly sessionAttention = new Map<string, SessionAttention>()
 
   private static readonly unreadStorageKey = 'deepseekHarness.unreadSessions'
 
@@ -628,6 +631,8 @@ export class DshChatController implements vscode.Disposable {
   }
 
   private disconnectClient(): void {
+    ++this.sessionListGeneration
+    this.sessionAttention.clear()
     for (const dispose of this.clientDisposables.splice(0)) dispose()
     this.client?.dispose()
     this.client = undefined
@@ -636,11 +641,19 @@ export class DshChatController implements vscode.Disposable {
 
   private async loadSessions(preferredId?: string): Promise<void> {
     const client = this.requireClient()
+    const cwd = this.cwd
+    const listGeneration = ++this.sessionListGeneration
+    const selectionGeneration = this.sessionLoadGeneration
     const [{ items }] = await Promise.all([
       client.listSessions(),
-      this.refreshArchivedSessions(client),
+      this.refreshArchivedSessions(client, listGeneration),
     ])
-    this.summaries = items.filter(summary => summary.cwd === this.cwd && summary.origin !== 'subagent')
+    if (this.client !== client || this.cwd !== cwd || listGeneration !== this.sessionListGeneration) return
+    this.summaries = items.filter(summary => summary.cwd === cwd && summary.origin !== 'subagent')
+    if (selectionGeneration !== this.sessionLoadGeneration) {
+      this.publishSessionItems()
+      return
+    }
     const selectable = this.summaries.filter(summary => !this.archivedSessionIds.has(summary.sessionId))
     const preferredExists = preferredId === undefined
       ? undefined
@@ -652,20 +665,23 @@ export class DshChatController implements vscode.Disposable {
       ?? selectable[0]?.sessionId
 
     if (selectedId !== undefined && this.unreadSessionIds.delete(selectedId)) this.persistUnreadSessions()
-    this.publish({ sessions: sessionItems(this.summaries, this.archivedSessionIds, selectedId, this.unreadSessionIds) })
+    this.publish({ sessions: sessionItems(this.summaries, this.archivedSessionIds, selectedId, this.unreadSessionIds, this.sessionAttention) })
     if (selectedId === undefined) {
       const created = await client.createSession(this.cwd)
+      if (this.client !== client || listGeneration !== this.sessionListGeneration || selectionGeneration !== this.sessionLoadGeneration) return
       await this.loadSessions(created.sessionId)
       return
     }
     await this.loadSession(selectedId)
   }
 
-  private async refreshArchivedSessions(client: DshClient): Promise<void> {
+  private async refreshArchivedSessions(client: DshClient, listGeneration: number): Promise<void> {
     try {
       const result = await client.listWorkspaces()
+      if (this.client !== client || listGeneration !== this.sessionListGeneration) return
       this.archivedSessionIds = new Set(Array.isArray(result.archivedSessionIds) ? result.archivedSessionIds : [])
     } catch (error) {
+      if (this.client !== client || listGeneration !== this.sessionListGeneration) return
       this.output.appendLine(`[sessions] Archive state is unavailable in this DSH version: ${error instanceof Error ? error.message : String(error)}`)
       this.archivedSessionIds.clear()
     }
@@ -673,7 +689,7 @@ export class DshChatController implements vscode.Disposable {
 
   private publishSessionItems(): void {
     this.publish({
-      sessions: sessionItems(this.summaries, this.archivedSessionIds, this._state.sessionId, this.unreadSessionIds),
+      sessions: sessionItems(this.summaries, this.archivedSessionIds, this._state.sessionId, this.unreadSessionIds, this.sessionAttention),
     })
   }
 
@@ -890,7 +906,7 @@ export class DshChatController implements vscode.Disposable {
           const summary = this.summaries.find(item => item.sessionId === sessionId)
           if (summary !== undefined) {
             summary.blank = false
-            summary.updatedAt = Date.now()
+            summary.updatedAt = Math.max(summary.updatedAt, dshEvent.time)
             this.publishSessionItems()
           }
           this.publish({ agentPreset: lockAgentPresetState(this._state.agentPreset) })
@@ -1004,7 +1020,6 @@ export class DshChatController implements vscode.Disposable {
         summary.projections = { values: { ...summary.projections?.values, [payload.key]: payload.value } }
       }
       if (typeof payload.value === 'string' && payload.key === 'title') {
-        if (summary !== undefined) summary.updatedAt = Date.now()
         this.publishSessionItems()
       }
       if (payload.key === 'imageLimits' && sessionId === this._state.sessionId) {
@@ -1037,11 +1052,41 @@ export class DshChatController implements vscode.Disposable {
       return
     }
 
-    if (frame.channel === 'host' && type === 'host/session-status') {
-      const running = payload.running === true
+    if (frame.channel === 'host' && type === 'host/session-attention') {
+      const approvals = typeof payload.approvals === 'number' ? payload.approvals : 0
+      const questions = typeof payload.questions === 'number' ? payload.questions : 0
+      if (approvals + questions > 0) this.sessionAttention.set(sessionId, { approvals, questions })
+      else this.sessionAttention.delete(sessionId)
+      this.publishSessionItems()
+      return
+    }
+
+    if (frame.channel === 'host' && type === 'host/session-activity') {
+      const summary = this.summaries.find(item => item.sessionId === sessionId)
+      if (summary !== undefined && typeof payload.updatedAt === 'number' && Number.isFinite(payload.updatedAt)) {
+        summary.updatedAt = Math.max(summary.updatedAt, payload.updatedAt)
+        summary.blank = false
+        this.publishSessionItems()
+      }
+      return
+    }
+
+    if (frame.channel === 'host' && (type === 'host/session-status' || type === 'host/session-removed')) {
+      const running = type === 'host/session-status' && payload.running === true
       const summary = this.summaries.find(item => item.sessionId === sessionId)
       const wasRunning = summary?.running === true
-      if (summary !== undefined) summary.running = running
+      if (summary !== undefined) {
+        summary.running = running
+        if (running) summary.blank = false
+      }
+      if (type === 'host/session-removed') {
+        this.sessionAttention.delete(sessionId)
+        this.jobsBySession.delete(sessionId)
+        if (sessionId === this._state.sessionId) {
+          this.queueRawText.clear()
+          this.publish({ approval: null, question: null, queue: [], jobs: [] })
+        }
+      }
       if (wasRunning && !running && sessionId !== this._state.sessionId) this.markUnread(sessionId)
       if (sessionId === this._state.sessionId) this.publish({ running })
       this.publishSessionItems()
@@ -1066,13 +1111,18 @@ export class DshChatController implements vscode.Disposable {
       return
     }
 
-    if (frame.channel === 'host' && type === 'host/session-added' && payload.cwd === this.cwd) {
+    if (frame.channel === 'host' && type === 'host/session-added' && payload.cwd === this.cwd && payload.origin !== 'subagent') {
       // Discovery must not steal focus or replace a snapshot currently loading.
-      if (!this.summaries.some(item => item.sessionId === sessionId)) {
-        this.summaries.push({ sessionId, cwd: this.cwd, updatedAt: typeof payload.updatedAt === 'number' ? payload.updatedAt : 0,
-          running: payload.running === true, blank: payload.blank === true })
-        this.publishSessionItems()
-      }
+      const existing = this.summaries.find(item => item.sessionId === sessionId)
+      const summary: SessionSummary = { sessionId, cwd: this.cwd,
+        updatedAt: Math.max(existing?.updatedAt ?? 0, typeof payload.updatedAt === 'number' ? payload.updatedAt : 0),
+        running: payload.running === true, blank: payload.blank === true && existing?.blank !== false,
+        ...(wireRecord(payload.projections) && wireRecord(payload.projections.values)
+          ? { projections: { values: payload.projections.values } } : existing?.projections ? { projections: existing.projections } : {}),
+        ...(typeof payload.agentPreset === 'string' ? { agentPreset: payload.agentPreset } : {}) }
+      if (existing === undefined) this.summaries.push(summary)
+      else Object.assign(existing, summary)
+      this.publishSessionItems()
     }
   }
 

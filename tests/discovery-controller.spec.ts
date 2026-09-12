@@ -54,6 +54,80 @@ async function harness() {
 }
 
 describe('sidebar discovery notifications', () => {
+  it('shows pending background requests without moving focus or clearing them just by visiting', async () => {
+    const h = await harness()
+    const calls = h.client.openSession.mock.calls.length
+    h.emit({ type: 'host/session-attention', sessionId: 'b', approvals: 2, questions: 1 })
+    expect(h.controller.state).toMatchObject({ sessionId: 'a', approval: null, question: null })
+    expect(h.client.openSession).toHaveBeenCalledTimes(calls)
+    expect(h.controller.state.sessions.find(s => s.id === 'b')).toMatchObject({ attention: { approvals: 2, questions: 1 } })
+    await h.controller.selectSession('b')
+    expect(h.controller.state.sessions.find(s => s.id === 'b')?.attention).toEqual({ approvals: 2, questions: 1 })
+    h.emit({ type: 'host/session-attention', sessionId: 'b', approvals: 0, questions: 1 })
+    expect(h.controller.state.sessions.find(s => s.id === 'b')?.attention).toEqual({ approvals: 0, questions: 1 })
+    h.emit({ type: 'host/session-attention', sessionId: 'b', approvals: 0, questions: 0 })
+    expect(h.controller.state.sessions.find(s => s.id === 'b')?.attention).toBeUndefined()
+    h.emit({ type: 'host/session-attention', sessionId: 'unknown-workspace', approvals: 1, questions: 0 })
+    expect(h.controller.state.sessions.some(s => s.id === 'unknown-workspace')).toBe(false)
+    await h.controller.start()
+    expect(h.controller.state.sessions.every(s => s.attention === undefined)).toBe(true)
+  })
+
+  it('updates titles, activity and running state without displaying subagents or changing the conversation', async () => {
+    const h = await harness()
+    const calls = h.client.openSession.mock.calls.length
+    const added = { type: 'host/session-added', cwd: '/workspace', updatedAt: 20, running: false, blank: false,
+      projections: { asOfSeq: 3, values: { title: 'Background work' } } }
+    h.emit({ ...added, sessionId: 'child', origin: 'subagent' })
+    h.emit({ ...added, sessionId: 'foreign', cwd: '/elsewhere' })
+    h.emit({ ...added, sessionId: 'new' })
+    expect(h.controller.state.sessions.map(s => s.id)).toEqual(['new', 'a'])
+    expect(h.controller.state.sessions[0]?.title).toBe('Background work')
+    h.emit({ type: 'host/session-activity', sessionId: 'b', updatedAt: 30 })
+    h.emit({ type: 'host/session-activity', sessionId: 'b', updatedAt: 5 })
+    h.emit({ type: 'session/projection', sessionId: 'new', key: 'title', value: 'Renamed' }, 'mux')
+    expect(h.controller.state.sessions.map(s => s.id)).toEqual(['b', 'new', 'a'])
+    expect(h.controller.state.sessions.find(s => s.id === 'b')).toMatchObject({ blank: false, updatedAt: 30 })
+    expect(h.controller.state.sessions.find(s => s.id === 'new')).toMatchObject({ title: 'Renamed', updatedAt: 20 })
+    h.emit({ type: 'host/session-status', sessionId: 'new', running: true })
+    h.emit({ type: 'host/session-attention', sessionId: 'new', approvals: 1, questions: 0 })
+    h.emit({ type: 'host/session-removed', sessionId: 'new' })
+    expect(h.controller.state.sessions.find(s => s.id === 'new')).toMatchObject({ running: false, unread: true, title: 'Renamed' })
+    expect(h.controller.state.sessions.find(s => s.id === 'new')?.attention).toBeUndefined()
+    h.emit({ ...added, sessionId: 'new', projections: { values: { title: 'Resumed' } } })
+    expect(h.controller.state.sessions.filter(s => s.id === 'new')).toHaveLength(1)
+    expect(h.controller.state.sessions.find(s => s.id === 'new')?.title).toBe('Resumed')
+    expect(h.controller.state.sessionId).toBe('a')
+    expect(h.client.openSession).toHaveBeenCalledTimes(calls)
+  })
+
+  it('clears disposed interactive controls without erasing the current transcript', async () => {
+    const h = await harness()
+    h.emit({ type: 'session/event', sessionId: 'a', event: { type: 'user/message', seq: 1, time: 30,
+      data: { content: [{ type: 'text', text: 'Work' }] } } }, 'mux')
+    const messages = h.controller.state.messages
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: true })
+    h.emit({ type: 'approval/requested', sessionId: 'a', approvalId: 'pending', toolName: 'Write' }, 'mux')
+    h.emit({ type: 'session/queue', sessionId: 'a', items: [{ id: 'q', placement: 'queued', message: { content: [{ type: 'text', text: 'Follow up' }] } }] }, 'mux')
+    h.emit({ type: 'host/session-removed', sessionId: 'a' })
+    expect(h.controller.state).toMatchObject({ sessionId: 'a', running: false, messages, approval: null, question: null, queue: [], jobs: [] })
+    expect(h.controller.state.sessions.some(s => s.id === 'a')).toBe(true)
+  })
+
+  it('does not let a delayed list refresh reopen the conversation after an explicit selection', async () => {
+    const h = await harness()
+    const pending = Promise.withResolvers<any>()
+    const list = await h.client.listSessions()
+    h.client.listSessions.mockReturnValueOnce(pending.promise)
+    h.emit({ type: 'host/archived-sessions-changed', archivedSessionIds: [] })
+    await h.controller.selectSession('b')
+    const calls = h.client.openSession.mock.calls.length
+    pending.resolve(list)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(h.controller.state.sessionId).toBe('b')
+    expect(h.client.openSession).toHaveBeenCalledTimes(calls)
+  })
+
   it('preserves captured IDE context on queue edits and rejects stale or attachment-only edits', async () => {
     const h = await harness()
     const original = withIdeContext('Original', { activeFile: { kind: 'file', path: 'app.ts' }, pinned: [], mentions: [] })

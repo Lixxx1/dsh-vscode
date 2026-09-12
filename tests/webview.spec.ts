@@ -62,6 +62,38 @@ describe('chat webview', () => {
     expect(html).not.toContain('<select id="sessions"')
   })
 
+  it('renders a compact background-response badge and prioritizes pending requests over Running', () => {
+    const html = chatHtml({ cspSource: 'vscode-webview:' } as vscode.Webview, { toString: () => 'mark' } as vscode.Uri)
+    const source = html.slice(html.indexOf('function renderSessionCenter('), html.indexOf('function record('))
+    const node = (_tag: string, className = '', textContent = ''): any => ({
+      className, textContent, title: '', children: [] as any[], attributes: {} as Record<string, string>,
+      classList: { toggle(name: string, value: boolean) { this[name as keyof typeof this] = value as never } },
+      append(...items: any[]) { this.children.push(...items) }, replaceChildren() { this.children = [] },
+      setAttribute(name: string, value: string) { this.attributes[name] = value }, addEventListener() {},
+    })
+    const badge = node('span')
+    const elements = { sessionTrigger: node('button'), sessionTriggerTitle: node('span'), sessionList: node('div'), sessionSearch: { value: '' } }
+    const render = new Function('elements', 'document', 'node', 'array', 'string', 'relativeSessionTime', 'sessionActionId',
+      `${source}; return renderSessionCenter;`)(elements, { getElementById: () => badge }, node, (a: any) => a, (s: any) => s, () => 'Just now', undefined)
+    const current = { sessionId: 'a', sessions: [
+      { id: 'a', title: 'Current', blank: true },
+      { id: 'b', title: 'Work', blank: true, running: true, attention: { approvals: 2, questions: 1 } },
+      { id: 'c', title: 'Question', blank: true, attention: { approvals: 0, questions: 1 } },
+    ] }
+    render(current)
+    expect(badge.textContent).toBe('2')
+    expect(badge.classList.hidden).toBe(false)
+    expect(elements.sessionTrigger.attributes['aria-label']).toContain('2 other conversation(s) need your response')
+    expect(elements.sessionList.children[1].children[0].children[0].className).toBe('session-indicator attention')
+    expect(elements.sessionList.children[1].children[0].children[2].textContent).toBe('Awaiting approval')
+    expect(elements.sessionList.children[2].children[0].children[2].textContent).toBe('Awaiting your answer')
+    render({ ...current, sessionId: 'b', sessions: [current.sessions[1]] })
+    expect(badge.classList.hidden).toBe(true)
+    expect(elements.sessionTriggerTitle.textContent).toBe('Work')
+    render({ sessionId: 'a', sessions: [current.sessions[0]] })
+    expect(elements.sessionTrigger.attributes['aria-label']).toBe('Project conversations')
+  })
+
   it('attaches supported clipboard images without intercepting ordinary text paste', () => {
     const webview = { cspSource: 'vscode-webview:' } as vscode.Webview
     const mark = { toString: () => 'vscode-resource:/deepseek.svg' } as vscode.Uri

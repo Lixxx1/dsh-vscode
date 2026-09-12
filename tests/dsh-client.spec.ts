@@ -310,6 +310,100 @@ describe('DSH 0.1.2 chat transport', () => {
     expect(h.frames.some(f => f.payload.type === 'approval/requested')).toBe(false)
   })
 
+  it.each(['prompt', 'command'])('retains new background requests for a sidebar %s, not unrelated sessions', async method => {
+    const h = harness()
+    await h.client.startStreams()
+    ;(await h.client.openSession('a')).activate()
+    if (method === 'prompt') await h.client.prompt('a', 'Work')
+    else await h.client.executeCommand('a', '/plan work')
+    ;(await h.client.openSession('b')).activate()
+    h.frames.length = 0
+    const ask = (eventId: string, agentId: string, event = 'approval/request') =>
+      h.push('$events', { type: 'waterfall', eventId, agentId, event, request: { toolName: 'Write', questions: [{ id: 'q', question: 'Which?' }] } })
+    ask('a1', 'a'); ask('a2', 'a'); ask('q', 'a', 'user-questions/request')
+    expect(h.frames.every(frame => frame.channel === 'host')).toBe(true)
+    expect(h.frames.at(-1)?.payload).toEqual({ type: 'host/session-attention', sessionId: 'a', approvals: 2, questions: 1 })
+    ask('external', 'external'); ask('child', 'child'); ask('unsupported', 'a', 'not-supported')
+    expect(h.requests.filter(r => r.endpoint === '$events/result').map(r => r.args)).toEqual(
+      ['external', 'child', 'unsupported'].map(eventId => ({ clientId: 'client-1', eventId, outcome: { kind: 'next' } })))
+    h.push('$events', { type: 'cancel', eventId: 'a1' })
+    expect(h.frames.filter(f => f.payload.type === 'host/session-attention').at(-1)?.payload).toMatchObject({ approvals: 1, questions: 1 })
+    const opening = await h.client.openSession('a')
+    expect(h.frames.some(f => f.payload.type === 'approval/requested')).toBe(false)
+    opening.activate()
+    expect(h.frames.filter(f => f.payload.type === 'approval/requested').map(f => f.rpcId)).toEqual(['a2'])
+    expect(h.frames.filter(f => f.payload.type === 'question/requested').map(f => f.rpcId)).toEqual(['q'])
+    await expect(h.client.respond('a2', { sessionId: 'b', outcome: 'allowed-once' })).rejects.toThrow('no longer pending')
+    await h.client.respond('a2', { sessionId: 'a', outcome: 'rejected' })
+    expect(h.frames.filter(f => f.payload.type === 'host/session-attention').at(-1)?.payload).toMatchObject({ approvals: 0, questions: 1 })
+    h.push('$events', { type: 'cancel', eventId: 'q' })
+    expect(h.frames.filter(f => f.payload.type === 'host/session-attention').at(-1)?.payload).toMatchObject({ approvals: 0, questions: 0 })
+    ;(await h.client.openSession('b')).activate()
+    h.frames.length = 0
+    ;(await h.client.openSession('a')).activate()
+    expect(h.frames.some(f => /^(approval|question)\/requested$/.test(String(f.payload.type)))).toBe(false)
+  })
+
+  it('registers background request handling before the prompt RPC returns', async () => {
+    const h = harness()
+    await h.client.startStreams()
+    ;(await h.client.openSession('b')).activate()
+    const pending = Promise.withResolvers<any>()
+    vi.mocked(h.connection.call).mockReturnValueOnce(pending.promise)
+    const dispatched = h.client.prompt('a', 'Work')
+    h.push('$events', { type: 'waterfall', eventId: 'early', agentId: 'a', event: 'approval/request', request: {} })
+    expect(h.requests).toEqual([])
+    expect(h.frames.at(-1)?.payload).toMatchObject({ type: 'host/session-attention', sessionId: 'a', approvals: 1 })
+    pending.resolve({ accepted: true }); await dispatched
+  })
+
+  it('applies activity, additions and disposal over a stale list response without deleting history', async () => {
+    const h = harness()
+    await h.client.startStreams()
+    const pending = Promise.withResolvers<any>()
+    vi.mocked(h.connection.call).mockReturnValueOnce(pending.promise)
+    const listing = h.client.listSessions()
+    const remote = (event: string, ...args: unknown[]) => h.push('$events', { type: 'emit', event, args })
+    const added = { sessionId: 'new', cwd: '/workspace', updatedAt: 10, running: false, blank: true,
+      projections: { asOfSeq: 0, values: { title: 'New work' } } }
+    remote('api-session/added', added)
+    remote('api-session/activity', 'new', 50)
+    remote('api-session/activity', 'new', 20)
+    remote('api-session/status', 'new', true)
+    remote('api-session/removed', 'old')
+    pending.resolve({ items: [{ sessionId: 'old', updatedAt: 1, blank: false, running: true }] })
+    expect((await listing).items).toEqual([
+      expect.objectContaining({ sessionId: 'old', running: false, blank: false }),
+      expect.objectContaining({ sessionId: 'new', running: true, blank: false, updatedAt: 50, projections: { values: { title: 'New work' } } }),
+    ])
+    expect(h.frames.filter(f => f.payload.type === 'host/session-activity').map(f => f.payload.updatedAt)).toEqual([50, 50])
+    expect(h.frames.some(f => f.payload.type === 'host/session-removed' && f.payload.sessionId === 'old')).toBe(true)
+    remote('api-session/added', { ...added, origin: 'subagent', sessionId: 'child' })
+    h.results['session/list'] = { items: [{ ...added, origin: 'subagent', sessionId: 'child' }] }
+    expect((await h.client.listSessions()).items.find(i => i.sessionId === 'child')?.origin).toBe('subagent')
+    // A later authoritative list must not resurrect entries omitted by the Host.
+    h.results['session/list'] = { items: [] }
+    expect((await h.client.listSessions()).items).toEqual([])
+    expect(h.errors).toEqual([])
+  })
+
+  it.each(['removed', 'disconnect'])('clears pending requests on %s without submitting answers', async reason => {
+    const h = harness()
+    await h.client.startStreams()
+    await h.client.prompt('a', 'Work')
+    ;(await h.client.openSession('b')).activate()
+    for (const eventId of ['one', 'two']) h.push('$events', { type: 'waterfall', eventId, agentId: 'a', event: 'approval/request', request: {} })
+    if (reason === 'removed') h.push('$events', { type: 'emit', event: 'api-session/removed', args: ['a'] })
+    else h.socket.emit('close')
+    expect(h.frames.filter(f => f.payload.type === 'host/session-attention').at(-1)?.payload).toMatchObject({ approvals: 0, questions: 0 })
+    expect(h.requests.filter(r => r.endpoint === '$events/result')).toEqual([])
+    await expect(h.client.respond('one', { sessionId: 'a', outcome: 'allowed-once' })).rejects.toThrow('no longer pending')
+    if (reason === 'removed') {
+      h.push('$events', { type: 'waterfall', eventId: 'later', agentId: 'a', event: 'approval/request', request: {} })
+      expect(h.requests.at(-1)?.args.outcome).toEqual({ kind: 'next' })
+    }
+  })
+
   it('fails closed on event gaps, fails pending opens on disconnect, and does not replay mutations', async () => {
     const h = harness()
     await h.client.startStreams()
@@ -357,7 +451,7 @@ describe('DSH 0.1.2 chat transport', () => {
     const opening = await h.client.openSession('s')
     opening.activate()
     for (const eventId of ['a', 'b']) h.push('$events', { type: 'waterfall', eventId, agentId: 's', event: 'approval/request', request: { toolName: 'Write' } })
-    expect(h.frames.at(-1)?.rpcId).toBe('a')
+    expect(h.frames.find(f => f.payload.type === 'approval/requested')?.rpcId).toBe('a')
     expect(h.frames.filter(f => f.payload.type === 'approval/requested')).toHaveLength(1)
     await h.client.respond('a', { sessionId: 's', outcome: 'rejected' })
     expect(h.frames.at(-1)).toMatchObject({ rpcId: 'b', payload: { type: 'approval/requested' } })
