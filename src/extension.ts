@@ -418,6 +418,7 @@ export class DshChatController implements vscode.Disposable {
     if (!automatic) this.automaticReconnects = []
     const generation = ++this.generation
     const selectedId = this._state.sessionId
+    const retainedHistory = this.historyEntries
     for (const id of this.client?.handledSessionIds ?? []) this.reconnectSessions.add(id)
     if (selectedId !== '') this.reconnectSessions.add(selectedId)
     this.disconnectClient()
@@ -454,9 +455,20 @@ export class DshChatController implements vscode.Disposable {
       if (recovery.abort.signal.aborted || generation !== this.generation) return
       this.disconnectClient()
       this.clearLiveControls()
+      // Live assistant deltas are process-local and cannot finish after the
+      // stream is abandoned. Rebuild from durable events so the transcript
+      // never remains stuck in a streaming state. A failed session open may
+      // have cleared historyEntries before producing a replacement snapshot.
+      if (this.historyEntries.length === 0) this.historyEntries = retainedHistory
+      this.projector.reset(this.historyEntries)
       const message = error instanceof Error ? error.message : String(error)
       this.output.appendLine(`[reconnect] ${message}`)
-      this.publish({ phase: 'error', setup: null, statusText: `Could not reconnect to DSH: ${message} No tasks were resent.` })
+      this.publish({
+        phase: 'error',
+        setup: null,
+        messages: this.projectedMessages(),
+        statusText: `Could not reconnect to DSH: ${message} No tasks were resent.`,
+      })
     }).finally(() => {
       if (this.recovery === recovery) this.recovery = undefined
     })

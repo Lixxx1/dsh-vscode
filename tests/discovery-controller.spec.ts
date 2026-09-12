@@ -319,6 +319,17 @@ describe('sidebar reconnect', () => {
 
   it('bounds retry attempts and keeps the transcript when reconnection fails', async () => {
     const h = await harness()
+    h.emit({ type: 'session/event', sessionId: 'a', event: {
+      type: 'user/message', seq: 1, time: 10,
+      data: { id: 'durable-user', source: { kind: 'user' }, content: [{ type: 'text', text: 'Durable prompt' }] },
+    } }, 'mux')
+    h.emit({ type: 'session/assistant-stream', sessionId: 'a', update: {
+      kind: 'start', attemptId: 'a:1', turn: 1, step: 1,
+    } }, 'mux')
+    h.emit({ type: 'session/assistant-stream', sessionId: 'a', update: {
+      kind: 'chunk', attemptId: 'a:1', chunk: { type: 'text-delta', text: 'Transient partial answer' },
+    } }, 'mux')
+    expect(h.controller.state.messages.some(message => message.streaming)).toBe(true)
     const next = h.next()
     next.client.startStreams.mockRejectedValue(new DshStreamError('Still offline', true))
     vi.useFakeTimers()
@@ -329,6 +340,8 @@ describe('sidebar reconnect', () => {
     expect(next.client.startStreams).toHaveBeenCalledTimes(3)
     expect(h.controller.state).toMatchObject({ phase: 'error', sessionId: 'a', canReconnect: true, setup: null })
     expect(h.controller.state.statusText).toContain('No tasks were resent')
+    expect(h.controller.state.messages).toEqual([{ id: 'durable-user', role: 'user', text: 'Durable prompt' }])
+    expect(h.controller.state.messages.some(message => message.streaming)).toBe(false)
     expect(h.runtime.stop).not.toHaveBeenCalled()
     expect(next.client.prompt).not.toHaveBeenCalled()
   })
