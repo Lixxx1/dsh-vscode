@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { DshFrame, SessionModels, SkillDescriptor } from '../src/dsh-client.js'
+import { withIdeContext } from '../src/ide-context.js'
 
 const mocks = vi.hoisted(() => ({ client: undefined as any }))
 vi.mock('../src/dsh-client.js', () => ({ DshClient: class { constructor() { return mocks.client } } }))
@@ -35,6 +36,7 @@ async function harness() {
     listAgentPresets: vi.fn(async () => ({ presets: [{ id: 'standard', trust: 'system', isDefault: true }, { id: 'minimal', trust: 'system', isDefault: false }] })),
     selectModel: vi.fn(async () => ({})), settings: vi.fn(), mutateSettings: vi.fn(), pluginInventory: vi.fn(),
     selectAgentPreset: vi.fn(), prompt: vi.fn(async () => ({})),
+    updateQueue: vi.fn(async () => ({ accepted: true })),
     executeCommand: vi.fn(async () => ({ result: { kind: 'success' } })),
   }
   mocks.client = client
@@ -52,6 +54,50 @@ async function harness() {
 }
 
 describe('sidebar discovery notifications', () => {
+  it('preserves captured IDE context on queue edits and rejects stale or attachment-only edits', async () => {
+    const h = await harness()
+    const original = withIdeContext('Original', { activeFile: { kind: 'file', path: 'app.ts' }, pinned: [], mentions: [] })
+    h.emit({ type: 'session/queue', sessionId: 'a', items: [
+      { id: 'text', placement: 'queued', message: { content: [{ type: 'text', text: original }] } },
+      { id: 'image', placement: 'queued', message: { content: [{ type: 'image', name: 'test.png' }] } },
+      { id: 'steering', placement: 'steering', message: { content: [{ type: 'text', text: 'Already steering' }] } },
+    ] }, 'mux')
+    await h.controller.updateQueue('a', 'text', 'edit', 'Edited')
+    expect(h.client.updateQueue).toHaveBeenLastCalledWith('a', 'text', {
+      kind: 'edit', content: [{ type: 'text', text: original.replace('Original', 'Edited') }],
+    })
+    await expect(h.controller.updateQueue('a', 'image', 'edit', 'Replace image')).rejects.toThrow('attachments')
+    await expect(h.controller.updateQueue('a', 'missing', 'remove')).rejects.toThrow('no longer queued')
+    await expect(h.controller.updateQueue('a', 'steering', 'edit', 'Too late')).rejects.toThrow('no longer queued')
+    await expect(h.controller.updateQueue('a', 'text', 'steer')).rejects.toThrow('only while')
+    expect(h.client.updateQueue).toHaveBeenCalledTimes(1)
+    h.emit({ type: 'host/session-status', sessionId: 'a', running: true })
+    await h.controller.updateQueue('a', 'text', 'steer')
+    expect(h.client.updateQueue).toHaveBeenLastCalledWith('a', 'text', { kind: 'steer' })
+    await h.controller.updateQueue('a', 'image', 'remove')
+    expect(h.client.updateQueue).toHaveBeenLastCalledWith('a', 'image', { kind: 'remove' })
+  })
+
+  it('clears old interactive controls immediately and rejects old-session queue actions while loading or ready', async () => {
+    const h = await harness()
+    const items = [{ id: 'same-row', placement: 'queued', message: { content: [{ type: 'text', text: 'Original' }] } }]
+    h.emit({ type: 'session/queue', sessionId: 'a', items }, 'mux')
+    h.emit({ type: 'approval/requested', sessionId: 'a', approvalId: 'old', toolName: 'Write' }, 'mux')
+    const loading = Promise.withResolvers<any>()
+    h.client.openSession.mockReturnValueOnce(loading.promise)
+    const switchSession = h.controller.selectSession('b')
+    expect(h.controller.state).toMatchObject({ phase: 'loading', sessionId: 'b', queue: [], approval: null, question: null })
+    await expect(h.controller.updateQueue('a', 'same-row', 'remove')).rejects.toThrow('conversation changed')
+    await expect(h.controller.updateQueue('b', 'same-row', 'remove')).rejects.toThrow('conversation changed')
+    loading.resolve({ events: [], hasMore: false, projections: {}, isCurrent: () => true, activate() {} })
+    await switchSession
+    h.emit({ type: 'session/queue', sessionId: 'b', items }, 'mux')
+    await expect(h.controller.updateQueue('a', 'same-row', 'remove')).rejects.toThrow('conversation changed')
+    expect(h.client.updateQueue).not.toHaveBeenCalled()
+    await h.controller.updateQueue('b', 'same-row', 'remove')
+    expect(h.client.updateQueue).toHaveBeenCalledExactlyOnceWith('b', 'same-row', { kind: 'remove' })
+  })
+
   it('accepts the new command attachment capability without enabling attachments on other commands', async () => {
     const h = await harness()
     const image = { type: 'image' as const, mediaType: 'image/png' as const, data: 'YWJj' }

@@ -12,6 +12,7 @@ interface Follow {
   lastSeq: number
   active: boolean
   pending: DshFrame[]
+  committedMessages: Set<string>
   cancel: () => void
   reject: (error: Error) => void
 }
@@ -93,7 +94,7 @@ export class DshSessionFeed {
   open(sessionId: string): Promise<SessionOpening> {
     this.closeFollow()
     return new Promise((resolve, reject) => {
-      const state: Follow = { sessionId, cursor: -1, lastSeq: -1, active: false, pending: [], cancel: () => {}, reject }
+      const state: Follow = { sessionId, cursor: -1, lastSeq: -1, active: false, pending: [], committedMessages: new Set(), cancel: () => {}, reject }
       this.follow = state
       const assistant = new DshAssistantStream(
         update => this.mux({ type: 'session/assistant-stream', sessionId, update }),
@@ -115,6 +116,7 @@ export class DshSessionFeed {
           const events = decodeHistory(raw.records)
           const latest = events.at(-1)?.event.seq
           if (latest !== undefined && latest > state.cursor) throw new Error('History exceeds snapshot cursor.')
+          for (const entry of events) this.acceptQueuedMessage(state, entry)
           this.installProjections(sessionId, state.cursor, raw.projections.values)
           assistant.open(raw.assistantStream, state.cursor, events)
           opened = true
@@ -122,7 +124,7 @@ export class DshSessionFeed {
           resolve({ events, hasMore: raw.hasMore, projections: this.projectionValues(sessionId), isCurrent: () => this.follow === state, activate: () => {
             if (this.follow !== state || state.active) return
             state.active = true
-            this.mux({ type: 'session/queue', sessionId, items: this.queues.get(sessionId) ?? [] })
+            this.mux({ type: 'session/queue', sessionId, items: this.queueItems(sessionId) })
             this.mux({ type: 'session/jobs', sessionId, jobs: this.jobs.get(sessionId) ?? [] })
             for (const [key, projection] of this.projections.get(sessionId) ?? []) {
               this.mux({ type: 'session/projection', sessionId, key, value: projection.value })
@@ -136,6 +138,7 @@ export class DshSessionFeed {
           const entry = decodeHistory([raw])[0]
           if (entry === undefined || entry.event.seq !== state.lastSeq + 1) throw new Error('Non-contiguous DSH session events.')
           state.lastSeq = entry.event.seq
+          this.acceptQueuedMessage(state, entry)
           assistant.durable(entry)
         }
       }, error => { state.reject(error) })
@@ -218,7 +221,7 @@ export class DshSessionFeed {
     if (typeof id !== 'string') throw new Error('Invalid control session.')
     if (frame.type === 'queue' && Array.isArray(frame.items)) {
       this.queues.set(id, frame.items)
-      if (this.follow?.active) this.mux({ type: 'session/queue', sessionId: id, items: frame.items })
+      if (this.follow?.active) this.mux({ type: 'session/queue', sessionId: id, items: this.queueItems(id) })
     } else if (frame.type === 'jobs' && Array.isArray(frame.jobs)) {
       this.jobs.set(id, frame.jobs)
       if (this.follow?.active) this.mux({ type: 'session/jobs', sessionId: id, jobs: frame.jobs })
@@ -231,6 +234,25 @@ export class DshSessionFeed {
       // Replayed from the newest cached value on activation, never from stale buffered values.
       if (this.follow?.active) this.mux({ type: 'session/projection', sessionId: id, key: frame.key, value: frame.value })
     } else throw new Error('Invalid control update.')
+  }
+
+  private queueItems(sessionId: string): unknown[] {
+    const items = this.queues.get(sessionId) ?? []
+    const state = this.follow
+    if (state?.sessionId !== sessionId || state.committedMessages.size === 0) return items
+    // Follow and control are independent streams. A late full queue snapshot
+    // must not resurrect a steering row already committed to this conversation.
+    return items.filter(item => !(wireRecord(item) && item.placement === 'steering'
+      && wireRecord(item.message) && typeof item.message.id === 'string' && state.committedMessages.has(item.message.id)))
+  }
+
+  private acceptQueuedMessage(state: Follow, entry: HistoryEntry): void {
+    const { type, data } = entry.event
+    if (type !== 'user/message' || !wireRecord(data) || typeof data.id !== 'string') return
+    const before = this.queueItems(state.sessionId)
+    state.committedMessages.add(data.id)
+    const items = this.queueItems(state.sessionId)
+    if (state.active && before.length !== items.length) this.mux({ type: 'session/queue', sessionId: state.sessionId, items })
   }
 
   private remoteEvent(frame: Record<string, unknown>): void {

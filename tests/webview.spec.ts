@@ -22,6 +22,31 @@ describe('chat webview', () => {
     expect(html).toContain("href: 'https://github.com/Lixxx1/dsh-vscode'")
   })
 
+  it('binds queue actions to the rendered conversation and blocks actions during loading', () => {
+    const webview = { cspSource: 'vscode-webview:' } as vscode.Webview
+    const mark = { toString: () => 'vscode-resource:/deepseek.svg' } as vscode.Uri
+    const html = chatHtml(webview, mark)
+    const start = html.indexOf('function postQueueAction(')
+    const end = html.indexOf('function renderQueue(', start)
+    expect(start).toBeGreaterThan(0)
+    expect(end).toBeGreaterThan(start)
+    const sent: unknown[] = []
+    const state = { phase: 'ready', sessionId: 'a' }
+    const post = new Function('state', 'vscode', `${html.slice(start, end)}; return postQueueAction;`)(state, { postMessage: (value: unknown) => sent.push(value) })
+    post('a', 'row', 'edit', 'Updated')
+    expect(sent).toEqual([{ type: 'queue-action', sessionId: 'a', itemId: 'row', action: 'edit', text: 'Updated' }])
+    state.phase = 'loading'
+    post('a', 'row', 'remove')
+    state.phase = 'ready'
+    state.sessionId = 'b'
+    post('a', 'row', 'steer')
+    expect(sent).toHaveLength(1)
+    expect(html).toContain("postQueueAction(sessionId, item.id, 'remove')")
+    expect(html).toContain("postQueueAction(sessionId, item.id, 'steer')")
+    expect(html).toContain("postQueueAction(sessionId, item.id, 'edit', text)")
+    expect(html).toContain('queueEditing.sessionId !== sessionId')
+  })
+
   it('uses a searchable session center with official rename and archive actions', () => {
     const webview = { cspSource: 'vscode-webview:' } as vscode.Webview
     const mark = { toString: () => 'vscode-resource:/deepseek.svg' } as vscode.Uri
@@ -86,6 +111,24 @@ describe('chat webview', () => {
     expect(script).not.toContain('rendered.node.replaceWith')
     expect(script).toContain("pendingMessageAppends.set(append.id")
     expect(script).toContain("target.textContent += continuation.textContent")
+  })
+
+  it('does not restore the raw exit marker when a terminal result has an empty output body', () => {
+    const webview = { cspSource: 'vscode-webview:' } as vscode.Webview
+    const mark = { toString: () => 'vscode-resource:/deepseek.svg' } as vscode.Uri
+    const script = /<script nonce="[^"]+">([\s\S]*?)<\/script>/.exec(chatHtml(webview, mark))?.[1] ?? ''
+    const start = script.indexOf('function renderToolBody(')
+    const end = script.indexOf('\n    function ', start + 1)
+    expect(start).toBeGreaterThan(0)
+    expect(end).toBeGreaterThan(start)
+    const node = (_tag: string, _class?: string, text?: string) => ({ text, children: [] as unknown[], append(...values: unknown[]) { this.children.push(...values) } })
+    const render = new Function('node', 'string', 'appendPre', 'appendImages', `${script.slice(start, end)}; return renderToolBody;`)(
+      node, (value: unknown) => typeof value === 'string' ? value : '',
+      (parent: ReturnType<typeof node>, text: string) => { if (text) parent.append(node('pre', '', text)) },
+      () => {},
+    )
+    const body = render({ rawResult: '\n[exit code: 2]' }, { card: 'terminal', title: 'run' }, { card: 'terminal', output: '', exitCode: 2 })
+    expect(body.children).toEqual([{ text: 'Exit 2', children: [], append: expect.any(Function) }])
   })
 
   it('detaches tail following before loading earlier history', () => {

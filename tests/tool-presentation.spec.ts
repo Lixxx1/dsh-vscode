@@ -64,12 +64,52 @@ describe('0.1.2 built-in tool presentation', () => {
   it('preserves shell output and does not interpret arbitrary plugin metadata as filesystem changes', () => {
     for (const name of ['bash', 'pwsh']) {
       expect(presentToolResult(name, { command: 'node app.js' }, result(undefined, 'output\n[exit code: 1]'), false)).toMatchObject({
-        card: 'terminal', title: 'node app.js', output: 'output\n[exit code: 1]',
+        card: 'terminal', title: 'node app.js', output: 'output', exitCode: 1,
       })
     }
     expect(presentToolResult('mcp__custom__edit', args, result({ diffs }), false)?.card).toBe('generic')
     expect(fileMutation('mcp__custom__edit', args)).toBeUndefined()
     expect(fileMutation('edit', '{broken')).toBeUndefined()
     expect(diffsFromMeta({ diffs: [...diffs, { path: 'app.ts', newText: 'missing old text' }] })).toBeUndefined()
+  })
+
+  it.each(['bash', 'pwsh'])('restores %s working directories and does not give background receipts an exit status', name => {
+    expect(presentToolCall(name, { command: 'run', workdir: 'C:\\project', cwd: 'old', description: 'Build project' })).toEqual({
+      card: 'terminal', title: 'run', cwd: 'C:\\project', description: 'Build project',
+    })
+    expect(presentToolCall(name, { command: 'run', cwd: '/legacy' })).toMatchObject({ cwd: '/legacy' })
+    const args = { command: 'run server', run_in_background: true, description: 'Start local server' }
+    expect(presentToolCall(name, args)).toEqual({ card: 'generic', title: 'run server', content: [{ type: 'text', text: 'Start local server' }] })
+    expect(presentToolResult(name, args, result(undefined, 'Started background job bash-1'), false)).toEqual({
+      card: 'generic', title: 'run server', content: [{ type: 'text', text: 'Started background job bash-1' }],
+    })
+    expect(presentToolResult(name, { command: 'bad' }, result(undefined, 'spawn failed'), true)).not.toHaveProperty('exitCode')
+  })
+
+  it.each(['bash', 'pwsh'])('recovers %s final exit/signal markers without stripping timeout or sandbox notices', name => {
+    const view = (text: string) => presentToolResult(name, { command: 'run' }, result(undefined, text), false)
+    expect(view('output')).toMatchObject({ output: 'output', exitCode: 0 })
+    expect(view('out\n[exit code: 7]')).toMatchObject({ output: 'out', exitCode: 7 })
+    expect(view('out\n[timed out after 10ms]\n[killed by signal: SIGTERM]')).toEqual({
+      card: 'terminal', title: 'run', output: 'out\n[timed out after 10ms]', signal: 'SIGTERM',
+    })
+    expect(view('out\n[sandbox: file access denied under read-only mode]\n[exit code: 1]')).toMatchObject({
+      output: 'out\n[sandbox: file access denied under read-only mode]', exitCode: 1,
+    })
+    expect(view('An embedded [exit code: 9]')).toMatchObject({ output: 'An embedded [exit code: 9]', exitCode: 0 })
+    expect(view('out\n[exit code: 9]\nmore output')).toMatchObject({ output: 'out\n[exit code: 9]\nmore output', exitCode: 0 })
+  })
+
+  it('keeps original shell output available while live and replayed terminal cards show the same status', () => {
+    const entries = [
+      { type: 'tool/call', seq: 1, time: 1, data: { callId: 'call', name: 'bash', arguments: JSON.stringify({ command: 'run', workdir: '/project' }) } },
+      result(undefined, 'failure output\n[exit code: 2]'),
+    ]
+    const live = new ConversationProjector(); entries.forEach(entry => live.apply(entry))
+    const replay = new ConversationProjector(); replay.reset(entries)
+    expect(replay.messages()).toEqual(live.messages())
+    expect(live.messages()[0]).toMatchObject({
+      callView: { cwd: '/project' }, resultView: { output: 'failure output', exitCode: 2 }, rawResult: 'failure output\n[exit code: 2]',
+    })
   })
 })

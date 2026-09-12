@@ -527,24 +527,30 @@ export class DshChatController implements vscode.Disposable {
     await this.requireClient().cancel(this._state.sessionId)
   }
 
-  async updateQueue(itemId: string, action: 'edit' | 'remove' | 'steer', text?: string): Promise<void> {
-    if (this._state.sessionId === '') return
+  async updateQueue(sessionId: string, itemId: string, action: 'edit' | 'remove' | 'steer', text?: string): Promise<void> {
+    if (sessionId === '' || sessionId !== this._state.sessionId || this._state.phase !== 'ready') {
+      throw new Error('The conversation changed. Use the queue in the current conversation.')
+    }
+    const item = this._state.queue.find(item => item.id === itemId)
+    if (item?.placement !== 'queued') throw new Error('This message is no longer queued.')
+    if (action === 'steer' && !this._state.running) throw new Error('Steering is available only while DeepSeek is running.')
     let request: QueueAction
     if (action === 'edit') {
       const replacement = text?.trim()
       if (replacement === undefined || replacement === '') throw new Error('Queued messages cannot be empty.')
       const original = this.queueRawText.get(itemId)
+      if (item.text === null || original === undefined) throw new Error('Messages with attachments cannot be edited.')
       request = {
         kind: 'edit',
         content: [{
           type: 'text',
-          text: original === undefined ? replacement : replaceTextPreservingIdeContext(original, replacement),
+          text: replaceTextPreservingIdeContext(original, replacement),
         }],
       }
     } else {
       request = { kind: action }
     }
-    await this.requireClient().updateQueue(this._state.sessionId, itemId, request)
+    await this.requireClient().updateQueue(sessionId, itemId, request)
   }
 
   async selectModel(selection: ModelSelection): Promise<void> {
@@ -694,10 +700,14 @@ export class DshChatController implements vscode.Disposable {
     const client = this.requireClient()
     const loadGeneration = ++this.sessionLoadGeneration
     this.historyEntries = []
+    this.queueRawText.clear()
     this.publish({
       phase: 'loading',
       statusText: 'Loading project conversation…',
       sessionId,
+      queue: [],
+      approval: null,
+      question: null,
       hasMoreHistory: false,
       loadingHistory: false,
     })
@@ -1656,10 +1666,12 @@ class DshSurface implements vscode.Disposable {
         case 'cancel': await this.controller.cancel(); return
         case 'queue-action':
           if (
-            typeof value.itemId === 'string'
+            typeof value.sessionId === 'string'
+            && typeof value.itemId === 'string'
             && (value.action === 'edit' || value.action === 'remove' || value.action === 'steer')
           ) {
             await this.controller.updateQueue(
+              value.sessionId,
               value.itemId,
               value.action,
               typeof value.text === 'string' ? value.text : undefined,

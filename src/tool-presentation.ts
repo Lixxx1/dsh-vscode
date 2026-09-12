@@ -62,6 +62,17 @@ export function writeCreated(event: DshEvent): boolean {
   return /^<path>[^\n]*<\/path>\n<type>file<\/type>\n<content>\nCreated file\n<\/content>$/.test(toolResultText(event))
 }
 
+/** Mirror the official Bash/PowerShell trailing status-marker contract on replay. */
+function shellResult(text: string): RecordValue {
+  const signal = /\n\[killed by signal: ([^\]\n]+)\]$/.exec(text)
+  if (signal?.[1] !== undefined) return { output: text.slice(0, signal.index), signal: signal[1] }
+  const exit = /\n\[exit code: (\d+)\]$/.exec(text)
+  if (exit?.[1] !== undefined && Number.isSafeInteger(Number(exit[1]))) {
+    return { output: text.slice(0, exit.index), exitCode: Number(exit[1]) }
+  }
+  return { output: text, exitCode: 0 }
+}
+
 export function presentToolCall(name: string, raw: unknown): RecordValue | undefined {
   const args = toolArguments(raw)
   if (args === undefined) return undefined
@@ -71,7 +82,11 @@ export function presentToolCall(name: string, raw: unknown): RecordValue | undef
   if (name === 'read' && typeof args.file_path === 'string') return { card: 'generic', title: `Read ${args.file_path}`,
     locations: [{ path: args.file_path, line: typeof args.offset === 'number' ? args.offset : 1 }] }
   if ((name === 'bash' || name === 'pwsh') && typeof args.command === 'string') {
-    return { card: 'terminal', title: args.command, ...(typeof args.cwd === 'string' ? { cwd: args.cwd } : {}) }
+    if (args.run_in_background === true) return { card: 'generic', title: args.command,
+      ...(typeof args.description === 'string' ? { content: [{ type: 'text', text: args.description }] } : {}) }
+    const cwd = typeof args.workdir === 'string' ? args.workdir : args.cwd
+    return { card: 'terminal', title: args.command, ...(typeof cwd === 'string' ? { cwd } : {}),
+      ...(typeof args.description === 'string' ? { description: args.description } : {}) }
   }
   if ((name === 'grep' || name === 'glob') && typeof args.pattern === 'string') {
     return { card: 'generic', title: `${name === 'grep' ? 'Grep' : 'Glob'} ${args.pattern}` }
@@ -123,6 +138,8 @@ export function presentToolResult(name: string, raw: unknown, event: DshEvent, f
       })
     })) return { card: 'search', title: call?.title, shape: 'matches', files: meta.files, truncated: meta.truncated, total: meta.total }
   }
-  if (name === 'bash' || name === 'pwsh') return { card: 'terminal', title: call?.title, output: text }
+  if ((name === 'bash' || name === 'pwsh') && toolArguments(raw)?.run_in_background !== true) {
+    return { card: 'terminal', title: call?.title, ...shellResult(text) }
+  }
   return generic
 }

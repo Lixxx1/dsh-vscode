@@ -379,6 +379,47 @@ describe('DSH 0.1.2 chat transport', () => {
     expect(h.frames.filter(f => f.payload.type === 'session/queue').at(-1)?.payload.items).toEqual([])
   })
 
+  it.each(['queue-first', 'event-first'] as const)('retires durable steering messages across %s delivery', async order => {
+    const h = harness()
+    await h.client.startStreams()
+    ;(await h.client.openSession('s')).activate()
+    const steering = { id: 'row', placement: 'steering', message: { id: 'message', content: [{ type: 'text', text: 'Change direction' }] } }
+    const queued = { id: 'next', placement: 'queued', message: { id: 'next-message', content: [{ type: 'text', text: 'Follow up' }] } }
+    const pushQueue = () => h.push('session/control', { type: 'queue', sessionId: 's', items: [steering, queued] })
+    const pushMessage = () => h.push('session/follow', { type: 'event', event: {
+      seq: 6, time: 60, type: 'user/message', data: steering.message,
+    } })
+    if (order === 'queue-first') { pushQueue(); pushMessage() }
+    else { pushMessage(); pushQueue() }
+    expect(h.frames.filter(f => f.payload.type === 'session/queue').at(-1)?.payload.items).toEqual([queued])
+    expect(h.frames.filter(f => (f.payload.event as any)?.type === 'user/message')).toHaveLength(1)
+    // A later full control snapshot must not resurrect the same steering row.
+    pushQueue()
+    expect(h.frames.at(-1)?.payload.items).toEqual([queued])
+    expect(h.errors).toEqual([])
+  })
+
+  it('reconciles steering from both the opening history and buffered events before activation', async () => {
+    const h = harness(false)
+    await h.client.startStreams()
+    const row = (id: string) => ({ id: `row-${id}`, placement: 'steering', message: { id, content: [] } })
+    h.push('session/control', { type: 'queue', sessionId: 's', items: [row('before'), row('after')] })
+    const pending = h.client.openSession('s')
+    const user = (seq: number, id: string) => ({ type: 'event', event: { seq, time: seq, type: 'user/message', data: { id, content: [] } } })
+    h.push('session/follow', { ...snapshot(), records: [user(5, 'before')] })
+    const opening = await pending
+    h.push('session/follow', user(6, 'after'))
+    expect(h.frames).toEqual([])
+    opening.activate()
+    expect(h.frames.find(f => f.payload.type === 'session/queue')?.payload.items).toEqual([])
+    // IDs from a different session must not filter this session's queue.
+    const other = h.client.openSession('other')
+    h.push('session/follow', { ...snapshot('other'), records: [] })
+    h.push('session/control', { type: 'queue', sessionId: 'other', items: [row('before')] })
+    ;(await other).activate()
+    expect(h.frames.filter(f => f.payload.type === 'session/queue').at(-1)?.payload.items).toEqual([row('before')])
+  })
+
   it('times out missing snapshots and cancels their logical stream', async () => {
     vi.useFakeTimers()
     const h = harness(false)
