@@ -6,6 +6,7 @@ function chatHtml(webview: vscode.Webview, mark: vscode.Uri): string {
   return createChatHtml(webview, mark, {
     script: { toString: () => 'vscode-resource:/dist/webview/markdown.js' } as vscode.Uri,
     style: { toString: () => 'vscode-resource:/dist/webview/katex.min.css' } as vscode.Uri,
+    scroll: { toString: () => 'vscode-resource:/dist/webview/scroll.js' } as vscode.Uri,
   })
 }
 
@@ -197,7 +198,7 @@ describe('chat webview', () => {
     const mark = { toString: () => 'vscode-resource:/deepseek.svg' } as vscode.Uri
     const script = /<script nonce="[^"]+">([\s\S]*?)<\/script>/.exec(chatHtml(webview, mark))?.[1] ?? ''
     const historyClick = script.indexOf("button.addEventListener('click'")
-    const detachTail = script.indexOf('detachConversationTail();', historyClick)
+    const detachTail = script.indexOf('conversationScroller.preserveHistory()', historyClick)
     const requestHistory = script.indexOf("vscode.postMessage({ type: 'load-history' })", historyClick)
 
     expect(historyClick).toBeGreaterThanOrEqual(0)
@@ -205,13 +206,14 @@ describe('chat webview', () => {
     expect(detachTail).toBeLessThan(requestHistory)
   })
 
-  it('updates tail following from every scroll source', () => {
+  it('loads the scroll controller and exposes a keyboard-accessible jump to latest', () => {
     const webview = { cspSource: 'vscode-webview:' } as vscode.Webview
     const mark = { toString: () => 'vscode-resource:/deepseek.svg' } as vscode.Uri
-    const script = /<script nonce="[^"]+">([\s\S]*?)<\/script>/.exec(chatHtml(webview, mark))?.[1] ?? ''
-
-    expect(script).toContain("elements.scroll.addEventListener('scroll', synchronizeConversationTail")
-    expect(script).toContain('if (conversationNearBottom()) followConversationTail = true;')
-    expect(script).not.toContain("elements.scroll.addEventListener('wheel'")
+    const html = chatHtml(webview, mark)
+    expect(html).toContain('src="vscode-resource:/dist/webview/scroll.js"')
+    expect(html).toContain('aria-label="Jump to latest" aria-controls="scroll" hidden')
+    expect(html).toContain('tabindex="0" aria-label="Conversation"')
+    expect(html).toContain('dshConversationScroll.createConversationScroller(')
+    expect(html).not.toContain('scheduleTailScroll(Boolean(current.approval || current.question))')
   })
 })

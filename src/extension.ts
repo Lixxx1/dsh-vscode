@@ -1530,6 +1530,7 @@ class DshSurface implements vscode.Disposable {
     webview.html = chatHtml(webview, webview.asWebviewUri(vscode.Uri.joinPath(mediaRoot, 'deepseek.svg')), {
       script: webview.asWebviewUri(vscode.Uri.joinPath(renderRoot, 'markdown.js')),
       style: webview.asWebviewUri(vscode.Uri.joinPath(renderRoot, 'katex.min.css')),
+      scroll: webview.asWebviewUri(vscode.Uri.joinPath(renderRoot, 'scroll.js')),
     })
     this.disposables = [
       controller.onDidChangeState(state => { this.queueState(state) }),

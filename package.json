@@ -238,6 +238,7 @@
     "build": "tsc -p tsconfig.json --noEmit && node scripts/build.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --config vitest.config.ts",
+    "test:scroll-browser": "node tests/conversation-scroll.browser.mjs",
     "check": "tsc -p tsconfig.json --noEmit && vitest run --config vitest.config.ts && node scripts/build.mjs",
     "package": "vsce package --readme-path README.marketplace.md --out dsh-vscode.vsix",
     "publish:marketplace": "vsce publish --readme-path README.marketplace.md"

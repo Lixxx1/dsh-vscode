@@ -11,7 +11,7 @@ function escapeHtml(value: string): string {
   return value.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
 }
 
-export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, markdownAssets: { script: vscode.Uri; style: vscode.Uri }): string {
+export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, markdownAssets: { script: vscode.Uri; style: vscode.Uri; scroll: vscode.Uri }): string {
   const token = nonce()
   const mark = escapeHtml(deepseekMarkUri.toString(true))
   return `<!doctype html>
@@ -74,7 +74,13 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .job-duration { grid-column: 3; grid-row: 1 / 3; align-self: center; color: var(--vscode-descriptionForeground); font: 10px var(--vscode-editor-font-family); }
     .icon-button:focus-visible, select:focus-visible, textarea:focus-visible, input:focus-visible, button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
     svg:where(:not(.katex svg)) { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
-    .scroll { min-width: 0; min-height: 0; overflow-x: hidden; overflow-y: auto; overflow-anchor: none; scrollbar-color: var(--vscode-scrollbarSlider-background) transparent; }
+    .conversation-pane { position: relative; min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr); }
+    .scroll { min-width: 0; min-height: 0; overflow-x: hidden; overflow-y: auto; overflow-anchor: none; scroll-behavior: auto; scrollbar-color: var(--vscode-scrollbarSlider-background) transparent; }
+    .scroll:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+    .jump-latest { position: absolute; z-index: 5; bottom: 10px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 5px; padding: 5px 10px; border: 1px solid var(--vscode-widget-border, var(--vscode-contrastBorder, #8886)); border-radius: 16px; background: var(--vscode-button-secondaryBackground, var(--vscode-editor-background)); color: var(--vscode-button-secondaryForeground, var(--vscode-foreground)); box-shadow: 0 2px 8px var(--vscode-widget-shadow); white-space: nowrap; font-size: 11px; }
+    .jump-latest:hover { background: var(--vscode-button-secondaryHoverBackground, var(--vscode-toolbar-hoverBackground)); }
+    .jump-latest[hidden] { display: none; }
+    .jump-latest svg { width: 13px; height: 13px; }
     .conversation { width: 100%; min-width: 0; max-width: 760px; margin: 0 auto; padding: 12px 14px 30px; overflow: hidden; }
     .conversation-slot, .messages { display: contents; }
     .history-loader { display: flex; justify-content: center; padding: 1px 0 9px; }
@@ -289,7 +295,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       </div>
       <button id="newSession" class="icon-button" title="New conversation" aria-label="New conversation"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
     </header>
-    <main id="scroll" class="scroll"><div id="conversation" class="conversation"><div id="conversationStatus" class="conversation-slot"></div><div id="conversationHistory" class="conversation-slot"></div><div id="messages" class="messages"></div><div id="conversationTail" class="conversation-slot"></div></div></main>
+    <div class="conversation-pane">
+      <main id="scroll" class="scroll" tabindex="0" aria-label="Conversation"><div id="conversation" class="conversation"><div id="conversationStatus" class="conversation-slot"></div><div id="conversationHistory" class="conversation-slot"></div><div id="messages" class="messages"></div><div id="conversationTail" class="conversation-slot"></div></div></main>
+      <button id="jumpLatest" class="jump-latest" type="button" aria-label="Jump to latest" aria-controls="scroll" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14m-5-5 5 5 5-5"/></svg>Jump to latest</button>
+    </div>
     <footer class="composer-wrap">
       <div id="queueDock" class="queue-dock hidden" aria-label="Queued messages"></div>
       <div class="composer">
@@ -320,6 +329,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     </footer>
   </div>
   <script nonce="${token}" src="${escapeHtml(markdownAssets.script.toString(true))}"></script>
+  <script nonce="${token}" src="${escapeHtml(markdownAssets.scroll.toString(true))}"></script>
   <script nonce="${token}">
     const vscode = acquireVsCodeApi();
     window.addEventListener('error', event => {
@@ -361,8 +371,6 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     let historyAnchor;
     let renderFrame;
     let pendingRenderState;
-    let followConversationTail = true;
-    let tailScrollFrame;
     let renderedSessionId;
     let renderedStatusKey = '';
     let renderedHistoryKey = '';
@@ -383,33 +391,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     let toolOutputRequestId = 0;
     const toolOutputChunkSize = 20000;
 
-    function conversationNearBottom() {
-      return elements.scroll.scrollHeight - elements.scroll.scrollTop - elements.scroll.clientHeight < 80;
-    }
-    function scheduleTailScroll(force) {
-      if (force) followConversationTail = true;
-      if ((!followConversationTail && !force) || historyAnchor || tailScrollFrame !== undefined) return;
-      tailScrollFrame = requestAnimationFrame(() => {
-        tailScrollFrame = undefined;
-        if (!historyAnchor && followConversationTail) elements.scroll.scrollTop = elements.scroll.scrollHeight;
-      });
-    }
-    function detachConversationTail() {
-      followConversationTail = false;
-      if (tailScrollFrame !== undefined) {
-        cancelAnimationFrame(tailScrollFrame);
-        tailScrollFrame = undefined;
-      }
-    }
-    function synchronizeConversationTail() {
-      if (historyAnchor) return;
-      if (conversationNearBottom()) followConversationTail = true;
-      else detachConversationTail();
-    }
-    elements.scroll.addEventListener('scroll', synchronizeConversationTail, { passive: true });
-    const conversationResizeObserver = new ResizeObserver(() => scheduleTailScroll(false));
-    conversationResizeObserver.observe(elements.conversation);
-    conversationResizeObserver.observe(elements.scroll);
+    const conversationScroller = dshConversationScroll.createConversationScroller(elements.scroll, elements.conversation, document.getElementById('jumpLatest'));
+    window.addEventListener('pagehide', () => conversationScroller.dispose(), { once: true });
 
     function node(tag, className, text) {
       const value = document.createElement(tag);
@@ -784,6 +767,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       summary.append(node('span', 'tool-icon', message.streaming ? '●' : (message.failed ? '!' : '✓')));
       summary.append(node('span', 'tool-title', toolTitle(message, callView, resultView)));
       summary.append(node('span', 'tool-detail', message.detail || ''));
+      summary.addEventListener('click', () => { if (!item.open) conversationScroller.pause(); });
       item.append(summary);
       let contentInitialized = false;
       const initializeContent = () => {
@@ -894,6 +878,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       let cursor = elements.messages.firstChild;
       for (const message of messages) {
         const desired = messageNode(message);
+        desired.dataset.scrollId = message.id;
         if (desired === cursor) cursor = cursor.nextSibling;
         else elements.messages.insertBefore(desired, cursor);
       }
@@ -1417,7 +1402,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         renderedSessionId = current.sessionId; renderedMessages.clear(); elements.messages.replaceChildren();
         elements.prompt.value = sessionDrafts.get(current.sessionId) || ''; resizePrompt();
         draftImages = draftImagesBySession.get(current.sessionId) || []; renderAttachments();
-        followConversationTail = true;
+        historyAnchor = undefined; conversationScroller.reset();
         renderedHistoryKey = ''; renderedTail = {}; expandedToolIds.clear();
         for (const request of loadingToolRequests.values()) clearTimeout(request.timer);
         loadingToolRequests.clear(); toolOutputErrors.clear(); toolOutputPages.clear(); deferredOutputViews.clear(); pendingMessageAppends.clear();
@@ -1440,8 +1425,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         if (current.hasMoreHistory || current.loadingHistory) {
           const loader = node('div', 'history-loader'); const button = node('button', 'history-button', current.loadingHistory ? 'Loading earlier messages…' : 'Load earlier messages'); button.type = 'button'; button.disabled = current.loadingHistory === true;
           button.addEventListener('click', () => {
-            detachConversationTail();
-            historyAnchor = { sessionId: current.sessionId, height: elements.scroll.scrollHeight, top: elements.scroll.scrollTop };
+            historyAnchor = { sessionId: current.sessionId, restore: conversationScroller.preserveHistory() };
             button.disabled = true; button.textContent = 'Loading earlier messages…';
             vscode.postMessage({ type: 'load-history' });
           });
@@ -1489,8 +1473,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       };
       if (preservingHistory && current.loadingHistory !== true) {
         const anchor = historyAnchor; historyAnchor = undefined;
-        requestAnimationFrame(() => { elements.scroll.scrollTop = anchor.top + elements.scroll.scrollHeight - anchor.height; });
-      } else if (!preservingHistory) scheduleTailScroll(Boolean(current.approval || current.question));
+        anchor.restore();
+      }
+      conversationScroller.changed();
     }
     function scheduleRender(current) {
       state = current; pendingRenderState = current;
@@ -1539,7 +1524,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const sessionId = state.sessionId;
       if ([...pendingAttachmentRequests.values()].some(request => request.sessionId === sessionId)) return;
       const requestId = ++draftSendRequestId;
-      pendingDraftSends.set(requestId, { sessionId, text });
+      pendingDraftSends.set(requestId, { sessionId, text, scrollVersion: conversationScroller.intentVersion });
       vscode.postMessage({ type: 'send', sessionId, requestId, text, mode: mode || 'queue' }); elements.prompt.value = ''; sessionDrafts.set(sessionId, ''); commandIndex = 0; resetPrompt();
     }
     function clipboardImage(file, index) {
@@ -1693,6 +1678,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         const pending = pendingDraftSends.get(event.data.requestId);
         if (!pending || pending.sessionId !== event.data.sessionId) return;
         pendingDraftSends.delete(event.data.requestId);
+        if (event.data.type === 'draft-sent' && state && state.sessionId === pending.sessionId
+          && renderedSessionId === pending.sessionId && conversationScroller.intentVersion === pending.scrollVersion) conversationScroller.resume();
         if (event.data.type === 'restore-draft') {
           const existing = sessionDrafts.get(pending.sessionId) || '';
           const restored = existing === '' || existing === pending.text ? pending.text : pending.text + '\\n' + existing;
