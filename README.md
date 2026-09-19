@@ -65,7 +65,7 @@ Installing community runtime plugins also requires `pnpm` on your PATH.
 ## 🚀 Use
 
 1. Open a trusted project folder in VS Code.
-2. Select **DeepSeek Harness** in the right sidebar. If it is hidden, find it under **Other Views**.
+2. Select **DeepSeek** in the right sidebar. If it is hidden, find it under **Other Views**.
 3. Use the key button to configure `DEEPSEEK_API_KEY`.
 4. Choose the Permission mode, Model, and Reasoning Effort, then start working. Use the Shield menu for Permission and Plan modes, `/` for official DSH commands, and `@` to add files or folders.
 5. Use the plugins button in the sidebar title to search, install, inspect, or remove community runtime plugins.

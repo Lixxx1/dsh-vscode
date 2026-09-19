@@ -65,7 +65,7 @@ pnpm run package
 ## 🚀 使用
 
 1. 在 VS Code 中打开一个受信任的项目文件夹。
-2. 在右侧选择 **DeepSeek Harness**。如果没有显示，可以在 **其他视图** 中找到它。
+2. 在右侧选择 **DeepSeek**。如果没有显示，可以在 **其他视图** 中找到它。
 3. 点击钥匙按钮配置 `DEEPSEEK_API_KEY`。
 4. 选择 Permission 模式、Model 和 Reasoning Effort，然后开始工作。Shield 菜单用于切换 Permission 和 Plan 模式，输入 `/` 使用 DSH 官方命令，输入 `@` 添加文件或文件夹。
 5. 点击侧边栏标题栏中的插件按钮，搜索、安装、查看或移除社区 runtime 插件。
