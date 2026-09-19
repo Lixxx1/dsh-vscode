@@ -35,7 +35,7 @@ You need VS Code 1.100 or newer and Node.js `^22.19` or `>=24`.
 ## 🚀 Get started
 
 1. Open a trusted project folder in VS Code.
-2. Select **DeepSeek Harness** in the right sidebar. If it is hidden, find it under **Other Views**.
+2. Select **DeepSeek** in the right sidebar. If it is hidden, find it under **Other Views**.
 3. Select the key button and enter your `DEEPSEEK_API_KEY`.
 4. Choose a Permission mode, Model, and Reasoning Effort, then send your first task.
 
