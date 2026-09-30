@@ -79,6 +79,20 @@ async function harness(connection?: DshConnection) {
 }
 
 describe('runtime selection', () => {
+  it('treats unknown job state as busy and preserves jobs after an Agent is disposed', async () => {
+    const h = await harness()
+    expect(h.controller.hasRunningTasks).toBe(false)
+    h.emit({ type: 'host/jobs-status', sessionId: 'foreign', available: false })
+    expect(h.controller.hasRunningTasks).toBe(true)
+    h.emit({ type: 'host/jobs-status', sessionId: 'foreign', available: true })
+    expect(h.controller.hasRunningTasks).toBe(false)
+    h.emit({ type: 'session/jobs', sessionId: 'foreign', jobs: [{ id: 'j', kind: 'bash', label: 'Server', startedAt: 1, status: 'running' }] }, 'mux')
+    h.emit({ type: 'host/session-removed', sessionId: 'foreign' })
+    expect(h.controller.hasRunningTasks).toBe(true)
+    h.emit({ type: 'session/jobs', sessionId: 'foreign', jobs: [] }, 'mux')
+    expect(h.controller.hasRunningTasks).toBe(false)
+  })
+
   it.each(['terminal error', 'exhausted retries'])('blocks workspace and runtime switches until task state is restored after %s', async failure => {
     const h = await harness()
     h.emit({ type: 'session/jobs', sessionId: 'foreign', jobs: [
@@ -144,6 +158,9 @@ describe('runtime selection', () => {
     await expect(h.controller.selectRuntime({ kind: 'managed' })).rejects.toThrow('running DeepSeek tasks')
     expect(h.runtime.stop).not.toHaveBeenCalled()
     h.emit({ type: 'host/session-removed', sessionId: 'foreign' })
+    expect(h.controller.hasRunningTasks).toBe(true)
+    // Agent disposal is not authoritative job completion; the job stream is.
+    h.emit({ type: 'session/jobs', sessionId: 'foreign', jobs: [] }, 'mux')
     expect(h.controller.hasRunningTasks).toBe(false)
   })
 

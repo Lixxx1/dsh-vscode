@@ -16,7 +16,7 @@ const snapshot = (id = 's', cursor = 5, values: Record<string, unknown> = {}) =>
   type: 'snapshot', header: { id }, cursor, records: [event(cursor)], hasMore: true, projections: { asOfSeq: cursor, values },
 })
 
-function harness(autoSnapshot = true, initialJobs: Record<string, unknown[]> = {}) {
+function harness(autoSnapshot = true, initialJobs: Record<string, unknown[]> = {}, modern = false) {
   const requests: { endpoint: string; args: any }[] = []
   const outgoing: any[] = []
   const ids = new Map<string, string>()
@@ -39,7 +39,8 @@ function harness(autoSnapshot = true, initialJobs: Record<string, unknown[]> = {
     ids.set(frame.endpoint, frame.streamId)
     queueMicrotask(() => {
       if (frame.endpoint === '$events') receive(frame.streamId, { type: 'ready', clientId: 'client-1', host: { home: '/isolated' } })
-      if (frame.endpoint === 'session/control') receive(frame.streamId, { type: 'baseline', value: { queues: {}, jobs: initialJobs, projections: {} } })
+      if (frame.endpoint === 'session/control') receive(frame.streamId, { type: 'baseline', value: modern ? { projections: {} } : { queues: {}, jobs: initialJobs, projections: {} } })
+      if (frame.endpoint === 'job/list') receive(frame.streamId, { type: 'rows', jobs: initialJobs[frame.payload.args.request.sessionId] ?? [] })
       if (frame.endpoint === 'workspace/follow') receive(frame.streamId, { type: 'baseline', value: { items: [], archivedSessionIds: ['archived'] } })
       if (frame.endpoint === 'session/follow' && autoSnapshot) receive(frame.streamId, snapshot(frame.payload.args.request.address.sessionId))
     })
@@ -65,7 +66,87 @@ function harness(autoSnapshot = true, initialJobs: Record<string, unknown[]> = {
   return { client, connection, socket, requests, outgoing, frames, errors, results, ids, push, receive }
 }
 
-describe('DSH 0.1.2 chat transport', () => {
+describe('DSH Remote chat transport', () => {
+  const inbox = (queued: string[] = [], steering: string[] = []) => ({
+    'next-turn': queued.map(id => ({ id, role: 'user', content: [{ type: 'text', text: id }] })),
+    'next-step': steering.map(id => ({ id, role: 'user', content: [{ type: 'text', text: id }] })),
+  })
+
+  it('reads V4 Inbox from snapshots and newer control projections without stale queue replay', async () => {
+    const h = harness(false, {}, true)
+    await h.client.startStreams()
+    h.push('session/control', { type: 'projection', sessionId: 's', key: 'inbox', seq: 8, value: inbox(['new']) })
+    const pending = h.client.openSession('s')
+    h.push('session/follow', snapshot('s', 5, { inbox: inbox(['old']) }))
+    const opening = await pending
+    opening.activate()
+    expect(h.frames.filter(f => f.payload.type === 'session/queue').at(-1)?.payload.items).toMatchObject([{ id: 'new', placement: 'queued' }])
+    h.push('session/control', { type: 'projection', sessionId: 's', key: 'inbox', seq: 9, value: inbox([], ['steer']) })
+    expect(h.frames.filter(f => f.payload.type === 'session/queue').at(-1)?.payload.items).toMatchObject([{ id: 'steer', placement: 'steering' }])
+    h.push('session/control', { type: 'projection', sessionId: 's', key: 'inbox', seq: 7, value: inbox(['stale']) })
+    expect(h.frames.filter(f => f.payload.type === 'session/queue').at(-1)?.payload.items).toMatchObject([{ id: 'steer' }])
+    await h.client.updateQueue('s', 'steer', { kind: 'remove' })
+    expect(h.requests.at(-1)?.args.request.itemId).toBe('steer')
+    const other = h.client.openSession('other')
+    h.push('session/follow', snapshot('other', 5, { inbox: inbox() }))
+    ;(await other).activate()
+    expect(h.frames.filter(f => f.payload.type === 'session/queue').at(-1)?.payload.items).toEqual([])
+    expect(h.errors).toEqual([])
+  })
+
+  it.each(['queue-first', 'event-first'])('does not resurrect V4 steering with %s delivery', async order => {
+    const h = harness(true, {}, true); await h.client.startStreams()
+    ;(await h.client.openSession('s')).activate()
+    const pushQueue = () => h.push('session/control', { type: 'projection', sessionId: 's', key: 'inbox', seq: 6, value: inbox(['next'], ['steer']) })
+    const pushMessage = () => h.push('session/follow', { type: 'event', event: { seq: 6, time: 6, type: 'user/message', data: inbox([], ['steer'])['next-step'][0] } })
+    if (order === 'queue-first') { pushQueue(); pushMessage() } else { pushMessage(); pushQueue() }
+    pushQueue()
+    expect(h.frames.filter(f => f.payload.type === 'session/queue').at(-1)?.payload.items).toMatchObject([{ id: 'next' }])
+  })
+
+  it('tracks jobs in listed and newly added sessions, even after switching or agent disposal', async () => {
+    const job = { id: 'j', kind: 'bash', label: 'Server', status: 'running', startedAt: 1 }
+    const h = harness(true, { foreign: [job] }, true)
+    await h.client.startStreams()
+    h.results['session/list'] = { items: [{ sessionId: 'foreign', updatedAt: 1, blank: false, running: false }] }
+    await h.client.listSessions()
+    const foreignId = h.ids.get('job/list')!
+    ;(await h.client.openSession('s')).activate()
+    expect(h.outgoing.filter(f => f.endpoint === 'job/list').map(f => f.payload.args)).toEqual([
+      { request: { sessionId: 'foreign' } }, { request: { sessionId: 's' } },
+    ])
+    h.push('$events', { type: 'emit', event: 'api-session/removed', args: ['foreign'] })
+    h.receive(foreignId, { type: 'rows', jobs: [{ ...job, status: 'completed' }] })
+    expect(h.frames.filter(f => f.payload.type === 'session/jobs' && f.payload.sessionId === 'foreign').at(-1)?.payload.jobs).toMatchObject([{ status: 'completed' }])
+    h.push('$events', { type: 'emit', event: 'api-session/added', args: [{ sessionId: 'new', updatedAt: 2, blank: true, running: false }] })
+    expect(h.outgoing.filter(f => f.endpoint === 'job/list').at(-1)?.payload.args.request.sessionId).toBe('new')
+    expect(h.errors).toEqual([])
+  })
+
+  it('reports job failure as unknown, keeps chat alive, and rejects late rows', async () => {
+    const h = harness(true, {}, true); await h.client.startStreams()
+    ;(await h.client.openSession('s')).activate()
+    const id = h.ids.get('job/list')!
+    h.push('job/list', { type: 'rows', jobs: [{ malformed: true }] })
+    expect(h.frames.filter(f => f.payload.type === 'host/jobs-status').at(-1)?.payload).toMatchObject({ available: false, message: expect.any(String) })
+    expect(h.socket.readyState).toBe(1)
+    expect(h.errors).toEqual([])
+    const count = h.frames.length
+    h.receive(id, { type: 'rows', jobs: [] })
+    expect(h.frames).toHaveLength(count)
+    h.push('session/follow', event(6))
+    expect(h.frames.at(-1)?.payload.type).toBe('session/event')
+    ;(await h.client.openSession('s')).activate()
+    expect(h.ids.get('job/list')).not.toBe(id)
+    expect(h.frames.filter(f => f.payload.type === 'host/jobs-status').at(-1)?.payload.available).toBe(true)
+  })
+
+  it('rejects a partially legacy baseline instead of silently selecting the new protocol', async () => {
+    const h = harness(); await h.client.startStreams()
+    h.push('session/control', { type: 'baseline', value: { queues: {}, projections: {} } })
+    expect(h.errors).toHaveLength(1)
+  })
+
   it('publishes every session’s baseline jobs before opening any conversation', async () => {
     const job = { id: 'job', status: 'running', kind: 'bash', label: 'Server', startedAt: 1 }
     const h = harness(true, { s: [job], foreign: [job] })
