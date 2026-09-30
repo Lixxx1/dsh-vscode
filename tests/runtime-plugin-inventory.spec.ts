@@ -10,6 +10,12 @@ const preset = (rows: AgentPresetPluginRow[], overrides: Partial<AgentPresetPlug
 })
 
 describe('rc.1 runtime inventory', () => {
+  it('renders current inventory without inventing a legacy trust label', () => {
+    const groups = runtimePluginGroups({ entries: [], agentPresets: [{ id: 'coding', isDefault: true, rows: [row()] }] })
+    expect(groups[0]?.rows[0]?.detail).toBe('Preset: coding · Entry: tool')
+    expect(JSON.stringify(groups)).not.toContain('undefined')
+  })
+
   it('does not report an unmounted or conditional preset plugin as active', () => {
     expect(pluginEntryStatus(row(), true)).toBe('configured')
     expect(pluginEntryStatus(row(), false)).toBe('inactive')

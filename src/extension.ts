@@ -1155,7 +1155,7 @@ export class DshChatController implements vscode.Disposable {
         if (type === 'host/commands-changed') void this.loadCommands(this.client, activeId)
         if (type === 'host/permissions-changed' || type === 'host/settings-changed') void this.loadPermissions(this.client, activeId)
         if (type === 'host/models-changed' || type === 'host/settings-changed' || type === 'host/credentials-changed') void this.loadModels(activeId)
-        if (type === 'host/settings-changed' && payload.ns === 'agent-presets') void this.loadAgentPresets(this.client, activeId)
+        if (type === 'host/settings-changed' && (payload.ns === 'agent-presets' || payload.ns === 'agent-preset-registry')) void this.loadAgentPresets(this.client, activeId)
         if (type === 'host/session-composition-changed') this.refreshComposition(sessionId)
       }
     }

@@ -24,7 +24,7 @@ function harness(autoSnapshot = true, initialJobs: Record<string, unknown[]> = {
   const errors: Error[] = []
   const results: Record<string, unknown> = {
     'session/list': { items: [] }, 'session/create': { sessionId: 's' },
-    'session/modelCatalog': { default: { provider: 'p', model: 'm' }, routableProviders: ['p'], groups: [], failures: [] },
+    'session/modelCatalog': { default: { provider: 'p', model: 'm' }, routableProviders: ['p'], groups: [{ id: 'p', name: 'P', models: [{ id: 'm', name: 'M' }] }], failures: [] },
     'session/page': { records: [event(1)], hasMore: false },
     'skills/list': { skills: [] }, 'agentPresets/list': { presets: [] }, 'agentPresets/select': 'coding',
   }
@@ -67,6 +67,17 @@ function harness(autoSnapshot = true, initialJobs: Record<string, unknown[]> = {
 }
 
 describe('DSH Remote chat transport', () => {
+  it('marks removed models unavailable and refreshes routing on credential record updates', async () => {
+    const h = harness(); await h.client.startStreams()
+    ;(await h.client.openSession('s')).activate()
+    h.push('session/control', { type: 'projection', sessionId: 's', key: 'modelSelection', seq: 6, value: { next: { provider: 'p', model: 'removed' } } })
+    expect(await h.client.models('s')).toMatchObject({ routable: false, current: { model: 'removed' } })
+    h.results['session/modelCatalog'] = { default: { provider: 'p', model: 'm' }, routableProviders: ['p'],
+      groups: [{ id: 'p', name: 'P', models: [{ id: 'removed', name: 'Restored' }] }], failures: [] }
+    h.push('$events', { type: 'emit', event: 'credentials/record-updated', args: ['secret-reference'] })
+    expect(await h.client.models('s')).toMatchObject({ routable: true })
+  })
+
   it('refreshes the permission catalog and discards an invalidated in-flight result', async () => {
     const h = harness(); await h.client.startStreams()
     const first = Promise.withResolvers<unknown>()
@@ -202,14 +213,17 @@ describe('DSH Remote chat transport', () => {
     await h.client.startStreams()
     for (const [event, args] of [
       ['commands/change', []], ['llm/adapters-updated', []], ['credentials/reference-updated', ['SECRET_REFERENCE']],
+      ['credentials/record-updated', ['SECRET_RECORD']], ['deepseek-account/session-expired', []], ['deepseek-account/model-sign-in-required', []],
       ['settings/document-updated', ['llm-deepseek', 3]], ['agent-preset/selected', ['s', 'minimal']],
     ]) h.push('$events', { type: 'emit', event, args })
     expect(h.frames.map(f => f.payload)).toEqual([
       { type: 'host/commands-changed' }, { type: 'host/models-changed' }, { type: 'host/credentials-changed' },
+      { type: 'host/credentials-changed' }, { type: 'host/credentials-changed' }, { type: 'host/credentials-changed' },
       { type: 'host/settings-changed', ns: 'llm-deepseek', revision: 3 },
       { type: 'host/session-composition-changed', sessionId: 's' },
     ])
     expect(JSON.stringify(h.frames)).not.toContain('SECRET_REFERENCE')
+    expect(JSON.stringify(h.frames)).not.toContain('SECRET_RECORD')
     expect(h.errors).toEqual([])
   })
 
@@ -232,6 +246,9 @@ describe('DSH Remote chat transport', () => {
     h.push('$events', { type: 'emit', event: 'settings/document-updated', args: ['agent-presets', 1] })
     await h.client.listAgentPresets()
     expect(count('agentPresets/list')).toBe(2)
+    h.push('$events', { type: 'emit', event: 'settings/document-updated', args: ['agent-preset-registry', 2] })
+    await h.client.listAgentPresets()
+    expect(count('agentPresets/list')).toBe(3)
   })
 
   it('discards an old model catalog when settings or credentials change during its request', async () => {
@@ -243,7 +260,7 @@ describe('DSH Remote chat transport', () => {
     h.push('$events', { type: 'emit', event: 'llm/adapters-updated', args: [] })
     h.push('$events', { type: 'emit', event: 'settings/document-updated', args: ['llm-deepseek', 1] })
     h.push('$events', { type: 'emit', event: 'credentials/reference-updated', args: ['API_KEY'] })
-    h.results['session/modelCatalog'] = { default: { provider: 'new', model: 'new' }, routableProviders: ['new'], groups: [], failures: [] }
+    h.results['session/modelCatalog'] = { default: { provider: 'new', model: 'new' }, routableProviders: ['new'], groups: [{ id: 'new', name: 'New', models: [{ id: 'new', name: 'New' }] }], failures: [] }
     first.resolve({ default: { provider: 'old', model: 'old' }, routableProviders: [], groups: [], failures: [] })
     expect(await pending).toMatchObject({ current: { provider: 'new', model: 'new' }, routable: true })
     expect(h.client.currentModels('s')).toMatchObject({ current: { provider: 'new', model: 'new' } })

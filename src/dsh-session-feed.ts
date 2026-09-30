@@ -334,8 +334,10 @@ export class DshSessionFeed {
       this.host({ type: 'host/permissions-changed' })
     } else if (frame.event === 'llm/adapters-updated' && frame.args.length === 0) {
       this.host({ type: 'host/models-changed' })
-    } else if (frame.event === 'credentials/reference-updated' && typeof id === 'string') {
+    } else if ((frame.event === 'credentials/reference-updated' || frame.event === 'credentials/record-updated') && typeof id === 'string') {
       // A credential reference is only an invalidation hint; never expose it to the Webview.
+      this.host({ type: 'host/credentials-changed' })
+    } else if ((frame.event === 'deepseek-account/session-expired' || frame.event === 'deepseek-account/model-sign-in-required') && frame.args.length === 0) {
       this.host({ type: 'host/credentials-changed' })
     } else if (frame.event === 'settings/document-updated' && typeof id === 'string'
       && Number.isSafeInteger(value) && (value as number) >= 0) {

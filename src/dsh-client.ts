@@ -54,7 +54,7 @@ export interface SkillDescriptor {
 
 export interface AgentPresetDescriptor {
   id: string
-  trust: 'system' | 'user'
+  trust?: 'system' | 'user'
   isDefault: boolean
   name?: string
   description?: string
@@ -63,8 +63,8 @@ export interface AgentPresetDescriptor {
 
 export interface AgentPresetRoster {
   presets: AgentPresetDescriptor[]
-  authorable: boolean
-  hasDocument: boolean
+  authorable?: boolean
+  hasDocument?: boolean
 }
 
 export type ImageMediaType = 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'
@@ -127,7 +127,7 @@ interface ModelCatalog {
   failures: SessionModels['failures']
 }
 
-/** The sidebar uses only authenticated 0.1.2 Remotes. */
+/** The sidebar uses only authenticated official Remotes. */
 export class DshClient {
   private readonly commandTransport = new DshCommandTransport((endpoint, args, timeoutMs) => this.call(endpoint, args, timeoutMs))
   private readonly api: DshRemoteApi
@@ -216,7 +216,9 @@ export class DshClient {
     const current: ModelSelection = wireRecord(candidate) && typeof candidate.provider === 'string' && typeof candidate.model === 'string'
       ? { provider: candidate.provider, model: candidate.model, ...(typeof candidate.reasoningEffort === 'string' ? { reasoningEffort: candidate.reasoningEffort } : {}) }
       : catalog.default
-    return { current, routable: catalog.routableProviders.includes(current.provider), groups: catalog.groups, failures: catalog.failures }
+    const routable = catalog.routableProviders.includes(current.provider)
+      && catalog.groups.some(group => group.id === current.provider && group.models.some(model => model.id === current.model))
+    return { current, routable, groups: catalog.groups, failures: catalog.failures }
   }
 
   attachment(sessionId: string, attachmentId: string): Promise<{ attachment: ImageAttachment; data: string }> {
@@ -282,7 +284,7 @@ export class DshClient {
     if (payload.type === 'host/permissions-changed' || payload.type === 'host/settings-changed') this.permissionCatalog.invalidate()
     if (payload.type === 'host/commands-changed') for (const read of this.commands.values()) read.invalidate()
     if (payload.type === 'host/models-changed' || payload.type === 'host/settings-changed' || payload.type === 'host/credentials-changed') this.catalog.invalidate()
-    if (payload.type === 'host/settings-changed' && payload.ns === 'agent-presets') this.presets.invalidate()
+    if (payload.type === 'host/settings-changed' && (payload.ns === 'agent-presets' || payload.ns === 'agent-preset-registry')) this.presets.invalidate()
     if ((payload.type === 'host/session-composition-changed'
       || (payload.type === 'session/projection' && payload.key === 'agentPreset')) && typeof payload.sessionId === 'string') {
       this.invalidateSessionDiscovery(payload.sessionId)

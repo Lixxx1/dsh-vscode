@@ -4,7 +4,7 @@ export interface AgentPresetOption {
   id: string
   label: string
   description?: string
-  trust: 'system' | 'user'
+  trust?: 'system' | 'user'
   selected: boolean
 }
 
@@ -39,7 +39,7 @@ export function agentPresetStateOf(
       id: preset.id,
       label: preset.name?.trim() || preset.id,
       ...(preset.description === undefined ? {} : { description: preset.description }),
-      trust: preset.trust,
+      ...(preset.trust === undefined ? {} : { trust: preset.trust }),
       selected: preset.id === selected,
     })),
   }
