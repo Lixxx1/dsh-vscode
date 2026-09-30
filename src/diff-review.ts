@@ -7,6 +7,7 @@ import type { HistoryEntry } from './dsh-client.js'
 import { comparableFilePath } from './file-path.js'
 import { fileMutation, mutationDiff, diffsFromMeta, writeCreated, toolRecord, type FileMutation, type FileDiff } from './tool-presentation.js'
 import { diffLineStats, verifiedMutation } from './tool-diff.js'
+import { normalizeToolResult } from './tool-result.js'
 
 export interface ChangedFileItem {
   path: string
@@ -65,18 +66,7 @@ function callIdOf(event: DshEvent): string | undefined {
   const data = record(event.data)
   if (event.type === 'tool/call') return typeof data?.callId === 'string' ? data.callId : undefined
   if (event.type !== 'tool/result') return undefined
-  const message = record(data?.message)
-  const source = record(message?.source)
-  if (typeof source?.callId === 'string') return source.callId
-  const first = Array.isArray(message?.content) ? record(message.content[0]) : undefined
-  return typeof first?.toolCallId === 'string' ? first.toolCallId : undefined
-}
-
-function failedResult(event: DshEvent): boolean {
-  const data = record(event.data)
-  if (data?.error !== undefined) return true
-  const message = record(data?.message)
-  return Array.isArray(message?.content) && message.content.some(value => record(value)?.isError === true)
+  return normalizeToolResult(event).callId
 }
 
 function turnOf(event: DshEvent): number {
@@ -256,7 +246,7 @@ export class DiffReviewManager implements vscode.TextDocumentContentProvider, vs
     if (event.type !== 'tool/result') return false
     const pending = this.pending.get(key)
     this.pending.delete(key)
-    if (failedResult(event)) return false
+    if (normalizeToolResult(event).failed) return false
 
     // A newly created file may not have had a realpath during tool/call. Resolve
     // pending entries again now that tool/result has made the path observable.

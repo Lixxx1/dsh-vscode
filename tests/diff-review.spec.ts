@@ -56,6 +56,40 @@ describe('DiffReviewManager', () => {
     return { call, result }
   }
 
+  it.each(['edit', 'write'] as const)('reviews V4 %s results, ignores failures, and keeps safe revert checks', name => {
+    const cwd = temporaryWorkspace(), file = path.join(cwd, 'app.ts')
+    const before = name === 'write' ? null : 'old\n'
+    const after = 'new\n'
+    const args = name === 'write' ? { file_path: 'app.ts', content: after }
+      : { file_path: 'app.ts', old_string: 'old', new_string: 'new' }
+    const { call, result } = modernEvents(name, args, before, after)
+    const data = result.data as any
+    const legacy = data.message.content[0]
+    // V4 carries the result fields directly on the message; no error identity
+    // is required alongside isError, and toolCallId is a valid identity source.
+    data.message = { role: 'tool', toolCallId: legacy.toolCallId, content: legacy.content, isError: true }
+    const manager = new DiffReviewManager()
+    if (before !== null) fs.writeFileSync(file, before)
+    manager.accept('v4', cwd, call)
+    fs.writeFileSync(file, after)
+    expect(manager.accept('v4', cwd, result)).toBe(false)
+    expect(manager.changedFiles('v4')).toEqual([])
+    if (before === null) fs.unlinkSync(file); else fs.writeFileSync(file, before)
+    manager.accept('v4', cwd, call)
+    fs.writeFileSync(file, after)
+    data.message.isError = false
+    expect(manager.accept('v4', cwd, result)).toBe(true)
+    expect(manager.changedFiles('v4')[0]?.files[0]).toMatchObject({ path: 'app.ts', canRevert: true })
+    expect(manager.rebuild('v4', cwd, [call, result].map(event => ({ event })))[0]?.files[0]?.canRevert).toBe(true)
+    fs.writeFileSync(file, 'user edit\n')
+    expect(() => manager.revertAll('v4')).toThrow()
+    expect(fs.readFileSync(file, 'utf8')).toBe('user edit\n')
+    fs.writeFileSync(file, after)
+    manager.revertAll('v4')
+    if (before === null) expect(fs.existsSync(file)).toBe(false)
+    else expect(fs.readFileSync(file, 'utf8')).toBe(before)
+  })
+
   it('reviews and reverts rc.1 applied hunks, retaining complete snapshots across history rebuilds', async () => {
     const cwd = temporaryWorkspace(), file = path.join(cwd, 'app.ts')
     const before = 'context\nold\ncontext\n', after = 'context\nnew\ncontext\n'

@@ -1,4 +1,5 @@
 import type { DshEvent } from './conversation.js'
+import { normalizeToolResult } from './tool-result.js'
 
 type RecordValue = Record<string, unknown>
 export interface FileDiff { path: string; oldText: string | null; newText: string }
@@ -47,14 +48,7 @@ export function diffsFromMeta(meta: unknown): FileDiff[] | undefined {
 }
 
 export function toolResultText(event: DshEvent): string {
-  const message = toolRecord(toolRecord(event.data)?.message)
-  const result = Array.isArray(message?.content) ? toolRecord(message.content[0]) : undefined
-  if (typeof result?.content === 'string') return result.content
-  if (!Array.isArray(result?.content)) return ''
-  return result.content.flatMap(value => {
-    const part = toolRecord(value)
-    return part?.type === 'text' && typeof part.text === 'string' ? [part.text] : []
-  }).join('\n')
+  return normalizeToolResult(event).text
 }
 
 /** A successful write can have no hunks for a create, a no-op, or an oversized diff basis. */
