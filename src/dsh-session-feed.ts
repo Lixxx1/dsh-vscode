@@ -330,6 +330,8 @@ export class DshSessionFeed {
     const [id, value] = frame.args
     if (frame.event === 'commands/change' && frame.args.length === 0) {
       this.host({ type: 'host/commands-changed' })
+    } else if (frame.event === 'permission-presets/catalog-changed' && frame.args.length === 0) {
+      this.host({ type: 'host/permissions-changed' })
     } else if (frame.event === 'llm/adapters-updated' && frame.args.length === 0) {
       this.host({ type: 'host/models-changed' })
     } else if (frame.event === 'credentials/reference-updated' && typeof id === 'string') {

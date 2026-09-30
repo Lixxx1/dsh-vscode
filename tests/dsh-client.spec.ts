@@ -67,6 +67,32 @@ function harness(autoSnapshot = true, initialJobs: Record<string, unknown[]> = {
 }
 
 describe('DSH Remote chat transport', () => {
+  it('refreshes the permission catalog and discards an invalidated in-flight result', async () => {
+    const h = harness(); await h.client.startStreams()
+    const first = Promise.withResolvers<unknown>()
+    vi.mocked(h.connection.call).mockImplementationOnce(() => first.promise as any)
+    const pending = h.client.permissionOptions()
+    h.push('$events', { type: 'emit', event: 'permission-presets/catalog-changed', args: [] })
+    h.results['permissionPresets/catalog'] = { options: [{ value: 'auto', name: 'Auto' }] }
+    first.resolve({ options: [{ value: 'old', name: 'Old' }] })
+    expect(await pending).toEqual([{ value: 'auto', name: 'Auto' }])
+    expect(await h.client.permissionOptions()).toEqual([{ value: 'auto', name: 'Auto' }])
+    expect(h.requests.filter(r => r.endpoint === 'permissionPresets/catalog')).toHaveLength(1)
+  })
+
+  it.each(['gateway/lookup-not-found', 'authentication-required', 'invalid-response', 'request-failed'])('only falls back to legacy permissions for missing capabilities, not %s failures', async code => {
+    const h = harness()
+    vi.mocked(h.connection.call).mockRejectedValueOnce(new DshConnectionError(code, 'failure'))
+    const pending = h.client.permissionOptions()
+    if (code === 'gateway/lookup-not-found') await expect(pending).resolves.toBeUndefined()
+    else await expect(pending).rejects.toMatchObject({ code })
+  })
+
+  it('rejects malformed catalogs without hiding their failure behind legacy options', async () => {
+    const h = harness(); h.results['permissionPresets/catalog'] = { options: [{ value: 'read-only' }] }
+    await expect(h.client.permissionOptions()).rejects.toThrow('Invalid DSH permission catalog')
+  })
+
   const inbox = (queued: string[] = [], steering: string[] = []) => ({
     'next-turn': queued.map(id => ({ id, role: 'user', content: [{ type: 'text', text: id }] })),
     'next-step': steering.map(id => ({ id, role: 'user', content: [{ type: 'text', text: id }] })),

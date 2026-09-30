@@ -1002,7 +1002,7 @@ export class DshChatController implements vscode.Disposable {
       agentPreset: unavailableAgentPresetState(),
       usage: usageMeterStateOf(summary?.projections?.values),
       imageLimits: imageLimitsOf(summary?.projections?.values?.imageLimits),
-      permissions: permissionPresetsOf(summary?.projections?.values?.permissions),
+      permissions: [],
       plan: planModeStateOf(summary?.projections?.values?.plan),
       changedFiles: this.diffReviews.rebuild(sessionId, this.cwd, events),
       queue: [],
@@ -1016,6 +1016,21 @@ export class DshChatController implements vscode.Disposable {
     void this.loadCommands(client, sessionId)
     void this.loadSkills(client, sessionId)
     void this.loadAgentPresets(client, sessionId)
+    void this.loadPermissions(client, sessionId)
+  }
+
+  private async loadPermissions(client: DshClient, sessionId: string): Promise<void> {
+    const current = this.discoveryRequest('permissions', client, sessionId)
+    // Do not offer stale permissions while a replacement catalog is loading.
+    this.publish({ permissions: [] })
+    try {
+      const options = await client.permissionOptions()
+      if (!current()) return
+      const projection = this.summaries.find(item => item.sessionId === sessionId)?.projections?.values?.permissions
+      this.publish({ permissions: permissionPresetsOf(projection, options) })
+    } catch (error) {
+      if (current()) this.output.appendLine(`[permissions] Discovery unavailable: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 
   private async loadCommands(client: DshClient, sessionId: string): Promise<void> {
@@ -1087,6 +1102,7 @@ export class DshChatController implements vscode.Disposable {
     void this.loadCommands(this.client, sessionId)
     void this.loadSkills(this.client, sessionId)
     void this.loadAgentPresets(this.client, sessionId)
+    void this.loadPermissions(this.client, sessionId)
   }
 
   private modelPatch(models: SessionModels): Pick<ChatViewState, 'models' | 'routable'> {
@@ -1137,6 +1153,7 @@ export class DshChatController implements vscode.Disposable {
       if (this.client !== undefined && this._state.phase === 'ready' && this._state.sessionId !== '') {
         const activeId = this._state.sessionId
         if (type === 'host/commands-changed') void this.loadCommands(this.client, activeId)
+        if (type === 'host/permissions-changed' || type === 'host/settings-changed') void this.loadPermissions(this.client, activeId)
         if (type === 'host/models-changed' || type === 'host/settings-changed' || type === 'host/credentials-changed') void this.loadModels(activeId)
         if (type === 'host/settings-changed' && payload.ns === 'agent-presets') void this.loadAgentPresets(this.client, activeId)
         if (type === 'host/session-composition-changed') this.refreshComposition(sessionId)
@@ -1277,7 +1294,7 @@ export class DshChatController implements vscode.Disposable {
         this.publish({ imageLimits: imageLimitsOf(payload.value) })
       }
       if (payload.key === 'permissions' && sessionId === this._state.sessionId) {
-        this.publish({ permissions: permissionPresetsOf(payload.value) })
+        if (this.client !== undefined && this._state.phase === 'ready') void this.loadPermissions(this.client, sessionId)
       }
       if (payload.key === 'plan' && sessionId === this._state.sessionId) {
         this.publish({ plan: planModeWithCommandAvailability(planModeStateOf(payload.value), this._state.commands.some(command => command.name === 'plan')) })

@@ -11,6 +11,12 @@ function chatHtml(webview: vscode.Webview, mark: vscode.Uri): string {
 }
 
 describe('chat webview', () => {
+  it('does not invent a selected permission when the current policy is absent from the catalog', () => {
+    const html = chatHtml({ cspSource: 'vscode-webview:' } as vscode.Webview, { toString: () => 'mark' } as vscode.Uri)
+    expect(html).toContain('const selectedPermission = permissions.find(permission => permission.selected);')
+    expect(html).not.toContain('|| permissions[0]')
+  })
+
   it('offers separate reconnect and explicit runtime restart actions', () => {
     const html = chatHtml({ cspSource: 'vscode-webview:' } as vscode.Webview, { toString: () => 'mark' } as vscode.Uri)
     expect(html).toContain("'Reconnect'); retry.addEventListener('click', () => vscode.postMessage({ type: 'reconnect' }))")

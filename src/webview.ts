@@ -994,7 +994,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const plan = current.plan || { available: false, active: false, pending: false };
       const planActive = effectivePlanMode(plan);
       const permissions = current.permissions || [];
-      const selectedPermission = permissions.find(permission => permission.selected) || permissions[0];
+      const selectedPermission = permissions.find(permission => permission.selected);
       const available = plan.available === true || permissions.length > 0;
       elements.modeChips.replaceChildren();
       const preset = current.agentPreset || { available: false, current: '', locked: true, busy: false, options: [] };
