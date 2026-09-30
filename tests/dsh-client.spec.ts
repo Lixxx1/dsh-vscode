@@ -67,6 +67,20 @@ function harness(autoSnapshot = true, initialJobs: Record<string, unknown[]> = {
 }
 
 describe('DSH Remote chat transport', () => {
+  it.each([false, true])('only accepts HTTP 404 catalog fallback after a confirmed legacy baseline (modern=%s)', async modern => {
+    const h = harness(true, {}, modern)
+    await h.client.startStreams()
+    vi.mocked(h.connection.call).mockRejectedValueOnce(new DshConnectionError('http-error', 'Not found', 404))
+    if (modern) await expect(h.client.permissionOptions()).rejects.toMatchObject({ status: 404 })
+    else await expect(h.client.permissionOptions()).resolves.toBeUndefined()
+  })
+
+  it('does not treat HTTP 404 before protocol discovery as an old runtime', async () => {
+    const h = harness()
+    vi.mocked(h.connection.call).mockRejectedValueOnce(new DshConnectionError('http-error', 'Not found', 404))
+    await expect(h.client.permissionOptions()).rejects.toMatchObject({ status: 404 })
+  })
+
   it('marks removed models unavailable and refreshes routing on credential record updates', async () => {
     const h = harness(); await h.client.startStreams()
     ;(await h.client.openSession('s')).activate()

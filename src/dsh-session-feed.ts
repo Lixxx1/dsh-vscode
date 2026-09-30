@@ -38,6 +38,7 @@ export class DshSessionFeed {
   private readonly queues = new Map<string, unknown[]>()
   private readonly jobs = new Map<string, unknown[]>()
   private separateJobs = false
+  private controlReady = false
   private disposed = false
   private readonly jobSubscriptions = new Map<string, () => void>()
   private readonly running = new Map<string, boolean>()
@@ -98,6 +99,7 @@ export class DshSessionFeed {
   }
 
   get listRevision(): number { return this.addedRevision }
+  get usesLegacyControl(): boolean { return this.controlReady && !this.separateJobs }
 
   summaries(items: SessionSummary[], sinceRevision: number): SessionSummary[] {
     const summaries = new Map(items.map(summary => [summary.sessionId, summary]))
@@ -255,6 +257,7 @@ export class DshSessionFeed {
       const legacy = Object.hasOwn(value, 'queues') || Object.hasOwn(value, 'jobs')
       if (legacy && (!wireRecord(value.queues) || !wireRecord(value.jobs))) throw new Error('Invalid legacy control baseline.')
       this.separateJobs = !legacy
+      this.controlReady = true
       if (legacy) {
         for (const [id, items] of Object.entries(value.queues as Record<string, unknown>)) this.control({ type: 'queue', sessionId: id, items })
         for (const [id, jobs] of Object.entries(value.jobs as Record<string, unknown>)) this.control({ type: 'jobs', sessionId: id, jobs })

@@ -155,7 +155,8 @@ export class DshClient {
         return catalog.options
       } catch (error) {
         // Only an absent Remote on older runtimes permits the legacy projection.
-        if (error instanceof DshConnectionError && error.code === 'gateway/lookup-not-found') return null
+        if (error instanceof DshConnectionError && (error.code === 'gateway/lookup-not-found'
+          || (error.code === 'http-error' && error.status === 404 && this.feed.usesLegacyControl))) return null
         throw error
       }
     }, this.lifetime.signal)
