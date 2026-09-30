@@ -18,6 +18,7 @@ interface Stream {
   args: Record<string, unknown>
   item: (value: unknown) => void
   fail: (error: Error) => void
+  critical: boolean
 }
 
 /** One authenticated carrier; logical subscriptions have independent lifetimes. */
@@ -28,13 +29,13 @@ export class DshStreams {
 
   constructor(private readonly connection: DshConnection, private readonly failed: (error: Error) => void) {}
 
-  open(endpoint: string, args: Record<string, unknown>, item: Stream['item'], fail: Stream['fail']): () => void {
+  open(endpoint: string, args: Record<string, unknown>, item: Stream['item'], fail: Stream['fail'], critical = true): () => void {
     if (this.closed) {
       fail(new Error('The DSH event stream is closed. Reconnect the runtime.'))
       return () => {}
     }
     const id = randomUUID()
-    const stream = { endpoint, args, item, fail }
+    const stream = { endpoint, args, item, fail, critical }
     this.streams.set(id, stream)
     try {
       if (this.socket === undefined) this.connect()
@@ -67,13 +68,15 @@ export class DshStreams {
         const stream = this.streams.get(frame.streamId)
         // Cancellation can race an already queued server frame.
         if (stream === undefined) return
-        if (frame.type === 'item') stream.item(frame.value)
+        if (frame.type === 'item') {
+          try { stream.item(frame.value) } catch {
+            this.failStream(frame.streamId, stream, new DshStreamError(`DSH ${stream.endpoint} sent an invalid subscription frame.`))
+          }
+        }
         else if (frame.type === 'end' || frame.type === 'error') {
-          this.streams.delete(frame.streamId)
           // Do not put arbitrary remote error text (or credentials) in logs.
           const error = new DshStreamError(`DSH ${stream.endpoint} subscription ended. Reconnect to refresh its snapshot.`)
-          stream.fail(error)
-          this.abort(error)
+          this.failStream(frame.streamId, stream, error)
         } else throw new Error('Unknown envelope')
       } catch {
         this.abort(new DshStreamError('DSH sent an invalid event stream frame. Reconnect to refresh its snapshot.'))
@@ -90,6 +93,13 @@ export class DshStreams {
 
   private sendOpen(id: string, stream: Stream): void {
     this.socket?.send(JSON.stringify({ type: 'open', streamId: id, endpoint: stream.endpoint, payload: { args: stream.args } }))
+  }
+
+  private failStream(id: string, stream: Stream, error: Error): void {
+    if (stream.critical) { this.abort(error); return }
+    this.streams.delete(id)
+    if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify({ type: 'cancel', streamId: id }))
+    stream.fail(error)
   }
 
   private abort(error: Error, report = true): void {
