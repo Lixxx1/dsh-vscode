@@ -46,6 +46,29 @@ afterEach(async () => {
 })
 
 describe('DSH authenticated Remote connection', () => {
+  it.each(['/', './'])('accepts the official root redirect %s without following it', async location => {
+    const url = new URL('http://127.0.0.1:3080')
+    const fetchSpy = vi.fn(async () => new Response(null, {
+      status: 303, headers: { location, 'set-cookie': cookieFor(url.host) },
+    }))
+    vi.stubGlobal('fetch', fetchSpy)
+    const connection = connect(url)
+    await connection.authenticate(launchUrl(url))
+    expect(connection.authenticated).toBe(true)
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(fetchSpy).toHaveBeenCalledWith(launchUrl(url), expect.objectContaining({ redirect: 'manual' }))
+  })
+
+  it.each(['//example.com/', '/other', './?token=secret', '/#fragment', 'http://127.0.0.1:3081/'])('rejects unexpected auth redirect %s', async location => {
+    const url = new URL('http://127.0.0.1:3080')
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, {
+      status: 303, headers: { location, 'set-cookie': cookieFor(url.host) },
+    })))
+    const connection = connect(url)
+    await expect(connection.authenticate(launchUrl(url))).rejects.toMatchObject({ code: 'authentication-failed' })
+    expect(connection.authenticated).toBe(false)
+  })
+
   it('renews a refused cookie only on explicit reconnect without replaying a mutation', async () => {
     let authentications = 0
     let mutations = 0

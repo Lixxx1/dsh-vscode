@@ -3,6 +3,7 @@ import type { DshFrame, HistoryEntry, RpcReceipt, SessionSummary } from './dsh-c
 import { decodeHistory } from './dsh-history.js'
 import { DshStreams, wireRecord } from './dsh-streams.js'
 import { DshAssistantStream } from './dsh-assistant-stream.js'
+import { jobsSnapshotOf } from './jobs.js'
 
 interface Projection { seq: number; value: unknown }
 interface PendingQuestion { sessionId: string; event: string; request: Record<string, unknown> }
@@ -25,7 +26,7 @@ export interface SessionOpening {
   isCurrent: () => boolean
 }
 
-/** Adapts the 0.1.2 streams to the sidebar's internal (not wire) event vocabulary. */
+/** Adapts official streams to the sidebar's internal (not wire) event vocabulary. */
 export class DshSessionFeed {
   private readonly streams: DshStreams
   private startup: Promise<void> | undefined
@@ -36,6 +37,10 @@ export class DshSessionFeed {
   private readonly projectionFloors = new Map<string, number>()
   private readonly queues = new Map<string, unknown[]>()
   private readonly jobs = new Map<string, unknown[]>()
+  private separateJobs = false
+  private controlReady = false
+  private disposed = false
+  private readonly jobSubscriptions = new Map<string, () => void>()
   private readonly running = new Map<string, boolean>()
   private readonly questions = new Map<string, PendingQuestion>()
   private readonly displayedQuestions = new Map<string, string>()
@@ -87,13 +92,14 @@ export class DshSessionFeed {
   }
 
   /** Register before dispatch: a task can ask for approval before its RPC returns. */
-  handleRequestsFor(sessionId: string): void { this.requestSessions.add(sessionId) }
+  handleRequestsFor(sessionId: string): void { this.requestSessions.add(sessionId); this.watchJobs(sessionId) }
 
   get handledSessionIds(): string[] {
     return [...new Set([...this.requestSessions, ...(this.follow === undefined ? [] : [this.follow.sessionId])])]
   }
 
   get listRevision(): number { return this.addedRevision }
+  get usesLegacyControl(): boolean { return this.controlReady && !this.separateJobs }
 
   summaries(items: SessionSummary[], sinceRevision: number): SessionSummary[] {
     const summaries = new Map(items.map(summary => [summary.sessionId, summary]))
@@ -101,7 +107,7 @@ export class DshSessionFeed {
     for (const [id, added] of this.addedSessions) {
       if (added.revision > sinceRevision && !summaries.has(id)) summaries.set(id, added.summary)
     }
-    return [...summaries.values()].map(summary => this.summary(summary))
+    return [...summaries.values()].map(summary => { this.watchJobs(summary.sessionId); return this.summary(summary) })
   }
 
   private summary(summary: SessionSummary): SessionSummary {
@@ -124,6 +130,7 @@ export class DshSessionFeed {
 
   open(sessionId: string): Promise<SessionOpening> {
     this.closeFollow()
+    this.watchJobs(sessionId)
     return new Promise((resolve, reject) => {
       const state: Follow = { sessionId, cursor: -1, lastSeq: -1, active: false, pending: [], committedMessages: new Set(), cancel: () => {}, reject }
       this.follow = state
@@ -201,6 +208,9 @@ export class DshSessionFeed {
   }
 
   dispose(): void {
+    this.disposed = true
+    for (const cancel of this.jobSubscriptions.values()) cancel()
+    this.jobSubscriptions.clear()
     this.closeFollow()
     this.questions.clear()
     this.requestSessions.clear()
@@ -230,7 +240,10 @@ export class DshSessionFeed {
   private installProjections(sessionId: string, seq: number, values: Record<string, unknown>): void {
     const previous = this.projections.get(sessionId)
     const next = new Map<string, Projection>()
-    for (const [key, value] of Object.entries(values)) next.set(key, { seq, value })
+    for (const [key, value] of Object.entries(values)) {
+      if (this.separateJobs && key === 'inbox') inboxQueue(value)
+      next.set(key, { seq, value })
+    }
     // The control stream can already be ahead of the history snapshot.
     for (const [key, projection] of previous ?? []) if (projection.seq > seq) next.set(key, projection)
     this.projections.set(sessionId, next)
@@ -240,13 +253,21 @@ export class DshSessionFeed {
   private control(frame: Record<string, unknown>): void {
     if (frame.type === 'baseline') {
       const value = frame.value
-      if (!wireRecord(value) || !wireRecord(value.queues) || !wireRecord(value.jobs) || !wireRecord(value.projections)) throw new Error('Invalid control baseline.')
-      for (const [id, items] of Object.entries(value.queues)) this.control({ type: 'queue', sessionId: id, items })
-      for (const [id, jobs] of Object.entries(value.jobs)) this.control({ type: 'jobs', sessionId: id, jobs })
+      if (!wireRecord(value) || !wireRecord(value.projections)) throw new Error('Invalid control baseline.')
+      const legacy = Object.hasOwn(value, 'queues') || Object.hasOwn(value, 'jobs')
+      if (legacy && (!wireRecord(value.queues) || !wireRecord(value.jobs))) throw new Error('Invalid legacy control baseline.')
+      this.separateJobs = !legacy
+      this.controlReady = true
+      if (legacy) {
+        for (const [id, items] of Object.entries(value.queues as Record<string, unknown>)) this.control({ type: 'queue', sessionId: id, items })
+        for (const [id, jobs] of Object.entries(value.jobs as Record<string, unknown>)) this.control({ type: 'jobs', sessionId: id, jobs })
+      }
       for (const [id, projection] of Object.entries(value.projections)) {
         if (!wireRecord(projection) || !wireRecord(projection.values) || !Number.isSafeInteger(projection.asOfSeq)) throw new Error('Invalid projection baseline.')
         this.installProjections(id, projection.asOfSeq as number, projection.values)
+        this.watchJobs(id)
       }
+      for (const id of this.handledSessionIds) this.watchJobs(id)
       return
     }
     const id = frame.sessionId
@@ -261,15 +282,21 @@ export class DshSessionFeed {
       if ((frame.seq as number) < (this.projectionFloors.get(id) ?? -1)) return
       const map = this.projections.get(id) ?? new Map<string, Projection>()
       if ((map.get(frame.key)?.seq ?? -1) > (frame.seq as number)) return
+      if (this.separateJobs && frame.key === 'inbox') inboxQueue(frame.value)
       map.set(frame.key, { seq: frame.seq as number, value: frame.value })
       this.projections.set(id, map)
+      if (frame.key === 'inbox' && this.follow?.sessionId === id && this.follow.active) {
+        this.mux({ type: 'session/queue', sessionId: id, items: this.queueItems(id) })
+      }
       // Replayed from the newest cached value on activation, never from stale buffered values.
       if (this.follow?.sessionId !== id || this.follow.active) this.mux({ type: 'session/projection', sessionId: id, key: frame.key, value: frame.value })
     } else throw new Error('Invalid control update.')
   }
 
   private queueItems(sessionId: string): unknown[] {
-    const items = this.queues.get(sessionId) ?? []
+    const items = this.separateJobs
+      ? inboxQueue(this.projections.get(sessionId)?.get('inbox')?.value)
+      : this.queues.get(sessionId) ?? []
     const state = this.follow
     if (state?.sessionId !== sessionId || state.committedMessages.size === 0) return items
     // Follow and control are independent streams. A late full queue snapshot
@@ -306,10 +333,14 @@ export class DshSessionFeed {
     const [id, value] = frame.args
     if (frame.event === 'commands/change' && frame.args.length === 0) {
       this.host({ type: 'host/commands-changed' })
+    } else if (frame.event === 'permission-presets/catalog-changed' && frame.args.length === 0) {
+      this.host({ type: 'host/permissions-changed' })
     } else if (frame.event === 'llm/adapters-updated' && frame.args.length === 0) {
       this.host({ type: 'host/models-changed' })
-    } else if (frame.event === 'credentials/reference-updated' && typeof id === 'string') {
+    } else if ((frame.event === 'credentials/reference-updated' || frame.event === 'credentials/record-updated') && typeof id === 'string') {
       // A credential reference is only an invalidation hint; never expose it to the Webview.
+      this.host({ type: 'host/credentials-changed' })
+    } else if ((frame.event === 'deepseek-account/session-expired' || frame.event === 'deepseek-account/model-sign-in-required') && frame.args.length === 0) {
       this.host({ type: 'host/credentials-changed' })
     } else if (frame.event === 'settings/document-updated' && typeof id === 'string'
       && Number.isSafeInteger(value) && (value as number) >= 0) {
@@ -322,6 +353,7 @@ export class DshSessionFeed {
       && typeof id.updatedAt === 'number' && Number.isFinite(id.updatedAt)
       && typeof id.running === 'boolean' && typeof id.blank === 'boolean') {
       const summary = id as unknown as SessionSummary
+      this.watchJobs(summary.sessionId)
       this.addedSessions.set(summary.sessionId, { revision: ++this.addedRevision, summary })
       this.running.set(summary.sessionId, summary.running)
       this.host({ ...this.summary(summary), type: 'host/session-added' })
@@ -341,12 +373,12 @@ export class DshSessionFeed {
         this.running.set(id, false)
         this.requestSessions.delete(id)
         this.queues.delete(id)
-        this.jobs.delete(id)
+        if (!this.separateJobs) this.jobs.delete(id)
         this.projections.delete(id)
         this.projectionFloors.delete(id)
         for (const [eventId, question] of this.questions) if (question.sessionId === id) this.dismissQuestion(eventId)
         this.mux({ type: 'session/queue', sessionId: id, items: [] })
-        this.publishJobs(id, [])
+        if (!this.separateJobs) this.publishJobs(id, [])
         this.host({ type: 'host/session-removed', sessionId: id })
       } else if (frame.event === 'api-session/error') this.host({ type: 'host/agent-error', sessionId: id, message: value })
     }
@@ -402,6 +434,36 @@ export class DshSessionFeed {
     this.emit({ channel: 'mux', rpcId: '', payload: { type: 'session/jobs', sessionId, jobs } })
   }
 
+  private watchJobs(sessionId: string): void {
+    if (!this.separateJobs || this.disposed || this.jobSubscriptions.has(sessionId)) return
+    // Observe known sessions, not just the visible conversation: runtime restart
+    // and plugin operations must not overlook jobs in another workspace.
+    let cancel = (): void => {}
+    const stop = (): void => { clearTimeout(timer); cancel() }
+    this.jobSubscriptions.set(sessionId, stop)
+    const status = (available: boolean, message?: string): void => this.host({ type: 'host/jobs-status', sessionId, available, ...(message === undefined ? {} : { message }) })
+    const fail = (): void => {
+      if (this.disposed || this.jobSubscriptions.get(sessionId) !== stop) return
+      stop()
+      this.jobSubscriptions.delete(sessionId)
+      // Retain the last snapshot and mark it unknown, never turn failure into
+      // an authoritative empty list that permits unsafe runtime changes.
+      status(false, 'Background job status is unavailable. Reconnect to refresh it.')
+    }
+    const timer = setTimeout(fail, 30_000)
+    status(false)
+    cancel = this.streams.open('job/list', { request: { sessionId } }, raw => {
+      if (this.disposed || this.jobSubscriptions.get(sessionId) !== stop) return
+      if (!wireRecord(raw) || raw.type !== 'rows' || !Array.isArray(raw.jobs)
+        || jobsSnapshotOf(raw.jobs).length !== raw.jobs.length) throw new Error('Invalid job list.')
+      clearTimeout(timer)
+      this.jobs.set(sessionId, raw.jobs)
+      this.publishJobs(sessionId, raw.jobs)
+      status(true)
+    }, fail, false)
+    if (this.jobSubscriptions.get(sessionId) !== stop) cancel()
+  }
+
   private mux(payload: Record<string, unknown>): void {
     const frame: DshFrame = { channel: 'mux', rpcId: '', payload }
     const state = this.follow
@@ -410,4 +472,14 @@ export class DshSessionFeed {
   }
 
   private host(payload: Record<string, unknown>): void { this.emit({ channel: 'host', rpcId: '', payload }) }
+}
+
+/** V4 Inbox message IDs are the official updateQueue occurrence IDs. */
+function inboxQueue(value: unknown): unknown[] {
+  if (value === undefined) return []
+  if (!wireRecord(value) || !Array.isArray(value['next-turn']) || !Array.isArray(value['next-step'])) throw new Error('Invalid Inbox projection.')
+  return (['next-turn', 'next-step'] as const).flatMap(target => (value[target] as unknown[]).map(message => {
+    if (!wireRecord(message) || typeof message.id !== 'string' || !Array.isArray(message.content)) throw new Error('Invalid Inbox message.')
+    return { id: message.id, placement: target === 'next-turn' ? 'queued' : 'steering', message }
+  }))
 }

@@ -9,6 +9,15 @@ import {
 } from '../src/collaboration-state.js'
 
 describe('collaboration state projections', () => {
+  it('combines the live catalog with durable selection without hardcoding the selectable presets', () => {
+    const options = [{ value: 'auto', name: 'Auto' }, { value: 'team', name: 'Team policy' }]
+    expect(permissionPresetsOf({ currentValue: 'team' }, options)).toEqual([
+      { value: 'auto', label: 'Auto', selected: false }, { value: 'team', label: 'Team policy', selected: true },
+    ])
+    expect(permissionPresetsOf(undefined, options)).toEqual([])
+    expect(permissionPresetsOf({ currentValue: 'team', options }, [])).toEqual([])
+  })
+
   it('uses the official permission projection as the selector source', () => {
     expect(permissionPresetsOf({
       currentValue: 'workspace-write',

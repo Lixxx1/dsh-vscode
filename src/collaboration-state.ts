@@ -17,12 +17,13 @@ const PERMISSION_LABELS: Readonly<Record<string, string>> = {
   'danger-full-access': 'Full Access',
 }
 
-export function permissionPresetsOf(value: unknown): PermissionPresetItem[] {
+export function permissionPresetsOf(value: unknown, catalogOptions?: readonly unknown[]): PermissionPresetItem[] {
   if (typeof value !== 'object' || value === null) return []
   const select = value as Record<string, unknown>
   const current = typeof select.currentValue === 'string' ? select.currentValue : ''
-  if (!Array.isArray(select.options)) return []
-  return select.options.flatMap((value): PermissionPresetItem[] => {
+  const options = catalogOptions ?? select.options
+  if (!Array.isArray(options)) return []
+  return options.flatMap((value): PermissionPresetItem[] => {
     if (typeof value !== 'object' || value === null) return []
     const option = value as Record<string, unknown>
     if (typeof option.value !== 'string' || option.value === 'custom') return []

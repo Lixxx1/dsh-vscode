@@ -48,6 +48,7 @@ function testClient() {
     models: vi.fn(async () => models()), currentModels: vi.fn(() => models()),
     listCommands: vi.fn(async () => [{ name: 'plan', description: 'Plan' }]),
     listSkills: vi.fn(async (): Promise<SkillDescriptor[]> => []),
+    permissionOptions: vi.fn(async (): Promise<readonly unknown[] | undefined> => undefined),
     listAgentPresets: vi.fn(async () => ({ presets: [{ id: 'standard', trust: 'system', isDefault: true }, { id: 'minimal', trust: 'system', isDefault: false }] })),
     selectModel: vi.fn(async () => ({})), settings: vi.fn(), mutateSettings: vi.fn(), pluginInventory: vi.fn(), attachment: vi.fn(),
     selectAgentPreset: vi.fn(), prompt: vi.fn(async () => ({})),
@@ -79,6 +80,20 @@ async function harness(connection?: DshConnection) {
 }
 
 describe('runtime selection', () => {
+  it('treats unknown job state as busy and preserves jobs after an Agent is disposed', async () => {
+    const h = await harness()
+    expect(h.controller.hasRunningTasks).toBe(false)
+    h.emit({ type: 'host/jobs-status', sessionId: 'foreign', available: false })
+    expect(h.controller.hasRunningTasks).toBe(true)
+    h.emit({ type: 'host/jobs-status', sessionId: 'foreign', available: true })
+    expect(h.controller.hasRunningTasks).toBe(false)
+    h.emit({ type: 'session/jobs', sessionId: 'foreign', jobs: [{ id: 'j', kind: 'bash', label: 'Server', startedAt: 1, status: 'running' }] }, 'mux')
+    h.emit({ type: 'host/session-removed', sessionId: 'foreign' })
+    expect(h.controller.hasRunningTasks).toBe(true)
+    h.emit({ type: 'session/jobs', sessionId: 'foreign', jobs: [] }, 'mux')
+    expect(h.controller.hasRunningTasks).toBe(false)
+  })
+
   it.each(['terminal error', 'exhausted retries'])('blocks workspace and runtime switches until task state is restored after %s', async failure => {
     const h = await harness()
     h.emit({ type: 'session/jobs', sessionId: 'foreign', jobs: [
@@ -144,6 +159,9 @@ describe('runtime selection', () => {
     await expect(h.controller.selectRuntime({ kind: 'managed' })).rejects.toThrow('running DeepSeek tasks')
     expect(h.runtime.stop).not.toHaveBeenCalled()
     h.emit({ type: 'host/session-removed', sessionId: 'foreign' })
+    expect(h.controller.hasRunningTasks).toBe(true)
+    // Agent disposal is not authoritative job completion; the job stream is.
+    h.emit({ type: 'session/jobs', sessionId: 'foreign', jobs: [] }, 'mux')
     expect(h.controller.hasRunningTasks).toBe(false)
   })
 
@@ -818,7 +836,7 @@ describe('sidebar discovery notifications', () => {
     expect((h.controller as any).historyEntries).toHaveLength(1)
   })
 
-  it('refreshes commands and models, while permissions and Plan only follow projections', async () => {
+  it('refreshes commands and models, while permission selection and Plan follow projections', async () => {
     const h = await harness()
     h.client.listCommands.mockResolvedValue([])
     h.emit({ type: 'host/commands-changed' })
@@ -830,11 +848,32 @@ describe('sidebar discovery notifications', () => {
     h.emit({ type: 'session/projection', sessionId: 'a', key: 'permissions', value: {
       currentValue: 'read-only', options: [{ value: 'read-only' }, { value: 'workspace-write' }],
     } }, 'mux')
-    expect(h.controller.state.permissions[0]?.selected).toBe(true)
+    await vi.waitFor(() => expect(h.controller.state.permissions[0]?.selected).toBe(true))
     h.emit({ type: 'session/projection', sessionId: 'b', key: 'plan', value: { active: true, pending: false } }, 'mux')
     expect(h.controller.state.plan.active).toBe(false)
     h.emit({ type: 'session/projection', sessionId: 'a', key: 'plan', value: { active: true, pending: false } }, 'mux')
     expect(h.controller.state.plan).toEqual({ active: true, pending: false, available: false })
+  })
+
+  it('refreshes permission catalogs without losing a newer session selection or accepting stale reads', async () => {
+    const h = await harness()
+    h.client.permissionOptions.mockResolvedValue([{ value: 'auto', name: 'Auto' }, { value: 'team', name: 'Team' }])
+    h.emit({ type: 'session/projection', sessionId: 'a', key: 'permissions', value: { currentValue: 'team' } }, 'mux')
+    await vi.waitFor(() => expect(h.controller.state.permissions.find(p => p.selected)?.value).toBe('team'))
+    const stale = Promise.withResolvers<readonly unknown[]>()
+    h.client.permissionOptions.mockReturnValueOnce(stale.promise)
+    h.emit({ type: 'host/permissions-changed' })
+    expect(h.controller.state.permissions).toEqual([])
+    h.client.permissionOptions.mockResolvedValue([{ value: 'auto', name: 'Automatic' }])
+    h.emit({ type: 'session/projection', sessionId: 'a', key: 'permissions', value: { currentValue: 'auto' } }, 'mux')
+    await vi.waitFor(() => expect(h.controller.state.permissions).toEqual([{ value: 'auto', label: 'Automatic', selected: true }]))
+    stale.resolve([{ value: 'team', name: 'Old team' }])
+    await Promise.resolve()
+    expect(h.controller.state.permissions).toEqual([{ value: 'auto', label: 'Automatic', selected: true }])
+    h.client.permissionOptions.mockRejectedValueOnce(new Error('Offline'))
+    h.emit({ type: 'host/permissions-changed' })
+    await vi.waitFor(() => expect(h.output.appendLine).toHaveBeenCalledWith(expect.stringContaining('[permissions] Discovery unavailable: Offline')))
+    expect(h.controller.state.permissions).toEqual([])
   })
 
   it('ignores delayed discovery results across A → B → A switches', async () => {

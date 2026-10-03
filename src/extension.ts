@@ -238,6 +238,7 @@ export class DshChatController implements vscode.Disposable {
   private readonly attachmentResults = new Map<string, Pick<ConversationImage, 'data' | 'error'>>()
   private readonly attachmentLoads = new Map<string, Promise<void>>()
   private readonly jobsBySession = new Map<string, JobItem[]>()
+  private readonly unknownJobSessions = new Set<string>()
   private historyEntries: HistoryEntry[] = []
   private archivedSessionIds = new Set<string>()
   private readonly unreadSessionIds: Set<string>
@@ -279,6 +280,7 @@ export class DshChatController implements vscode.Disposable {
   /** Includes hidden, archived and other-workspace sessions on this runtime. */
   get hasRunningTasks(): boolean {
     return this._state.running || this.summaries.some(summary => summary.running)
+      || this.unknownJobSessions.size > 0
       || [...this.runtimeActivity.values()].some(activity => activity.running)
       || [...this.jobsBySession.values()].some(jobs => jobs.some(job => job.status === 'running' || job.status === 'stopping'))
   }
@@ -330,6 +332,7 @@ export class DshChatController implements vscode.Disposable {
     this.attachmentResults.clear()
     this.attachmentLoads.clear()
     this.jobsBySession.clear()
+    this.unknownJobSessions.clear()
     this.historyEntries = []
     this.publish({
       phase: this.cwd === '' ? 'error' : 'loading',
@@ -514,6 +517,7 @@ export class DshChatController implements vscode.Disposable {
     ++this.sessionLoadGeneration
     this.queueRawText.clear()
     this.jobsBySession.clear()
+    this.unknownJobSessions.clear()
     this.sessionAttention.clear()
     this.publish({ approval: null, question: null, queue: [], jobs: [], loadingHistory: false })
     this.publishSessionItems()
@@ -843,6 +847,7 @@ export class DshChatController implements vscode.Disposable {
   private disconnectClient(): void {
     this.runtimeActivity.clear()
     this.jobsBySession.clear()
+    this.unknownJobSessions.clear()
     ++this.sessionListGeneration
     this.sessionAttention.clear()
     for (const dispose of this.clientDisposables.splice(0)) dispose()
@@ -997,7 +1002,7 @@ export class DshChatController implements vscode.Disposable {
       agentPreset: unavailableAgentPresetState(),
       usage: usageMeterStateOf(summary?.projections?.values),
       imageLimits: imageLimitsOf(summary?.projections?.values?.imageLimits),
-      permissions: permissionPresetsOf(summary?.projections?.values?.permissions),
+      permissions: [],
       plan: planModeStateOf(summary?.projections?.values?.plan),
       changedFiles: this.diffReviews.rebuild(sessionId, this.cwd, events),
       queue: [],
@@ -1011,6 +1016,21 @@ export class DshChatController implements vscode.Disposable {
     void this.loadCommands(client, sessionId)
     void this.loadSkills(client, sessionId)
     void this.loadAgentPresets(client, sessionId)
+    void this.loadPermissions(client, sessionId)
+  }
+
+  private async loadPermissions(client: DshClient, sessionId: string): Promise<void> {
+    const current = this.discoveryRequest('permissions', client, sessionId)
+    // Do not offer stale permissions while a replacement catalog is loading.
+    this.publish({ permissions: [] })
+    try {
+      const options = await client.permissionOptions()
+      if (!current()) return
+      const projection = this.summaries.find(item => item.sessionId === sessionId)?.projections?.values?.permissions
+      this.publish({ permissions: permissionPresetsOf(projection, options) })
+    } catch (error) {
+      if (current()) this.output.appendLine(`[permissions] Discovery unavailable: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 
   private async loadCommands(client: DshClient, sessionId: string): Promise<void> {
@@ -1082,6 +1102,7 @@ export class DshChatController implements vscode.Disposable {
     void this.loadCommands(this.client, sessionId)
     void this.loadSkills(this.client, sessionId)
     void this.loadAgentPresets(this.client, sessionId)
+    void this.loadPermissions(this.client, sessionId)
   }
 
   private modelPatch(models: SessionModels): Pick<ChatViewState, 'models' | 'routable'> {
@@ -1116,6 +1137,13 @@ export class DshChatController implements vscode.Disposable {
     const type = typeof payload.type === 'string' ? payload.type : ''
     const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : ''
 
+    if (frame.channel === 'host' && type === 'host/jobs-status' && sessionId !== '') {
+      if (payload.available === true) this.unknownJobSessions.delete(sessionId)
+      else this.unknownJobSessions.add(sessionId)
+      if (typeof payload.message === 'string') this.output.appendLine(`[jobs] ${payload.message}`)
+      return
+    }
+
     if (frame.channel === 'host') {
       if (sessionId !== '' && (type === 'host/session-added' || type === 'host/session-status' || type === 'host/session-removed')) {
         this.runtimeActivity.set(sessionId, { running: type !== 'host/session-removed' && payload.running === true,
@@ -1125,8 +1153,9 @@ export class DshChatController implements vscode.Disposable {
       if (this.client !== undefined && this._state.phase === 'ready' && this._state.sessionId !== '') {
         const activeId = this._state.sessionId
         if (type === 'host/commands-changed') void this.loadCommands(this.client, activeId)
+        if (type === 'host/permissions-changed' || type === 'host/settings-changed') void this.loadPermissions(this.client, activeId)
         if (type === 'host/models-changed' || type === 'host/settings-changed' || type === 'host/credentials-changed') void this.loadModels(activeId)
-        if (type === 'host/settings-changed' && payload.ns === 'agent-presets') void this.loadAgentPresets(this.client, activeId)
+        if (type === 'host/settings-changed' && (payload.ns === 'agent-presets' || payload.ns === 'agent-preset-registry')) void this.loadAgentPresets(this.client, activeId)
         if (type === 'host/session-composition-changed') this.refreshComposition(sessionId)
       }
     }
@@ -1265,7 +1294,7 @@ export class DshChatController implements vscode.Disposable {
         this.publish({ imageLimits: imageLimitsOf(payload.value) })
       }
       if (payload.key === 'permissions' && sessionId === this._state.sessionId) {
-        this.publish({ permissions: permissionPresetsOf(payload.value) })
+        if (this.client !== undefined && this._state.phase === 'ready') void this.loadPermissions(this.client, sessionId)
       }
       if (payload.key === 'plan' && sessionId === this._state.sessionId) {
         this.publish({ plan: planModeWithCommandAvailability(planModeStateOf(payload.value), this._state.commands.some(command => command.name === 'plan')) })
@@ -1320,10 +1349,9 @@ export class DshChatController implements vscode.Disposable {
       }
       if (type === 'host/session-removed') {
         this.sessionAttention.delete(sessionId)
-        this.jobsBySession.delete(sessionId)
         if (sessionId === this._state.sessionId) {
           this.queueRawText.clear()
-          this.publish({ approval: null, question: null, queue: [], jobs: [] })
+          this.publish({ approval: null, question: null, queue: [] })
         }
       }
       if (wasRunning && !running && sessionId !== this._state.sessionId) this.markUnread(sessionId)

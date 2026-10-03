@@ -26,7 +26,7 @@ export function runtimePluginGroups(snapshot: PluginInventorySnapshot): RuntimeP
       }] : preset.rows.map(row => ({
         label: `$(${PLUGIN_STATUS_ICONS[pluginEntryStatus(row, true)]}) ${row.moduleName}`,
         description: PLUGIN_STATUS_LABELS[pluginEntryStatus(row, true)],
-        detail: `Preset: ${preset.id} · ${preset.trust} · Entry: ${row.entryId ?? '(no id)'}`,
+        detail: `Preset: ${preset.id}${preset.trust === undefined ? '' : ` · ${preset.trust}`} · Entry: ${row.entryId ?? '(no id)'}`,
       })),
     })),
     { label: 'Global runtime', rows: snapshot.entries.map(row => ({

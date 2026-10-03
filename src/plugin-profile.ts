@@ -26,7 +26,7 @@ export interface AgentPresetPluginRow {
 
 export interface AgentPresetPluginGroup {
   id: string
-  trust: 'system' | 'user'
+  trust?: 'system' | 'user'
   name?: string
   isDefault: boolean
   broken?: string

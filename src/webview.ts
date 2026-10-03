@@ -971,6 +971,18 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (!efforts.length) elements.efforts.append(new Option('Default', ''));
       elements.efforts.title = efforts.length ? 'Reasoning effort' : 'This model has no reasoning effort setting';
     }
+    function renderModelOptions(current) {
+      const models = current.models || [];
+      const selected = models.find(model => model.selected);
+      elements.models.replaceChildren();
+      if (!selected && models.length) {
+        const placeholder = new Option('Choose a model', '', false, true); placeholder.disabled = true;
+        elements.models.append(placeholder);
+      }
+      for (const model of models) elements.models.append(new Option(model.label, JSON.stringify({ provider: model.provider, model: model.model }), false, model.selected === true));
+      if (!models.length) elements.models.append(new Option('Default model', ''));
+      renderEfforts(selected);
+    }
     function renderAttachments() {
       elements.attachments.replaceChildren(); elements.attachments.classList.toggle('hidden', draftImages.length === 0);
       for (const image of draftImages) {
@@ -994,7 +1006,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const plan = current.plan || { available: false, active: false, pending: false };
       const planActive = effectivePlanMode(plan);
       const permissions = current.permissions || [];
-      const selectedPermission = permissions.find(permission => permission.selected) || permissions[0];
+      const selectedPermission = permissions.find(permission => permission.selected);
       const available = plan.available === true || permissions.length > 0;
       elements.modeChips.replaceChildren();
       const preset = current.agentPreset || { available: false, current: '', locked: true, busy: false, options: [] };
@@ -1451,19 +1463,17 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       }
       if (renderedChrome.sessions !== current.sessions || renderedChrome.sessionId !== current.sessionId) renderSessionCenter(current);
       if (renderedChrome.models !== current.models) {
-        elements.models.replaceChildren();
-        for (const model of current.models || []) { const option = new Option(model.label, JSON.stringify({ provider: model.provider, model: model.model }), false, model.selected === true); elements.models.append(option); }
-        if (!elements.models.childElementCount) elements.models.append(new Option('Default model', ''));
-        renderEfforts((current.models || []).find(model => model.selected) || (current.models || [])[0]);
+        renderModelOptions(current);
       }
       const policyChanged = renderedChrome.agentPreset !== current.agentPreset || renderedChrome.permissions !== current.permissions || renderedChrome.plan !== current.plan || renderedChrome.running !== current.running || renderedChrome.phase !== current.phase;
       if (policyChanged) renderPolicyState(current);
       if (renderedChrome.usage !== current.usage) renderUsage(current);
       if (renderedChrome.jobs !== current.jobs) renderJobs();
       renderConversation(current);
-      const enabled = current.phase === 'ready' && current.routable !== false && Boolean(current.sessionId);
+      const sessionReady = current.phase === 'ready' && Boolean(current.sessionId);
+      const enabled = sessionReady && current.routable !== false;
       elements.prompt.disabled = !enabled; elements.attach.disabled = !enabled; elements.project.disabled = current.running === true; elements.newSession.disabled = current.phase !== 'ready'; elements.sessionTrigger.disabled = current.phase !== 'ready';
-      elements.models.disabled = !enabled || !(current.models || []).length; elements.efforts.disabled = !enabled || !elements.efforts.options.length || elements.efforts.value === '';
+      elements.models.disabled = !sessionReady || !(current.models || []).length; elements.efforts.disabled = !enabled || !elements.efforts.options.length || elements.efforts.value === '';
       elements.cancel.classList.toggle('hidden', current.running !== true); elements.send.title = current.running ? 'Queue message (Enter) · Steer now (Cmd/Ctrl+Enter)' : 'Send (Enter)'; updateSend(); renderQueue();
       if (renderedChrome.commands !== current.commands || renderedChrome.skills !== current.skills || renderedChrome.permissions !== current.permissions) renderCommandMenu();
       renderedChrome = {

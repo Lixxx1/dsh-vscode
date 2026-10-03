@@ -11,6 +11,38 @@ function chatHtml(webview: vscode.Webview, mark: vscode.Uri): string {
 }
 
 describe('chat webview', () => {
+  it('keeps model selection enabled when the current model is unroutable, but blocks sending', () => {
+    const html = chatHtml({ cspSource: 'vscode-webview:' } as vscode.Webview, { toString: () => 'mark' } as vscode.Uri)
+    const source = html.slice(html.indexOf('const sessionReady ='), html.indexOf('elements.cancel.classList.toggle'))
+    const elements = { prompt: {}, attach: {}, project: {}, newSession: {}, sessionTrigger: {}, models: {}, efforts: { options: [], value: '' } } as any
+    const render = new Function('current', 'elements', source)
+    render({ phase: 'ready', sessionId: 's', routable: false, models: [{ model: 'available' }] }, elements)
+    expect(elements.models.disabled).toBe(false)
+    expect(elements.prompt.disabled).toBe(true)
+    render({ phase: 'loading', sessionId: 's', routable: false, models: [{ model: 'available' }] }, elements)
+    expect(elements.models.disabled).toBe(true)
+  })
+
+  it('does not silently select the first available model when the previous model disappeared', () => {
+    const html = chatHtml({ cspSource: 'vscode-webview:' } as vscode.Webview, { toString: () => 'mark' } as vscode.Uri)
+    const source = html.slice(html.indexOf('function renderModelOptions('), html.indexOf('function renderAttachments('))
+    const options: any[] = []
+    const render = new Function('elements', 'Option', 'renderEfforts', `${source}; return renderModelOptions;`)(
+      { models: { replaceChildren() { options.length = 0 }, append(value: unknown) { options.push(value) } } },
+      function(this: any, label: string, value: string, _default: boolean, selected: boolean) { Object.assign(this, { label, value, selected }) },
+      () => {},
+    )
+    render({ models: [{ provider: 'p', model: 'new', label: 'New', selected: false }] })
+    expect(options[0]).toMatchObject({ label: 'Choose a model', value: '', selected: true, disabled: true })
+    expect(options[1].selected).toBe(false)
+  })
+
+  it('does not invent a selected permission when the current policy is absent from the catalog', () => {
+    const html = chatHtml({ cspSource: 'vscode-webview:' } as vscode.Webview, { toString: () => 'mark' } as vscode.Uri)
+    expect(html).toContain('const selectedPermission = permissions.find(permission => permission.selected);')
+    expect(html).not.toContain('|| permissions[0]')
+  })
+
   it('offers separate reconnect and explicit runtime restart actions', () => {
     const html = chatHtml({ cspSource: 'vscode-webview:' } as vscode.Webview, { toString: () => 'mark' } as vscode.Uri)
     expect(html).toContain("'Reconnect'); retry.addEventListener('click', () => vscode.postMessage({ type: 'reconnect' }))")

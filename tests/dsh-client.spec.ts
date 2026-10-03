@@ -16,7 +16,7 @@ const snapshot = (id = 's', cursor = 5, values: Record<string, unknown> = {}) =>
   type: 'snapshot', header: { id }, cursor, records: [event(cursor)], hasMore: true, projections: { asOfSeq: cursor, values },
 })
 
-function harness(autoSnapshot = true, initialJobs: Record<string, unknown[]> = {}) {
+function harness(autoSnapshot = true, initialJobs: Record<string, unknown[]> = {}, modern = false) {
   const requests: { endpoint: string; args: any }[] = []
   const outgoing: any[] = []
   const ids = new Map<string, string>()
@@ -24,7 +24,7 @@ function harness(autoSnapshot = true, initialJobs: Record<string, unknown[]> = {
   const errors: Error[] = []
   const results: Record<string, unknown> = {
     'session/list': { items: [] }, 'session/create': { sessionId: 's' },
-    'session/modelCatalog': { default: { provider: 'p', model: 'm' }, routableProviders: ['p'], groups: [], failures: [] },
+    'session/modelCatalog': { default: { provider: 'p', model: 'm' }, routableProviders: ['p'], groups: [{ id: 'p', name: 'P', models: [{ id: 'm', name: 'M' }] }], failures: [] },
     'session/page': { records: [event(1)], hasMore: false },
     'skills/list': { skills: [] }, 'agentPresets/list': { presets: [] }, 'agentPresets/select': 'coding',
   }
@@ -39,7 +39,8 @@ function harness(autoSnapshot = true, initialJobs: Record<string, unknown[]> = {
     ids.set(frame.endpoint, frame.streamId)
     queueMicrotask(() => {
       if (frame.endpoint === '$events') receive(frame.streamId, { type: 'ready', clientId: 'client-1', host: { home: '/isolated' } })
-      if (frame.endpoint === 'session/control') receive(frame.streamId, { type: 'baseline', value: { queues: {}, jobs: initialJobs, projections: {} } })
+      if (frame.endpoint === 'session/control') receive(frame.streamId, { type: 'baseline', value: modern ? { projections: {} } : { queues: {}, jobs: initialJobs, projections: {} } })
+      if (frame.endpoint === 'job/list') receive(frame.streamId, { type: 'rows', jobs: initialJobs[frame.payload.args.request.sessionId] ?? [] })
       if (frame.endpoint === 'workspace/follow') receive(frame.streamId, { type: 'baseline', value: { items: [], archivedSessionIds: ['archived'] } })
       if (frame.endpoint === 'session/follow' && autoSnapshot) receive(frame.streamId, snapshot(frame.payload.args.request.address.sessionId))
     })
@@ -65,7 +66,138 @@ function harness(autoSnapshot = true, initialJobs: Record<string, unknown[]> = {
   return { client, connection, socket, requests, outgoing, frames, errors, results, ids, push, receive }
 }
 
-describe('DSH 0.1.2 chat transport', () => {
+describe('DSH Remote chat transport', () => {
+  it.each([false, true])('only accepts HTTP 404 catalog fallback after a confirmed legacy baseline (modern=%s)', async modern => {
+    const h = harness(true, {}, modern)
+    await h.client.startStreams()
+    vi.mocked(h.connection.call).mockRejectedValueOnce(new DshConnectionError('http-error', 'Not found', 404))
+    if (modern) await expect(h.client.permissionOptions()).rejects.toMatchObject({ status: 404 })
+    else await expect(h.client.permissionOptions()).resolves.toBeUndefined()
+  })
+
+  it('does not treat HTTP 404 before protocol discovery as an old runtime', async () => {
+    const h = harness()
+    vi.mocked(h.connection.call).mockRejectedValueOnce(new DshConnectionError('http-error', 'Not found', 404))
+    await expect(h.client.permissionOptions()).rejects.toMatchObject({ status: 404 })
+  })
+
+  it('marks removed models unavailable and refreshes routing on credential record updates', async () => {
+    const h = harness(); await h.client.startStreams()
+    ;(await h.client.openSession('s')).activate()
+    h.push('session/control', { type: 'projection', sessionId: 's', key: 'modelSelection', seq: 6, value: { next: { provider: 'p', model: 'removed' } } })
+    expect(await h.client.models('s')).toMatchObject({ routable: false, current: { model: 'removed' } })
+    h.results['session/modelCatalog'] = { default: { provider: 'p', model: 'm' }, routableProviders: ['p'],
+      groups: [{ id: 'p', name: 'P', models: [{ id: 'removed', name: 'Restored' }] }], failures: [] }
+    h.push('$events', { type: 'emit', event: 'credentials/record-updated', args: ['secret-reference'] })
+    expect(await h.client.models('s')).toMatchObject({ routable: true })
+  })
+
+  it('refreshes the permission catalog and discards an invalidated in-flight result', async () => {
+    const h = harness(); await h.client.startStreams()
+    const first = Promise.withResolvers<unknown>()
+    vi.mocked(h.connection.call).mockImplementationOnce(() => first.promise as any)
+    const pending = h.client.permissionOptions()
+    h.push('$events', { type: 'emit', event: 'permission-presets/catalog-changed', args: [] })
+    h.results['permissionPresets/catalog'] = { options: [{ value: 'auto', name: 'Auto' }] }
+    first.resolve({ options: [{ value: 'old', name: 'Old' }] })
+    expect(await pending).toEqual([{ value: 'auto', name: 'Auto' }])
+    expect(await h.client.permissionOptions()).toEqual([{ value: 'auto', name: 'Auto' }])
+    expect(h.requests.filter(r => r.endpoint === 'permissionPresets/catalog')).toHaveLength(1)
+  })
+
+  it.each(['gateway/lookup-not-found', 'authentication-required', 'invalid-response', 'request-failed'])('only falls back to legacy permissions for missing capabilities, not %s failures', async code => {
+    const h = harness()
+    vi.mocked(h.connection.call).mockRejectedValueOnce(new DshConnectionError(code, 'failure'))
+    const pending = h.client.permissionOptions()
+    if (code === 'gateway/lookup-not-found') await expect(pending).resolves.toBeUndefined()
+    else await expect(pending).rejects.toMatchObject({ code })
+  })
+
+  it('rejects malformed catalogs without hiding their failure behind legacy options', async () => {
+    const h = harness(); h.results['permissionPresets/catalog'] = { options: [{ value: 'read-only' }] }
+    await expect(h.client.permissionOptions()).rejects.toThrow('Invalid DSH permission catalog')
+  })
+
+  const inbox = (queued: string[] = [], steering: string[] = []) => ({
+    'next-turn': queued.map(id => ({ id, role: 'user', content: [{ type: 'text', text: id }] })),
+    'next-step': steering.map(id => ({ id, role: 'user', content: [{ type: 'text', text: id }] })),
+  })
+
+  it('reads V4 Inbox from snapshots and newer control projections without stale queue replay', async () => {
+    const h = harness(false, {}, true)
+    await h.client.startStreams()
+    h.push('session/control', { type: 'projection', sessionId: 's', key: 'inbox', seq: 8, value: inbox(['new']) })
+    const pending = h.client.openSession('s')
+    h.push('session/follow', snapshot('s', 5, { inbox: inbox(['old']) }))
+    const opening = await pending
+    opening.activate()
+    expect(h.frames.filter(f => f.payload.type === 'session/queue').at(-1)?.payload.items).toMatchObject([{ id: 'new', placement: 'queued' }])
+    h.push('session/control', { type: 'projection', sessionId: 's', key: 'inbox', seq: 9, value: inbox([], ['steer']) })
+    expect(h.frames.filter(f => f.payload.type === 'session/queue').at(-1)?.payload.items).toMatchObject([{ id: 'steer', placement: 'steering' }])
+    h.push('session/control', { type: 'projection', sessionId: 's', key: 'inbox', seq: 7, value: inbox(['stale']) })
+    expect(h.frames.filter(f => f.payload.type === 'session/queue').at(-1)?.payload.items).toMatchObject([{ id: 'steer' }])
+    await h.client.updateQueue('s', 'steer', { kind: 'remove' })
+    expect(h.requests.at(-1)?.args.request.itemId).toBe('steer')
+    const other = h.client.openSession('other')
+    h.push('session/follow', snapshot('other', 5, { inbox: inbox() }))
+    ;(await other).activate()
+    expect(h.frames.filter(f => f.payload.type === 'session/queue').at(-1)?.payload.items).toEqual([])
+    expect(h.errors).toEqual([])
+  })
+
+  it.each(['queue-first', 'event-first'])('does not resurrect V4 steering with %s delivery', async order => {
+    const h = harness(true, {}, true); await h.client.startStreams()
+    ;(await h.client.openSession('s')).activate()
+    const pushQueue = () => h.push('session/control', { type: 'projection', sessionId: 's', key: 'inbox', seq: 6, value: inbox(['next'], ['steer']) })
+    const pushMessage = () => h.push('session/follow', { type: 'event', event: { seq: 6, time: 6, type: 'user/message', data: inbox([], ['steer'])['next-step'][0] } })
+    if (order === 'queue-first') { pushQueue(); pushMessage() } else { pushMessage(); pushQueue() }
+    pushQueue()
+    expect(h.frames.filter(f => f.payload.type === 'session/queue').at(-1)?.payload.items).toMatchObject([{ id: 'next' }])
+  })
+
+  it('tracks jobs in listed and newly added sessions, even after switching or agent disposal', async () => {
+    const job = { id: 'j', kind: 'bash', label: 'Server', status: 'running', startedAt: 1 }
+    const h = harness(true, { foreign: [job] }, true)
+    await h.client.startStreams()
+    h.results['session/list'] = { items: [{ sessionId: 'foreign', updatedAt: 1, blank: false, running: false }] }
+    await h.client.listSessions()
+    const foreignId = h.ids.get('job/list')!
+    ;(await h.client.openSession('s')).activate()
+    expect(h.outgoing.filter(f => f.endpoint === 'job/list').map(f => f.payload.args)).toEqual([
+      { request: { sessionId: 'foreign' } }, { request: { sessionId: 's' } },
+    ])
+    h.push('$events', { type: 'emit', event: 'api-session/removed', args: ['foreign'] })
+    h.receive(foreignId, { type: 'rows', jobs: [{ ...job, status: 'completed' }] })
+    expect(h.frames.filter(f => f.payload.type === 'session/jobs' && f.payload.sessionId === 'foreign').at(-1)?.payload.jobs).toMatchObject([{ status: 'completed' }])
+    h.push('$events', { type: 'emit', event: 'api-session/added', args: [{ sessionId: 'new', updatedAt: 2, blank: true, running: false }] })
+    expect(h.outgoing.filter(f => f.endpoint === 'job/list').at(-1)?.payload.args.request.sessionId).toBe('new')
+    expect(h.errors).toEqual([])
+  })
+
+  it('reports job failure as unknown, keeps chat alive, and rejects late rows', async () => {
+    const h = harness(true, {}, true); await h.client.startStreams()
+    ;(await h.client.openSession('s')).activate()
+    const id = h.ids.get('job/list')!
+    h.push('job/list', { type: 'rows', jobs: [{ malformed: true }] })
+    expect(h.frames.filter(f => f.payload.type === 'host/jobs-status').at(-1)?.payload).toMatchObject({ available: false, message: expect.any(String) })
+    expect(h.socket.readyState).toBe(1)
+    expect(h.errors).toEqual([])
+    const count = h.frames.length
+    h.receive(id, { type: 'rows', jobs: [] })
+    expect(h.frames).toHaveLength(count)
+    h.push('session/follow', event(6))
+    expect(h.frames.at(-1)?.payload.type).toBe('session/event')
+    ;(await h.client.openSession('s')).activate()
+    expect(h.ids.get('job/list')).not.toBe(id)
+    expect(h.frames.filter(f => f.payload.type === 'host/jobs-status').at(-1)?.payload.available).toBe(true)
+  })
+
+  it('rejects a partially legacy baseline instead of silently selecting the new protocol', async () => {
+    const h = harness(); await h.client.startStreams()
+    h.push('session/control', { type: 'baseline', value: { queues: {}, projections: {} } })
+    expect(h.errors).toHaveLength(1)
+  })
+
   it('publishes every session’s baseline jobs before opening any conversation', async () => {
     const job = { id: 'job', status: 'running', kind: 'bash', label: 'Server', startedAt: 1 }
     const h = harness(true, { s: [job], foreign: [job] })
@@ -95,14 +227,17 @@ describe('DSH 0.1.2 chat transport', () => {
     await h.client.startStreams()
     for (const [event, args] of [
       ['commands/change', []], ['llm/adapters-updated', []], ['credentials/reference-updated', ['SECRET_REFERENCE']],
+      ['credentials/record-updated', ['SECRET_RECORD']], ['deepseek-account/session-expired', []], ['deepseek-account/model-sign-in-required', []],
       ['settings/document-updated', ['llm-deepseek', 3]], ['agent-preset/selected', ['s', 'minimal']],
     ]) h.push('$events', { type: 'emit', event, args })
     expect(h.frames.map(f => f.payload)).toEqual([
       { type: 'host/commands-changed' }, { type: 'host/models-changed' }, { type: 'host/credentials-changed' },
+      { type: 'host/credentials-changed' }, { type: 'host/credentials-changed' }, { type: 'host/credentials-changed' },
       { type: 'host/settings-changed', ns: 'llm-deepseek', revision: 3 },
       { type: 'host/session-composition-changed', sessionId: 's' },
     ])
     expect(JSON.stringify(h.frames)).not.toContain('SECRET_REFERENCE')
+    expect(JSON.stringify(h.frames)).not.toContain('SECRET_RECORD')
     expect(h.errors).toEqual([])
   })
 
@@ -125,6 +260,9 @@ describe('DSH 0.1.2 chat transport', () => {
     h.push('$events', { type: 'emit', event: 'settings/document-updated', args: ['agent-presets', 1] })
     await h.client.listAgentPresets()
     expect(count('agentPresets/list')).toBe(2)
+    h.push('$events', { type: 'emit', event: 'settings/document-updated', args: ['agent-preset-registry', 2] })
+    await h.client.listAgentPresets()
+    expect(count('agentPresets/list')).toBe(3)
   })
 
   it('discards an old model catalog when settings or credentials change during its request', async () => {
@@ -136,7 +274,7 @@ describe('DSH 0.1.2 chat transport', () => {
     h.push('$events', { type: 'emit', event: 'llm/adapters-updated', args: [] })
     h.push('$events', { type: 'emit', event: 'settings/document-updated', args: ['llm-deepseek', 1] })
     h.push('$events', { type: 'emit', event: 'credentials/reference-updated', args: ['API_KEY'] })
-    h.results['session/modelCatalog'] = { default: { provider: 'new', model: 'new' }, routableProviders: ['new'], groups: [], failures: [] }
+    h.results['session/modelCatalog'] = { default: { provider: 'new', model: 'new' }, routableProviders: ['new'], groups: [{ id: 'new', name: 'New', models: [{ id: 'new', name: 'New' }] }], failures: [] }
     first.resolve({ default: { provider: 'old', model: 'old' }, routableProviders: [], groups: [], failures: [] })
     expect(await pending).toMatchObject({ current: { provider: 'new', model: 'new' }, routable: true })
     expect(h.client.currentModels('s')).toMatchObject({ current: { provider: 'new', model: 'new' } })

@@ -92,7 +92,10 @@ export class DshConnection {
         signal: this.signal(10_000, signal),
       })
       try {
-        if (response.status !== 303 || response.headers.get('location') !== '/') {
+        // Both official token-exchange responses resolve to this verified root.
+        // Do not follow redirects or accept arbitrary (even local) targets.
+        const location = response.headers.get('location')
+        if (response.status !== 303 || (location !== '/' && location !== './')) {
           throw new DshConnectionError('authentication-failed', 'DSH did not accept its launch token. Restart the runtime.', response.status)
         }
         const cookieName = `dsh-auth-${createHash('sha256').update(url.host).digest('base64url')}`

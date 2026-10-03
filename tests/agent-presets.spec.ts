@@ -30,6 +30,11 @@ const presets = [
 ]
 
 describe('Agent Preset state', () => {
+  it('accepts the new roster without legacy trust fields', () => {
+    const state = agentPresetStateOf([{ id: 'coding', name: 'Coding', isDefault: true }], undefined, true)
+    expect(state.options).toEqual([{ id: 'coding', label: 'Coding', selected: true }])
+  })
+
   it('uses the official default for a blank session and excludes broken presets', () => {
     expect(agentPresetStateOf(presets, undefined, true)).toEqual({
       available: true,

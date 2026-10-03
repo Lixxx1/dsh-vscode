@@ -1,4 +1,4 @@
-import type { DshConnection } from './dsh-connection.js'
+import { DshConnectionError, type DshConnection } from './dsh-connection.js'
 import { DshRemoteApi } from './dsh-remote-api.js'
 import { DshSessionFeed, type SessionOpening } from './dsh-session-feed.js'
 import { wireRecord } from './dsh-streams.js'
@@ -54,7 +54,7 @@ export interface SkillDescriptor {
 
 export interface AgentPresetDescriptor {
   id: string
-  trust: 'system' | 'user'
+  trust?: 'system' | 'user'
   isDefault: boolean
   name?: string
   description?: string
@@ -63,8 +63,8 @@ export interface AgentPresetDescriptor {
 
 export interface AgentPresetRoster {
   presets: AgentPresetDescriptor[]
-  authorable: boolean
-  hasDocument: boolean
+  authorable?: boolean
+  hasDocument?: boolean
 }
 
 export type ImageMediaType = 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'
@@ -127,7 +127,7 @@ interface ModelCatalog {
   failures: SessionModels['failures']
 }
 
-/** The sidebar uses only authenticated 0.1.2 Remotes. */
+/** The sidebar uses only authenticated official Remotes. */
 export class DshClient {
   private readonly commandTransport = new DshCommandTransport((endpoint, args, timeoutMs) => this.call(endpoint, args, timeoutMs))
   private readonly api: DshRemoteApi
@@ -139,11 +139,27 @@ export class DshClient {
   private readonly commands = new Map<string, RemoteRead<CommandDescriptor[]>>()
   private readonly skills = new Map<string, RemoteRead<SkillDescriptor[]>>()
   private readonly presets: RemoteRead<AgentPresetRoster>
+  private readonly permissionCatalog: RemoteRead<readonly unknown[] | null>
 
   constructor(private readonly connection: DshConnection, requestSessions: readonly string[] = []) {
     this.api = new DshRemoteApi(connection, this.lifetime.signal)
     this.catalog = new RemoteRead(() => this.call('session/modelCatalog', {}), this.lifetime.signal)
     this.presets = new RemoteRead(() => this.call('agentPresets/list', {}, 10_000), this.lifetime.signal)
+    this.permissionCatalog = new RemoteRead(async () => {
+      try {
+        const catalog = await this.call<unknown>('permissionPresets/catalog', {}, 10_000)
+        if (!wireRecord(catalog) || !Array.isArray(catalog.options)
+          || !catalog.options.every(option => wireRecord(option) && typeof option.value === 'string' && typeof option.name === 'string')) {
+          throw new Error('Invalid DSH permission catalog.')
+        }
+        return catalog.options
+      } catch (error) {
+        // Only an absent Remote on older runtimes permits the legacy projection.
+        if (error instanceof DshConnectionError && (error.code === 'gateway/lookup-not-found'
+          || (error.code === 'http-error' && error.status === 404 && this.feed.usesLegacyControl))) return null
+        throw error
+      }
+    }, this.lifetime.signal)
     this.feed = new DshSessionFeed(connection,
       frame => {
         this.invalidateDiscovery(frame)
@@ -168,6 +184,7 @@ export class DshClient {
     // Reads made before the event subscription may have missed a Host commit.
     this.catalog.invalidate()
     this.presets.invalidate()
+    this.permissionCatalog.invalidate()
     for (const read of [...this.commands.values(), ...this.skills.values()]) read.invalidate()
   }
   openSession(sessionId: string): Promise<SessionOpening> {
@@ -200,7 +217,9 @@ export class DshClient {
     const current: ModelSelection = wireRecord(candidate) && typeof candidate.provider === 'string' && typeof candidate.model === 'string'
       ? { provider: candidate.provider, model: candidate.model, ...(typeof candidate.reasoningEffort === 'string' ? { reasoningEffort: candidate.reasoningEffort } : {}) }
       : catalog.default
-    return { current, routable: catalog.routableProviders.includes(current.provider), groups: catalog.groups, failures: catalog.failures }
+    const routable = catalog.routableProviders.includes(current.provider)
+      && catalog.groups.some(group => group.id === current.provider && group.models.some(model => model.id === current.model))
+    return { current, routable, groups: catalog.groups, failures: catalog.failures }
   }
 
   attachment(sessionId: string, attachmentId: string): Promise<{ attachment: ImageAttachment; data: string }> {
@@ -239,6 +258,7 @@ export class DshClient {
     return read.read()
   }
   listAgentPresets(): Promise<AgentPresetRoster> { return this.presets.read() }
+  async permissionOptions(): Promise<readonly unknown[] | undefined> { return (await this.permissionCatalog.read()) ?? undefined }
   async selectAgentPreset(sessionId: string, agentPreset: string): Promise<{ agentPreset: string }> {
     const selected = await this.call<string>('agentPresets/select', { agentId: sessionId, agentPreset })
     this.invalidateSessionDiscovery(sessionId)
@@ -262,9 +282,10 @@ export class DshClient {
   }
   private invalidateDiscovery(frame: DshFrame): void {
     const payload = frame.payload
+    if (payload.type === 'host/permissions-changed' || payload.type === 'host/settings-changed') this.permissionCatalog.invalidate()
     if (payload.type === 'host/commands-changed') for (const read of this.commands.values()) read.invalidate()
     if (payload.type === 'host/models-changed' || payload.type === 'host/settings-changed' || payload.type === 'host/credentials-changed') this.catalog.invalidate()
-    if (payload.type === 'host/settings-changed' && payload.ns === 'agent-presets') this.presets.invalidate()
+    if (payload.type === 'host/settings-changed' && (payload.ns === 'agent-presets' || payload.ns === 'agent-preset-registry')) this.presets.invalidate()
     if ((payload.type === 'host/session-composition-changed'
       || (payload.type === 'session/projection' && payload.key === 'agentPreset')) && typeof payload.sessionId === 'string') {
       this.invalidateSessionDiscovery(payload.sessionId)

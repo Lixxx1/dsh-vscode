@@ -1,6 +1,7 @@
 import { withoutIdeContext } from './ide-context.js'
 import type { ImageMediaType } from './dsh-client.js'
 import { presentToolCall, presentToolResult } from './tool-presentation.js'
+import { normalizeToolResult } from './tool-result.js'
 import type { AssistantAttempt, AssistantStreamUpdate } from './dsh-assistant-stream.js'
 
 export type ConversationRole = 'user' | 'assistant' | 'tool' | 'command' | 'notice'
@@ -127,15 +128,6 @@ function imageContent(value: unknown): ConversationImage[] {
   return [...found.values()]
 }
 
-function resultContent(value: unknown): string {
-  const item = record(value)
-  if (item === undefined) return ''
-  if (typeof item.text === 'string') return item.text
-  if (Array.isArray(item.content)) return textContent(item.content)
-  if (typeof item.content === 'string') return item.content
-  return ''
-}
-
 function toolView(value: unknown, expected: 'call' | 'result'): unknown {
   const wrapper = record(value)
   return wrapper?.for === expected ? wrapper.view : undefined
@@ -259,19 +251,13 @@ export class ConversationProjector {
     }
 
     if (event.type === 'tool/result') {
-      const message = record(data.message)
-      const source = record(message?.source)
-      const firstBlock = Array.isArray(message?.content) ? record(message.content[0]) : undefined
-      const callId = typeof source?.callId === 'string'
-        ? source.callId
-        : typeof firstBlock?.toolCallId === 'string'
-          ? firstBlock.toolCallId
-          : String(event.seq)
+      const result = normalizeToolResult(event)
+      const callId = result.callId ?? String(event.seq)
       const id = `tool:${callId}`
       const current = this.byId.get(id)
-      const failed = data.error !== undefined || firstBlock?.isError === true
-      const rawResult = resultContent(firstBlock)
-      const images = imageContent(message?.content)
+      const failed = result.failed
+      const rawResult = result.text
+      const images = imageContent(result.content)
       this.set(id, {
         id,
         role: 'tool',
