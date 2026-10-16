@@ -262,6 +262,29 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .usage-row dd { color: var(--vscode-foreground); font-variant-numeric: tabular-nums; }
     .usage-swatch { width: 7px; height: 7px; margin-right: 6px; display: inline-block; border-radius: 2px; }
     .usage-stats { min-width: 0; padding: 0 12px 8px; overflow: hidden; color: var(--vscode-descriptionForeground); font-size: 10px; line-height: 14px; text-overflow: ellipsis; white-space: nowrap; }
+    .inspect-action { display: block; width: 100%; margin-top: 10px; padding: 7px 0 0; border: 0; border-top: 1px solid var(--vscode-widget-border); color: var(--vscode-textLink-foreground); background: transparent; text-align: left; }
+    .inspector { width: min(620px, calc(100vw - 24px)); max-width: none; max-height: calc(100vh - 24px); padding: 0; border: 1px solid var(--vscode-widget-border); border-radius: 10px; color: var(--vscode-foreground); background: var(--vscode-sideBar-background); box-shadow: 0 12px 36px var(--vscode-widget-shadow); }
+    .inspector[open] { display: flex; flex-direction: column; }
+    .inspector::backdrop { background: #0006; }
+    .inspector-header { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--vscode-widget-border); }
+    .inspector-header h2 { flex: 1; min-width: 0; margin: 0; font-size: 13px; font-weight: 600; }
+    .inspector-refresh { border: 0; padding: 4px 6px; border-radius: 4px; color: var(--vscode-textLink-foreground); background: transparent; font-size: 11px; }
+    .inspector-refresh:hover { background: var(--vscode-toolbar-hoverBackground); }
+    .inspector-body { min-height: 120px; padding: 14px; overflow: auto; overscroll-behavior: contain; overflow-wrap: anywhere; }
+    .inspector-caption { margin: 0 0 12px; color: var(--vscode-descriptionForeground); font-size: 11px; line-height: 1.6; }
+    .inspector-status { margin: 0 0 12px; font-size: 12px; line-height: 1.6; white-space: pre-wrap; }
+    .inspector-status.error { color: var(--vscode-errorForeground); }
+    .inspector-warning { margin: 0 0 10px; padding-left: 8px; border-left: 2px solid var(--vscode-editorWarning-foreground); color: var(--vscode-descriptionForeground); font-size: 11px; line-height: 1.5; }
+    .inspector-filters { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+    .inspector-search { flex: 1 1 120px; min-width: 0; width: 120px; padding: 6px 8px; border: 1px solid var(--vscode-input-border, var(--vscode-widget-border)); border-radius: 4px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); }
+    .inspector-sort { max-width: 100%; padding: 4px; border: 1px solid var(--vscode-widget-border); border-radius: 4px; color: var(--vscode-foreground); background: var(--vscode-editor-background); font-size: 11px; }
+    .inspector-group { border-top: 1px solid var(--vscode-widget-border); }
+    .inspector-group > summary { padding: 11px 0; cursor: pointer; font-size: 12px; font-weight: 600; }
+    .inspector-count { margin-left: 6px; color: var(--vscode-descriptionForeground); font-weight: 400; font-variant-numeric: tabular-nums; }
+    .inspector-entry { margin: 0 0 10px; border-left: 1px solid var(--vscode-widget-border); padding-left: 10px; }
+    .inspector-entry > summary { padding: 3px 0; cursor: pointer; font-size: 12px; }
+    .inspector-source { margin: 5px 0; color: var(--vscode-descriptionForeground); font-size: 10px; line-height: 1.5; }
+    .inspector-content { max-height: 260px; margin: 6px 0; padding: 10px; overflow: auto; border-radius: 4px; background: var(--vscode-editor-background); font-family: var(--vscode-editor-font-family); font-size: 11px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 2; }
     .project { width: 100%; min-width: 0; height: 28px; padding: 0 4px; overflow: hidden; display: flex; align-items: center; gap: 5px; border: 0; border-radius: 6px; color: var(--vscode-descriptionForeground); background: transparent; }
     .project:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
     .project span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -328,6 +351,23 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       </div>
     </footer>
   </div>
+  <dialog id="contextInspector" class="inspector" aria-labelledby="inspectorTitle" aria-describedby="inspectorCaption">
+    <header class="inspector-header">
+      <h2 id="inspectorTitle">Context inspector</h2>
+      <button id="inspectorRefresh" class="inspector-refresh" type="button">Refresh</button>
+      <button id="inspectorClose" class="icon-button" type="button" aria-label="Close context inspector" title="Close (Escape)"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+    </header>
+    <div class="inspector-body">
+      <p id="inspectorCaption" class="inspector-caption">Inspect recorded inputs and the current skill catalog. This is a read-only snapshot, not a preview of the next model request.</p>
+      <p id="inspectorStatus" class="inspector-status" role="status" aria-live="polite"></p>
+      <div id="inspectorWarnings"></div>
+      <div id="inspectorFilters" class="inspector-filters hidden">
+        <input id="inspectorSearch" class="inspector-search" type="search" placeholder="Find in context…" aria-label="Find in context" autofocus>
+        <select id="inspectorSort" class="inspector-sort" aria-label="Context sort order"><option value="source">Source order</option><option value="size">Largest first</option></select>
+      </div>
+      <div id="inspectorGroups"></div>
+    </div>
+  </dialog>
   <script nonce="${token}" src="${escapeHtml(markdownAssets.script.toString(true))}"></script>
   <script nonce="${token}" src="${escapeHtml(markdownAssets.scroll.toString(true))}"></script>
   <script nonce="${token}">
@@ -348,6 +388,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       policyTrigger: document.getElementById('policyTrigger'), policyMenu: document.getElementById('policyMenu'),
       send: document.getElementById('send'), cancel: document.getElementById('cancel'),
       usageControl: document.getElementById('usageControl'), usageTrigger: document.getElementById('usageTrigger'), usageFill: document.getElementById('usageFill'), usagePanel: document.getElementById('usagePanel'), usageStats: document.getElementById('usageStats'),
+      inspector: document.getElementById('contextInspector'), inspectorRefresh: document.getElementById('inspectorRefresh'), inspectorClose: document.getElementById('inspectorClose'), inspectorStatus: document.getElementById('inspectorStatus'), inspectorWarnings: document.getElementById('inspectorWarnings'), inspectorFilters: document.getElementById('inspectorFilters'), inspectorSearch: document.getElementById('inspectorSearch'), inspectorSort: document.getElementById('inspectorSort'), inspectorGroups: document.getElementById('inspectorGroups'),
       attach: document.getElementById('attach'), attachments: document.getElementById('attachments'),
       queueDock: document.getElementById('queueDock'),
       modeChips: document.getElementById('modeChips'), contextChips: document.getElementById('contextChips'), mentionMenu: document.getElementById('mentionMenu'), commandMenu: document.getElementById('commandMenu'),
@@ -364,6 +405,10 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     let queueRenderSignature = '';
     let policyMenuOpen = false;
     let usageOpen = false;
+    let inspection;
+    let inspectionSession;
+    let inspectionRequest = 0;
+    let inspectionTimer;
     let jobsOpen = false;
     let sessionMenuOpen = false;
     let sessionActionId;
@@ -1070,8 +1115,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     function formatTokens(value) {
       if (!Number.isFinite(value)) return '0';
       if (value < 1000) return String(Math.round(value));
-      if (value < 1000000) return (value / 1000).toFixed(value < 10000 ? 1 : 0).replace(/\.0$/, '') + 'K';
-      return (value / 1000000).toFixed(value < 10000000 ? 1 : 0).replace(/\.0$/, '') + 'M';
+      if (value < 1000000) return (value / 1000).toFixed(value < 10000 ? 1 : 0).replace(/\\.0$/, '') + 'K';
+      return (value / 1000000).toFixed(value < 10000000 ? 1 : 0).replace(/\\.0$/, '') + 'M';
     }
     function formatDuration(value) {
       if (!Number.isFinite(value) || value <= 0) return '0ms';
@@ -1123,8 +1168,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       elements.usageStats.textContent = stats;
       elements.usageStats.title = usageStatsLine(usage);
       elements.usageStats.classList.toggle('hidden', stats === '');
-      elements.usageControl.classList.toggle('hidden', usage.available !== true);
-      if (usage.available !== true) {
+      const ready = current.phase === 'ready' && Boolean(current.sessionId);
+      elements.usageControl.classList.toggle('hidden', !ready && usage.available !== true);
+      if (!ready && usage.available !== true) {
         usageOpen = false;
         elements.usagePanel.classList.add('hidden');
         elements.usageTrigger.setAttribute('aria-expanded', 'false');
@@ -1135,13 +1181,15 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       elements.usageFill.setAttribute('stroke-dasharray', (circumference * percent / 100) + ' ' + circumference);
       elements.usageTrigger.classList.toggle('warning', percent >= 75 && percent < 90);
       elements.usageTrigger.classList.toggle('danger', percent >= 90);
-      elements.usageTrigger.title = 'Context ' + percent + '% used';
+      elements.usageTrigger.title = usage.available ? 'Context ' + percent + '% used' : 'Inspect context';
       elements.usageTrigger.setAttribute('aria-label', elements.usageTrigger.title);
       elements.usageTrigger.setAttribute('aria-expanded', String(usageOpen));
       elements.usagePanel.replaceChildren();
       if (usageOpen) {
         const header = node('div', 'usage-header');
-        header.append(node('span', '', 'Context'), node('span', 'usage-percent', percent + '% used'), node('span', 'usage-figures', '~' + formatTokens(usage.usedTokens) + ' / ' + formatTokens(usage.contextWindow)));
+        header.append(node('span', '', 'Context'));
+        if (usage.available) header.append(node('span', 'usage-percent', percent + '% used'), node('span', 'usage-figures', '~' + formatTokens(usage.usedTokens) + ' / ' + formatTokens(usage.contextWindow)));
+        else header.append(node('span', '', 'Usage not available yet'));
         const bar = node('div', 'usage-bar');
         const breakdown = usage.breakdown;
         const parts = breakdown ? [
@@ -1159,7 +1207,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         } else {
           const segment = node('span', 'usage-segment usage-messages'); segment.style.width = percent + '%'; bar.append(segment);
         }
-        elements.usagePanel.append(header, bar);
+        elements.usagePanel.append(header);
+        if (usage.available) elements.usagePanel.append(bar);
         if (breakdown) {
           const rows = node('dl', 'usage-rows');
           for (const part of parts) {
@@ -1169,8 +1218,75 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
           }
           elements.usagePanel.append(rows);
         }
+        const inspect = node('button', 'inspect-action', 'Inspect context…');
+        inspect.type = 'button'; inspect.disabled = !ready; inspect.addEventListener('click', openContextInspector);
+        elements.usagePanel.append(inspect);
       }
       elements.usagePanel.classList.toggle('hidden', !usageOpen);
+    }
+    function renderInspectionGroups() {
+      elements.inspectorGroups.replaceChildren();
+      if (!inspection) return;
+      const query = elements.inspectorSearch.value.trim().toLowerCase();
+      let matches = 0;
+      for (const group of inspection.groups) {
+        const entries = group.entries.filter(entry => !query || [entry.label, entry.source, entry.content].join(' ').toLowerCase().includes(query));
+        if (query && !entries.length) continue;
+        matches += entries.length;
+        if (elements.inspectorSort.value === 'size') entries.sort((a, b) => b.characters - a.characters);
+        const section = node('details', 'inspector-group'); section.open = Boolean(query);
+        const summary = node('summary', '', group.label);
+        summary.append(node('span', 'inspector-count', query ? entries.length + ' matches' : String(group.total)));
+        section.append(summary, node('p', 'inspector-caption', group.description));
+        if (!entries.length) section.append(node('p', 'inspector-caption', 'No entries in this snapshot.'));
+        for (const entry of entries) {
+          const details = node('details', 'inspector-entry');
+          details.append(node('summary', '', entry.label), node('p', 'inspector-source', entry.source + ' · ' + entry.characters.toLocaleString() + ' characters'));
+          // Context can contain untrusted project/plugin text. Never render it as HTML.
+          details.append(node('pre', 'inspector-content', entry.content || '(No text content)'));
+          if (entry.truncated) details.append(node('p', 'inspector-caption', 'Content truncated for display. Search covers the displayed excerpt.'));
+          section.append(details);
+        }
+        if (!query && group.total > group.entries.length) section.append(node('p', 'inspector-caption', (group.total - group.entries.length) + ' more entries omitted by the display limit.'));
+        elements.inspectorGroups.append(section);
+      }
+      if (query && !matches) elements.inspectorGroups.append(node('p', 'inspector-caption', 'No matching context.'));
+    }
+    function requestInspection() {
+      if (!state || state.phase !== 'ready' || !state.sessionId || !elements.inspector.open) return;
+      clearTimeout(inspectionTimer); inspection = undefined; inspectionSession = state.sessionId;
+      const requestId = ++inspectionRequest;
+      elements.inspectorRefresh.disabled = true;
+      elements.inspectorStatus.classList.remove('error'); elements.inspectorStatus.textContent = 'Reading recorded context…';
+      elements.inspectorWarnings.replaceChildren(); elements.inspectorGroups.replaceChildren(); elements.inspectorFilters.classList.add('hidden');
+      vscode.postMessage({ type: 'inspect-context', sessionId: inspectionSession, requestId });
+      inspectionTimer = setTimeout(() => {
+        if (inspectionRequest !== requestId || !elements.inspector.open) return;
+        ++inspectionRequest; vscode.postMessage({ type: 'close-context' });
+        elements.inspectorRefresh.disabled = false; elements.inspectorStatus.classList.add('error');
+        elements.inspectorStatus.textContent = 'Context inspection timed out. Try Refresh.';
+      }, 45000);
+    }
+    function openContextInspector() {
+      if (!state || state.phase !== 'ready' || !state.sessionId) return;
+      usageOpen = false; elements.usagePanel.classList.add('hidden'); elements.usageTrigger.setAttribute('aria-expanded', 'false');
+      closeSessionMenu(false); elements.inspectorSearch.value = ''; elements.inspectorSort.value = 'source';
+      if (!elements.inspector.open) elements.inspector.showModal();
+      requestInspection();
+    }
+    function receiveInspection(message) {
+      if (!elements.inspector.open || !state || state.phase !== 'ready' || state.sessionId !== inspectionSession || message.sessionId !== inspectionSession || message.requestId !== inspectionRequest) return;
+      clearTimeout(inspectionTimer); elements.inspectorRefresh.disabled = false;
+      if (typeof message.error === 'string') {
+        elements.inspectorStatus.classList.add('error'); elements.inspectorStatus.textContent = message.error; return;
+      }
+      if (!message.inspection || message.inspection.sessionId !== inspectionSession) return;
+      inspection = message.inspection;
+      const usage = inspection.usage;
+      const summary = usage.available ? 'Context ' + usage.percent + '% · ~' + formatTokens(usage.usedTokens) + ' / ' + formatTokens(usage.contextWindow) + ' tokens' : 'Context usage not available yet';
+      elements.inspectorStatus.textContent = summary + '\\nSnapshot at ' + new Date(inspection.capturedAt).toLocaleTimeString() + (inspection.throughSeq === undefined ? '' : ' · through event ' + inspection.throughSeq);
+      elements.inspectorWarnings.replaceChildren(...inspection.warnings.map(warning => node('p', 'inspector-warning', warning)));
+      elements.inspectorFilters.classList.remove('hidden'); renderInspectionGroups();
     }
     function sameSelection(left, right) {
       return left && right && left.path === right.path && left.startLine === right.startLine && left.endLine === right.endLine;
@@ -1467,7 +1583,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       }
       const policyChanged = renderedChrome.agentPreset !== current.agentPreset || renderedChrome.permissions !== current.permissions || renderedChrome.plan !== current.plan || renderedChrome.running !== current.running || renderedChrome.phase !== current.phase;
       if (policyChanged) renderPolicyState(current);
-      if (renderedChrome.usage !== current.usage) renderUsage(current);
+      if (renderedChrome.usage !== current.usage || renderedChrome.phase !== current.phase || renderedChrome.sessionId !== current.sessionId) renderUsage(current);
       if (renderedChrome.jobs !== current.jobs) renderJobs();
       renderConversation(current);
       const sessionReady = current.phase === 'ready' && Boolean(current.sessionId);
@@ -1488,6 +1604,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       conversationScroller.changed();
     }
     function scheduleRender(current) {
+      if (elements.inspector.open && (current.phase !== 'ready' || current.sessionId !== inspectionSession)) elements.inspector.close();
       state = current; pendingRenderState = current;
       if (renderFrame !== undefined) return;
       renderFrame = requestAnimationFrame(() => {
@@ -1608,6 +1725,16 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     elements.usageTrigger.addEventListener('click', event => {
       event.stopPropagation(); usageOpen = !usageOpen; policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false'); if (state) renderUsage(state);
     });
+    elements.inspectorClose.addEventListener('click', () => elements.inspector.close());
+    elements.inspectorRefresh.addEventListener('click', requestInspection);
+    elements.inspectorSearch.addEventListener('input', renderInspectionGroups);
+    elements.inspectorSort.addEventListener('change', renderInspectionGroups);
+    elements.inspector.addEventListener('close', () => {
+      if (elements.inspector.open) return;
+      clearTimeout(inspectionTimer); ++inspectionRequest; inspection = undefined; inspectionSession = undefined;
+      elements.inspectorGroups.replaceChildren(); vscode.postMessage({ type: 'close-context' });
+      if (!elements.usageControl.classList.contains('hidden')) elements.usageTrigger.focus();
+    });
     elements.policyTrigger.addEventListener('click', event => {
       event.stopPropagation(); policyMenuOpen = !policyMenuOpen; usageOpen = false; elements.usagePanel.classList.add('hidden'); elements.usageTrigger.setAttribute('aria-expanded', 'false'); elements.commandMenu.classList.add('hidden'); elements.mentionMenu.classList.add('hidden'); if (state) renderPolicyState(state);
     });
@@ -1652,6 +1779,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     });
     window.addEventListener('message', event => {
       if (!event.data) return;
+      if (event.data.type === 'context-inspection') receiveInspection(event.data);
       if (event.data.type === 'state') { pendingMessageAppends.clear(); scheduleRender(event.data.state); }
       if (event.data.type === 'state-update') applyStateUpdate(event.data.update);
       if (event.data.type === 'tool-output' && state && event.data.sessionId === state.sessionId && typeof event.data.messageId === 'string') {

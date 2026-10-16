@@ -174,6 +174,70 @@ try {
     const { data } = await page('Page.captureScreenshot', { format: 'png' })
     await writeFile(process.env.DSH_SCROLL_SCREENSHOT, Buffer.from(data, 'base64'))
   }
+  // The context inspector must stay isolated from streaming, session switches,
+  // and the conversation scroller. Exercise the real HTML/dialog in Chromium.
+  await evaluate(`(async () => {
+    showState({...baseline,usage:{available:true,percent:24,usedTokens:24000,contextWindow:100000}}); await tick();
+    elements.usageTrigger.click(); document.querySelector('.inspect-action').click();
+    ensure(elements.inspector.open, 'inspector did not open');
+    const request = sent.findLast(message => message.type==='inspect-context');
+    window.inspectorFixture = {sessionId:state.sessionId,capturedAt:Date.now(),throughSeq:42,usage:state.usage,warnings:[],groups:[
+      {id:'system',label:'System prompt',description:'Recorded system messages.',total:1,entries:[{id:'1',label:'System prompt',source:'Event 1',characters:16,content:'You are helpful.',truncated:false}]},
+      {id:'tools',label:'Tools',description:'Schemas in the latest recorded request.',total:2,entries:[{id:'read',label:'read',source:'Request header · event 3',characters:35,content:'Read a workspace file.',truncated:false},{id:'write',label:'write',source:'Request header · event 3',characters:60,content:'Write a workspace file. <img src=x onerror="alert(1)">',truncated:false}]},
+      {id:'instructions',label:'Project rules',description:'Recorded instructions, not files on disk.',total:1,entries:[{id:'2',label:'AGENTS.md',source:'agent-instructions · event 2',characters:60,content:'Use pnpm. Keep changes small. Run tests before finishing.',truncated:false}]},
+      {id:'skills',label:'Loaded skill content',description:'Actually loaded instructions.',total:0,entries:[]},
+      {id:'available',label:'Available skills',description:'Available does not mean loaded.',total:2,entries:[{id:'review',label:'review',source:'Model-callable skill',characters:12,content:'Review code.',truncated:false}]},
+      {id:'compaction',label:'Recent compactions',description:'Recorded results.',total:0,entries:[]},
+    ]};
+    window.inspectorReply = (request, extra = {}) => window.dispatchEvent(new MessageEvent('message',{data:{type:'context-inspection',sessionId:request.sessionId,requestId:request.requestId,inspection:inspectorFixture,...extra}}));
+    inspectorReply({...request,requestId:request.requestId-1}); ensure(!inspection, 'accepted stale request');
+    inspectorReply(request); ensure(inspection && document.querySelectorAll('.inspector-group').length===6, 'missing context groups');
+    ensure(elements.inspectorStatus.textContent.includes('24K / 100K'), 'context totals were formatted incorrectly');
+    elements.prompt.focus(); ensure(elements.inspector.contains(document.activeElement), 'focus escaped modal');
+    const box=elements.inspector.getBoundingClientRect();
+    ensure(box.left>=0 && box.right<=innerWidth && box.top>=0 && box.bottom<=innerHeight, 'dialog out of bounds');
+    elements.inspectorSearch.value='workspace'; elements.inspectorSearch.dispatchEvent(new Event('input'));
+    elements.inspectorSort.value='size'; elements.inspectorSort.dispatchEvent(new Event('change'));
+    ensure(document.querySelectorAll('.inspector-entry').length===2 && document.querySelector('.inspector-entry summary').textContent==='write', 'search/size order failed');
+    document.querySelector('.inspector-entry').open=true;
+    ensure(!elements.inspector.querySelector('img'), 'context was rendered as HTML');
+    showState({...state,usage:{...state.usage,percent:25}}); await tick();
+    ensure(document.querySelector('.inspector-entry').open && elements.inspectorStatus.textContent.includes('24%'), 'streaming changed the captured snapshot');
+    elements.inspectorSearch.value=''; elements.inspectorSearch.dispatchEvent(new Event('input'));
+    document.querySelectorAll('.inspector-group')[2].open=true; document.querySelectorAll('.inspector-group')[2].querySelector('details').open=true;
+  })()`)
+  if (process.env.DSH_CONTEXT_SCREENSHOT) {
+    const { data } = await page('Page.captureScreenshot', { format: 'png' })
+    await writeFile(process.env.DSH_CONTEXT_SCREENSHOT, Buffer.from(data, 'base64'))
+  }
+  await page('Emulation.setDeviceMetricsOverride', { width: 410, height: 720, deviceScaleFactor: 1, mobile: false })
+  await evaluate(`Object.entries({'--vscode-foreground':'#333333','--vscode-descriptionForeground':'#616161','--vscode-sideBar-background':'#f3f3f3','--vscode-editor-background':'#ffffff','--vscode-widget-border':'#cccccc','--vscode-input-background':'#ffffff','--vscode-input-foreground':'#333333','--vscode-textLink-foreground':'#005fb8'}).forEach(([key,value]) => document.documentElement.style.setProperty(key,value)); tick();`)
+  assert.equal(await evaluate('elements.inspector.scrollWidth <= elements.inspector.clientWidth'), true)
+  if (process.env.DSH_CONTEXT_LIGHT_SCREENSHOT) {
+    const { data } = await page('Page.captureScreenshot', { format: 'png' })
+    await writeFile(process.env.DSH_CONTEXT_LIGHT_SCREENSHOT, Buffer.from(data, 'base64'))
+  }
+  await page('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+  await page('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+  await evaluate('tick()')
+  assert.equal(await evaluate('!elements.inspector.open && document.activeElement.id === "usageTrigger"'), true)
+  await evaluate(`(async () => {
+    elements.usageTrigger.click(); document.querySelector('.inspect-action').click();
+    const old = sent.findLast(message => message.type==='inspect-context');
+    showState({...state,sessionId:'other'}); await tick(); inspectorReply(old);
+    ensure(!elements.inspector.open && !inspection, 'late result reopened old session');
+    elements.usageTrigger.click(); document.querySelector('.inspect-action').click();
+    const request = sent.findLast(message => message.type==='inspect-context');
+    inspectorReply(request,{error:'Connection unavailable'});
+    ensure(!elements.inspectorRefresh.disabled && elements.inspectorStatus.textContent==='Connection unavailable', 'error did not allow retry');
+    elements.inspectorRefresh.click(); const retry = sent.findLast(message => message.type==='inspect-context');
+    ensure(retry.requestId > request.requestId, 'refresh reused request');
+    inspectorReply(request); ensure(!inspection, 'late result replaced refresh');
+    showState({...state,phase:'connecting'}); await tick(); inspectorReply(retry);
+    ensure(!elements.inspector.open && !inspection, 'reconnect kept an old snapshot');
+    ensure(!sent.some(message => message.type==='webview-error'), JSON.stringify(sent.filter(message => message.type==='webview-error')));
+  })()`)
+  console.log('PASS: context inspector, search/sort, safe rendering, snapshot stability, Escape, retry and session isolation at 300px')
 } finally {
   clearTimeout(timeout)
   socket?.terminate()

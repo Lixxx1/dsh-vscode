@@ -22,14 +22,16 @@ await mkdir(workspace)
 const entry = join(root, 'client.cjs')
 await build({ stdin: { contents: `export { DshConnection } from './src/dsh-connection.ts';
 export { DshClient } from './src/dsh-client.ts'; export { redactDshSecrets } from './src/runtime-output.ts';
-export { ConversationProjector } from './src/conversation.ts';`,
+export { ConversationProjector } from './src/conversation.ts';
+export { inspectContext, readContextHistory } from './src/context-inspector.ts';`,
   resolveDir: process.cwd(), loader: 'ts' }, outfile: entry, bundle: true, platform: 'node', format: 'cjs',
   external: ['bufferutil', 'utf-8-validate'], logLevel: 'silent' })
-const { DshConnection, DshClient, redactDshSecrets, ConversationProjector } = createRequire(import.meta.url)(entry)
+const { DshConnection, DshClient, redactDshSecrets, ConversationProjector, inspectContext, readContextHistory } = createRequire(import.meta.url)(entry)
 let modelServer, requests = 0, releaseFirst
 const firstResponse = new Promise(resolveFirst => { releaseFirst = resolveFirst })
 const patchArgs = []
 if (withTools) {
+  await writeFile(join(workspace, 'AGENTS.md'), 'Use the local compatibility fixture.\n')
   modelServer = createServer(async (request, response) => {
     if (request.method !== 'POST' || !request.url?.endsWith('/chat/completions')) { response.writeHead(404); response.end(); return }
     let body = ''
@@ -157,6 +159,16 @@ try {
     const history = await client.openSession(first.sessionId); history.activate()
     replay.reset(history.events)
     assert.deepEqual(replay.messages().filter(message => message.role === 'tool'), tools)
+    if (version.startsWith('0.2.')) {
+      const recorded = await readContextHistory(history.events, history.hasMore, before => client.history(first.sessionId, before), () => true)
+      const snapshot = inspectContext(first.sessionId, recorded.entries, recorded.complete, await client.listSkills(first.sessionId), { available: false })
+      const group = id => snapshot.groups.find(group => group.id === id)
+      assert(group('tools').entries.some(entry => entry.label === 'read'), 'Inspect the actual recorded tool schema')
+      assert(group('system').entries.length > 0, 'Inspect the actual recorded system prompt')
+      assert(group('instructions').entries.some(entry => entry.content.includes('Use the local compatibility fixture.')), 'Inspect recorded AGENTS.md injection')
+      assert.deepEqual(snapshot.warnings, [])
+      console.log(`PASS ${version}: context inspector reads real system prompt, tool schemas and project rules`)
+    }
     if (version.startsWith('0.2.')) {
       const jobs = () => frames.filter(frame => frame.type === 'session/jobs' && frame.sessionId === first.sessionId).at(-1)?.jobs ?? []
       await waitFor(() => jobs().some(job => job.status === 'running'))
