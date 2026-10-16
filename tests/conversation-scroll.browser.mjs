@@ -238,6 +238,66 @@ try {
     ensure(!sent.some(message => message.type==='webview-error'), JSON.stringify(sent.filter(message => message.type==='webview-error')));
   })()`)
   console.log('PASS: context inspector, search/sort, safe rendering, snapshot stability, Escape, retry and session isolation at 300px')
+  await page('Emulation.setDeviceMetricsOverride', { width: 300, height: 550, deviceScaleFactor: 1, mobile: false })
+  await evaluate(`(async () => {
+    showState({...baseline,subagentCount:2,jobs:[{id:'job',kind:'shell',label:'Development server',status:'running',startedAt:Date.now()}]}); await tick();
+    elements.prompt.value='Keep this draft'; elements.jobsTrigger.click();
+    ensure(tasksPanel.open, 'tasks did not open');
+    window.taskFixture={sessionId:state.sessionId,truncated:false,tasks:[
+      {address:{kind:'subagent',parentSessionId:state.sessionId,childSessionId:'child-a',mode:'continuable'},label:'Inspect API error handling',depth:0,status:'running',elapsedMs:1200},
+      {address:{kind:'subagent',parentSessionId:'child-a',childSessionId:'child-b',mode:'one-shot'},label:'Review authentication edge cases',depth:1,status:'completed',elapsedMs:3450}
+    ]};
+    window.taskReply=(request,extra={})=>window.dispatchEvent(new MessageEvent('message',{data:{type:'task-inspection',sessionId:request.sessionId,requestId:request.requestId,inspection:taskFixture,...extra}}));
+    const request=sent.findLast(message=>message.type==='inspect-tasks');
+    taskReply({...request,requestId:request.requestId-1}); ensure(!taskSnapshot, 'accepted old task snapshot');
+    taskReply(request);
+    ensure(tasksContent.querySelectorAll('.task-row').length===2 && tasksContent.textContent.includes('Development server'), 'missing agent/job rows');
+    const box=tasksPanel.getBoundingClientRect(); ensure(box.left>=0 && box.right<=innerWidth && box.top>=0 && box.bottom<=innerHeight, 'tasks out of bounds');
+    ensure(tasksPanel.scrollWidth<=tasksPanel.clientWidth, 'tasks overflow narrow sidebar');
+    tasksContent.querySelector('button').focus(); requestTasks(); taskReply(sent.findLast(message=>message.type==='inspect-tasks'));
+    ensure(document.activeElement.dataset.taskId==='child-a', 'refresh stole task focus');
+  })()`)
+  if (process.env.DSH_TASKS_SCREENSHOT) {
+    const { data } = await page('Page.captureScreenshot', { format: 'png' })
+    await writeFile(process.env.DSH_TASKS_SCREENSHOT, Buffer.from(data, 'base64'))
+  }
+  await evaluate(`Object.entries({'--vscode-foreground':'#cccccc','--vscode-descriptionForeground':'#999999','--vscode-sideBar-background':'#181818','--vscode-editor-background':'#1f1f1f','--vscode-widget-border':'#454545','--vscode-input-background':'#313131','--vscode-input-foreground':'#cccccc','--vscode-textLink-foreground':'#4daafc'}).forEach(([key,value]) => document.documentElement.style.setProperty(key,value)); tick();`)
+  if (process.env.DSH_TASKS_DARK_SCREENSHOT) {
+    const { data } = await page('Page.captureScreenshot', { format: 'png' })
+    await writeFile(process.env.DSH_TASKS_DARK_SCREENSHOT, Buffer.from(data, 'base64'))
+  }
+  await evaluate(`(async () => {
+    tasksContent.querySelector('button').click();
+    const request=sent.findLast(message=>message.type==='inspect-tasks');
+    ensure(request.childId==='child-a', 'child address not sent');
+    taskReply(request,{inspection:{...taskFixture,detail:{childSessionId:'child-a',truncated:true,messages:[
+      {id:'reply',role:'assistant',text:'Found the cause. <img src=x onerror="alert(1)">',detail:'',failed:false},
+      {id:'tool',role:'tool',text:'Read src/api.ts',detail:'Recorded tool output',failed:false}
+    ]}}});
+    ensure(!tasksContent.querySelector('img'), 'agent output executed as markup');
+    ensure(tasksContent.textContent.includes('bounded excerpt'), 'missing truncation notice');
+    tasksContent.querySelector('details').open=true;
+    requestTasks(); taskReply(sent.findLast(message=>message.type==='inspect-tasks'),{inspection:taskSnapshot});
+    ensure(tasksContent.querySelector('details').open, 'refresh collapsed tool output');
+    ensure(elements.prompt.value==='Keep this draft' && state.sessionId===taskSession, 'inspection changed parent draft/session');
+    tasksBack.click(); taskReply(sent.findLast(message=>message.type==='inspect-tasks'));
+    ensure(!taskChild && tasksContent.querySelectorAll('.task-row').length===2, 'back navigation failed');
+  })()`)
+  await page('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+  await page('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+  await evaluate(`(async () => {
+    await tick(); ensure(!tasksPanel.open && document.activeElement.id==='jobsTrigger', 'Escape/focus restoration failed');
+    elements.jobsTrigger.click(); const old=sent.findLast(message=>message.type==='inspect-tasks');
+    showState({...state,sessionId:'another'}); await tick(); taskReply(old);
+    ensure(!tasksPanel.open && !taskSnapshot, 'late result leaked into next conversation');
+    elements.jobsTrigger.click(); taskReply(sent.findLast(message=>message.type==='inspect-tasks'),{error:'Runtime unavailable'});
+    ensure(!tasksRefresh.disabled && tasksStatus.textContent.includes('Runtime unavailable'), 'task error cannot retry');
+    tasksRefresh.click(); const retry=sent.findLast(message=>message.type==='inspect-tasks');
+    showState({...state,phase:'loading'}); await tick(); taskReply(retry);
+    ensure(!tasksPanel.open && !taskSnapshot, 'reconnect kept old task panel');
+    ensure(!sent.some(message=>message.type==='webview-error'), JSON.stringify(sent.filter(message=>message.type==='webview-error')));
+  })()`)
+  console.log('PASS: task tree, read-only child output, background jobs, draft/focus preservation, errors, Escape and session isolation at 300px')
 } finally {
   clearTimeout(timeout)
   socket?.terminate()

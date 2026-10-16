@@ -14,6 +14,8 @@ import { build } from 'esbuild'
 
 const cli = process.argv[2]
 const withTools = process.argv.includes('--tools')
+const withSubagents = process.argv.includes('--subagents')
+assert(!withSubagents || withTools, '--subagents requires --tools')
 assert(cli, 'Pass the absolute path to an installed DSH lib/bin.js; this test never installs or upgrades DSH.')
 const version = JSON.parse(await readFile(join(dirname(resolve(cli)), '../package.json'), 'utf8')).version
 const root = await mkdtemp(join(tmpdir(), 'dsh-sidebar-compat-'))
@@ -29,6 +31,8 @@ export { inspectContext, readContextHistory } from './src/context-inspector.ts';
 const { DshConnection, DshClient, redactDshSecrets, ConversationProjector, inspectContext, readContextHistory } = createRequire(import.meta.url)(entry)
 let modelServer, requests = 0, releaseFirst
 const firstResponse = new Promise(resolveFirst => { releaseFirst = resolveFirst })
+let releaseChild
+const childResponse = new Promise(resolveChild => { releaseChild = resolveChild })
 const patchArgs = []
 if (withTools) {
   await writeFile(join(workspace, 'AGENTS.md'), 'Use the local compatibility fixture.\n')
@@ -39,8 +43,10 @@ if (withTools) {
     const input = JSON.parse(body)
     // The runtime can concurrently ask this route for a session title. That
     // non-tool request must not consume the scripted agent turn or its gate.
-    const index = input.tools?.length ? requests++ : -1
+    const isChild = withSubagents && input.messages.some(message => message.role === 'user' && JSON.stringify(message.content).includes('SUBAGENT_SMOKE_ONLY'))
+    const index = isChild ? -2 : input.tools?.length ? requests++ : -1
     if (index === 0) await firstResponse
+    if (isChild) await childResponse
     if (response.destroyed) return
     const tools = [
       ['write', { file_path: 'smoke.txt', content: 'Runtime smoke passed\n' }],
@@ -48,13 +54,14 @@ if (withTools) {
       ['read', { file_path: 'smoke.txt' }],
       ...(version.startsWith('0.2.') ? [['bash', { command: 'node -e "setTimeout(() => {}, 30000)"',
         description: 'Start temporary compatibility test background process', run_in_background: true }]] : []),
+      ...(withSubagents ? [['subagent', { description: 'Inspect local smoke fixture', prompt: 'SUBAGENT_SMOKE_ONLY: Reply with Child task verified.', run_in_background: false }]] : []),
     ]
     const tool = tools[index]
     response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
     const send = (delta, finish_reason) => response.write(`data: ${JSON.stringify({ id: `smoke-${index}`, object: 'chat.completion.chunk',
       created: 1, model: 'smoke', choices: [{ index: 0, delta, finish_reason }] })}\n\n`)
     send(tool ? { role: 'assistant', tool_calls: [{ index: 0, id: `call-${index}`, type: 'function', function: { name: tool[0], arguments: JSON.stringify(tool[1]) } }] }
-      : { role: 'assistant', content: 'Runtime smoke passed.' }, null)
+      : { role: 'assistant', content: isChild ? 'Child task verified.' : 'Runtime smoke passed.' }, null)
     send({}, tool ? 'tool_calls' : 'stop')
     response.end('data: [DONE]\n\n')
   })
@@ -147,12 +154,37 @@ try {
     await waitFor(() => queue().some(item => item.placement === 'steering') || frames.some(frame => frame.type === 'session/event'
       && frame.event.type === 'user/message' && frame.event.data.content?.some(part => part.text === 'Keep the test focused.')))
     releaseFirst()
+    if (withSubagents) {
+      await waitFor(() => frames.some(frame => frame.type === 'session/projection' && frame.sessionId === first.sessionId
+        && frame.key === 'subagentCatalog' && frame.value.length > 0))
+      const tasks = await client.inspectTasks(first.sessionId)
+      assert.equal(tasks.tasks.length, 1)
+      assert.equal(tasks.tasks[0].status, 'running')
+      const childId = tasks.tasks[0].address.childSessionId
+      const before = frames.filter(frame => frame.type === 'session/event').length
+      const detail = await client.inspectTasks(first.sessionId, childId)
+      assert.equal(detail.detail.childSessionId, childId)
+      assert.equal(opening.isCurrent(), true, 'Inspecting a child must not replace the parent follow')
+      const observer = new DshClient(connection)
+      try {
+        await observer.startStreams()
+        await observer.listSessions()
+        assert.equal((await observer.inspectTasks(first.sessionId)).tasks[0].status, 'running', 'A newly connected sidebar must see an already-running child')
+      } finally { observer.dispose() }
+      releaseChild()
+      await waitFor(() => frames.slice(before).some(frame => frame.type === 'session/event'
+        && frame.sessionId === first.sessionId && frame.event.type === 'turn/end'))
+      const settled = await client.inspectTasks(first.sessionId, childId)
+      assert.equal(settled.tasks[0].status, 'completed')
+      assert(settled.detail.messages.some(message => message.text.includes('Child task verified.')))
+      console.log(`PASS ${version}: real subagent catalog, running/completed states, read-only child history and parent stream isolation`)
+    }
     await waitFor(() => frames.some(frame => frame.type === 'session/event' && frame.sessionId === first.sessionId && frame.event.type === 'turn/end'))
     assert.equal(await readFile(join(workspace, 'smoke.txt'), 'utf8'), 'Runtime smoke passed\n')
     const live = new ConversationProjector()
     for (const frame of frames) if (frame.type === 'session/event' && frame.sessionId === first.sessionId) live.apply(frame.event)
     const tools = live.messages().filter(message => message.role === 'tool')
-    assert.equal(tools.length, version.startsWith('0.2.') ? 4 : 3)
+    assert.equal(tools.length, (version.startsWith('0.2.') ? 4 : 3) + (withSubagents ? 1 : 0))
     assert.equal(tools.filter(message => message.failed).length, 1, tools.filter(message => message.failed).map(message => message.rawResult).join('\n'))
     assert(tools.every(message => message.rawResult?.length > 0))
     const replay = new ConversationProjector()
@@ -195,6 +227,7 @@ try {
 } finally {
   client?.dispose(); connection?.dispose()
   releaseFirst()
+  releaseChild()
   if (!exited) {
     child.kill('SIGTERM')
     const timer = setTimeout(() => child.kill('SIGKILL'), 5_000)

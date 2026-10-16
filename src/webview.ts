@@ -63,7 +63,6 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .jobs-trigger { width: auto; min-width: 28px; padding: 0 7px; display: flex; gap: 5px; font-size: 11px; }
     .jobs-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--vscode-descriptionForeground); }
     .jobs-trigger.live .jobs-dot { background: var(--vscode-charts-blue, #4d6bfe); box-shadow: 0 0 0 2px color-mix(in srgb, var(--vscode-charts-blue, #4d6bfe) 20%, transparent); }
-    .jobs-menu { position: absolute; z-index: 20; top: calc(100% + 5px); right: 0; width: min(340px, calc(100vw - 20px)); max-height: min(420px, 70vh); padding: 6px; overflow: auto; border: 1px solid var(--vscode-widget-border); border-radius: 8px; background: var(--vscode-menu-background, var(--vscode-editor-background)); box-shadow: 0 5px 18px var(--vscode-widget-shadow); }
     .jobs-title { padding: 5px 7px 7px; font-size: 11px; font-weight: 600; }
     .job-row { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 2px 7px; padding: 7px; border-radius: 5px; }
     .job-row + .job-row { border-top: 1px solid color-mix(in srgb, var(--vscode-widget-border) 50%, transparent); }
@@ -285,6 +284,14 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .inspector-entry > summary { padding: 3px 0; cursor: pointer; font-size: 12px; }
     .inspector-source { margin: 5px 0; color: var(--vscode-descriptionForeground); font-size: 10px; line-height: 1.5; }
     .inspector-content { max-height: 260px; margin: 6px 0; padding: 10px; overflow: auto; border-radius: 4px; background: var(--vscode-editor-background); font-family: var(--vscode-editor-font-family); font-size: 11px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 2; }
+    .task-row { display: block; width: 100%; padding: 10px 8px; border: 0; border-bottom: 1px solid var(--vscode-widget-border); text-align: left; color: var(--vscode-foreground); background: transparent; }
+    .task-row:hover { background: var(--vscode-list-hoverBackground); }
+    .task-label { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; }
+    .task-meta { display: block; margin-top: 4px; color: var(--vscode-descriptionForeground); font-size: 10px; line-height: 1.5; }
+    .task-row[data-status="running"] .task-meta { color: var(--vscode-progressBar-background); }
+    .task-record { padding: 10px 0; border-top: 1px solid var(--vscode-widget-border); }
+    .task-record > summary { cursor: pointer; font-size: 11px; }
+    .task-text { margin: 6px 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.65 var(--vscode-font-family); }
     .project { width: 100%; min-width: 0; height: 28px; padding: 0 4px; overflow: hidden; display: flex; align-items: center; gap: 5px; border: 0; border-radius: 6px; color: var(--vscode-descriptionForeground); background: transparent; }
     .project:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
     .project span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -313,8 +320,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         </div>
       </div>
       <div id="jobsControl" class="jobs-control hidden">
-        <button id="jobsTrigger" class="icon-button jobs-trigger" title="Background jobs" aria-label="Background jobs" aria-haspopup="menu" aria-expanded="false"><span class="jobs-dot"></span><span id="jobsCount">0</span></button>
-        <div id="jobsMenu" class="jobs-menu hidden" role="menu" aria-label="Background jobs"></div>
+        <button id="jobsTrigger" class="icon-button jobs-trigger" title="Tasks" aria-label="Tasks" aria-haspopup="dialog" aria-expanded="false"><span class="jobs-dot"></span><span id="jobsCount">0</span></button>
       </div>
       <button id="newSession" class="icon-button" title="New conversation" aria-label="New conversation"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
     </header>
@@ -368,6 +374,19 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       <div id="inspectorGroups"></div>
     </div>
   </dialog>
+  <dialog id="tasksPanel" class="inspector" aria-labelledby="tasksTitle">
+    <header class="inspector-header">
+      <button id="tasksBack" class="icon-button hidden" type="button" aria-label="Back to tasks">←</button>
+      <h2 id="tasksTitle">Tasks</h2>
+      <button id="tasksRefresh" class="inspector-refresh" type="button">Refresh</button>
+      <button id="tasksClose" class="icon-button" type="button" aria-label="Close tasks" title="Close (Escape)">×</button>
+    </header>
+    <div class="inspector-body">
+      <p class="inspector-caption">Subagents and background jobs for this conversation. Read-only; your main chat keeps running.</p>
+      <p id="tasksStatus" class="inspector-status" role="status" aria-live="polite"></p>
+      <div id="tasksContent"></div>
+    </div>
+  </dialog>
   <script nonce="${token}" src="${escapeHtml(markdownAssets.script.toString(true))}"></script>
   <script nonce="${token}" src="${escapeHtml(markdownAssets.scroll.toString(true))}"></script>
   <script nonce="${token}">
@@ -382,7 +401,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     const elements = {
       conversation: document.getElementById('conversation'), scroll: document.getElementById('scroll'),
       conversationStatus: document.getElementById('conversationStatus'), conversationHistory: document.getElementById('conversationHistory'), messages: document.getElementById('messages'), conversationTail: document.getElementById('conversationTail'),
-      githubStar: document.getElementById('githubStar'), sessionControl: document.getElementById('sessionControl'), sessionTrigger: document.getElementById('sessionTrigger'), sessionTriggerTitle: document.getElementById('sessionTriggerTitle'), sessionMenu: document.getElementById('sessionMenu'), sessionSearch: document.getElementById('sessionSearch'), sessionList: document.getElementById('sessionList'), newSession: document.getElementById('newSession'), jobsControl: document.getElementById('jobsControl'), jobsTrigger: document.getElementById('jobsTrigger'), jobsCount: document.getElementById('jobsCount'), jobsMenu: document.getElementById('jobsMenu'),
+      githubStar: document.getElementById('githubStar'), sessionControl: document.getElementById('sessionControl'), sessionTrigger: document.getElementById('sessionTrigger'), sessionTriggerTitle: document.getElementById('sessionTriggerTitle'), sessionMenu: document.getElementById('sessionMenu'), sessionSearch: document.getElementById('sessionSearch'), sessionList: document.getElementById('sessionList'), newSession: document.getElementById('newSession'), jobsControl: document.getElementById('jobsControl'), jobsTrigger: document.getElementById('jobsTrigger'), jobsCount: document.getElementById('jobsCount'),
       prompt: document.getElementById('prompt'), project: document.getElementById('project'), workspace: document.getElementById('workspace'),
       models: document.getElementById('models'), efforts: document.getElementById('efforts'),
       policyTrigger: document.getElementById('policyTrigger'), policyMenu: document.getElementById('policyMenu'),
@@ -409,10 +428,15 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     let inspectionSession;
     let inspectionRequest = 0;
     let inspectionTimer;
-    let jobsOpen = false;
+    const tasksPanel = document.getElementById('tasksPanel');
+    const tasksContent = document.getElementById('tasksContent');
+    const tasksStatus = document.getElementById('tasksStatus');
+    const tasksRefresh = document.getElementById('tasksRefresh');
+    const tasksBack = document.getElementById('tasksBack');
+    let taskSession, taskChild, taskSnapshot, taskPoll, taskTimeout;
+    let taskRequest = 0, taskSignature = '';
     let sessionMenuOpen = false;
     let sessionActionId;
-    let jobsTimer;
     let historyAnchor;
     let renderFrame;
     let pendingRenderState;
@@ -1507,22 +1531,87 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     function renderJobs() {
       const jobs = array(state && state.jobs);
       const live = jobs.filter(liveJob).length;
-      elements.jobsControl.classList.toggle('hidden', jobs.length === 0);
+      const count = jobs.length + Number(state && state.subagentCount || 0);
+      elements.jobsControl.classList.toggle('hidden', count === 0 || state.phase !== 'ready');
       elements.jobsTrigger.classList.toggle('live', live > 0);
-      elements.jobsCount.textContent = String(live || jobs.length);
-      elements.jobsTrigger.title = live > 0 ? live + ' background ' + (live === 1 ? 'job' : 'jobs') + ' running' : jobs.length + ' background ' + (jobs.length === 1 ? 'job' : 'jobs');
-      if (!jobs.length) { jobsOpen = false; elements.jobsMenu.classList.add('hidden'); elements.jobsTrigger.setAttribute('aria-expanded', 'false'); }
-      elements.jobsMenu.replaceChildren();
-      if (jobs.length) {
-        elements.jobsMenu.append(node('div', 'jobs-title', live > 0 ? 'Background jobs · ' + live + ' running' : 'Background jobs'));
-        const ordered = [...jobs].sort((a, b) => liveJob(a) !== liveJob(b) ? (liveJob(a) ? -1 : 1) : (liveJob(a) ? Number(a.startedAt) - Number(b.startedAt) : Number(b.finishedAt || b.startedAt) - Number(a.finishedAt || a.startedAt)));
-        for (const job of ordered) {
-          const row = node('div', 'job-row'); const status = string(job.detail) || string(job.status);
-          row.title = status; row.append(node('span', 'job-kind', string(job.kind, 'job')), node('span', 'job-label', string(job.label, 'Background job')), node('span', 'job-detail', status), node('span', 'job-duration', jobDuration(job))); elements.jobsMenu.append(row);
+      elements.jobsCount.textContent = String(count);
+      elements.jobsTrigger.title = 'Tasks · ' + count + ' agents / jobs';
+      if (tasksPanel.open) renderTasks();
+    }
+    function taskStatus(task) {
+      return ({ running: 'Running', completed: 'Turn completed', interrupted: 'Turn ended without completion', inactive: 'Inactive', unavailable: 'Unavailable' })[task.status] || 'Unknown';
+    }
+    function renderTasks() {
+      const signature = JSON.stringify([taskChild, taskSnapshot, state.jobs, !taskChild && array(state.jobs).some(liveJob) ? Math.floor(Date.now() / 1000) : 0]);
+      if (signature === taskSignature) return;
+      taskSignature = signature;
+      const focusedId = document.activeElement && document.activeElement.dataset.taskId;
+      const focusedRecord = document.activeElement?.closest('.task-record')?.dataset.recordId;
+      const openRecords = new Set([...tasksContent.querySelectorAll('details[open]')].map(item => item.dataset.recordId));
+      const scroll = tasksContent.parentElement.scrollTop;
+      tasksContent.replaceChildren(); tasksBack.classList.toggle('hidden', !taskChild);
+      if (taskChild) {
+        const task = taskSnapshot && taskSnapshot.tasks.find(item => item.address.childSessionId === taskChild);
+        if (task) tasksContent.append(node('h3', 'task-label', task.label), node('p', 'inspector-caption', taskStatus(task) + ' · ' + task.address.mode));
+        const detail = taskSnapshot && taskSnapshot.detail;
+        if (detail && detail.childSessionId === taskChild) {
+          tasksContent.append(node('p', 'inspector-caption', 'Recorded messages and tool results. In-progress text appears after it is recorded by DSH.'));
+          if (detail.truncated) tasksContent.append(node('p', 'inspector-warning', 'Showing a bounded excerpt of recent activity; earlier or lengthy output is omitted.'));
+          if (!detail.messages.length) tasksContent.append(node('p', 'inspector-caption', 'No recorded messages yet.'));
+          for (const message of detail.messages) {
+            const tool = message.role === 'tool';
+            const entry = node(tool ? 'details' : 'section', 'task-record'); entry.dataset.recordId = message.id;
+            if (tool) { entry.open = openRecords.has(message.id); entry.append(node('summary', '', (message.failed ? 'Failed · ' : '') + message.text)); }
+            else entry.append(node('span', 'task-meta', message.role), node('pre', 'task-text', message.text));
+            if (message.detail) entry.append(node('pre', 'inspector-content', message.detail));
+            tasksContent.append(entry);
+          }
         }
+      } else {
+        const tasks = taskSnapshot ? taskSnapshot.tasks : [];
+        if (tasks.length) tasksContent.append(node('div', 'jobs-title', 'Subagents · ' + tasks.length));
+        for (const task of tasks) {
+          const row = node('button', 'task-row'); row.type = 'button'; row.dataset.taskId = task.address.childSessionId; row.dataset.status = task.status;
+          row.style.paddingLeft = (8 + task.depth * 10) + 'px';
+          const seconds = Math.floor(task.elapsedMs / 1000);
+          row.append(node('span', 'task-label', task.label), node('span', 'task-meta', taskStatus(task) + ' · ' + task.address.mode + ' · ' + seconds + 's recorded'));
+          if (task.error) row.append(node('span', 'task-meta', task.error));
+          row.addEventListener('click', () => { taskChild = task.address.childSessionId; taskSnapshot.detail = undefined; renderTasks(); tasksBack.focus(); requestTasks(); });
+          tasksContent.append(row);
+        }
+        if (taskSnapshot && taskSnapshot.truncated) tasksContent.append(node('p', 'inspector-warning', 'Task tree display limit reached (40 agents / 5 levels).'));
+        const jobs = array(state.jobs);
+        if (jobs.length) tasksContent.append(node('div', 'jobs-title', 'Background jobs · ' + jobs.length));
+        for (const job of jobs) {
+          const row = node('div', 'job-row'); const status = string(job.detail) || string(job.status);
+          row.title = status; row.append(node('span', 'job-kind', string(job.kind, 'job')), node('span', 'job-label', string(job.label, 'Background job')), node('span', 'job-detail', status), node('span', 'job-duration', jobDuration(job))); tasksContent.append(row);
+        }
+        if (taskSnapshot && !tasks.length && !jobs.length) tasksContent.append(node('p', 'inspector-caption', 'No subagents or background jobs in this conversation.'));
       }
-      if (jobsTimer) { clearInterval(jobsTimer); jobsTimer = undefined; }
-      if (jobsOpen && live > 0) jobsTimer = setInterval(renderJobs, 1000);
+      tasksContent.parentElement.scrollTop = scroll;
+      if (focusedId) [...tasksContent.querySelectorAll('button')].find(button => button.dataset.taskId === focusedId)?.focus({ preventScroll: true });
+      else if (focusedRecord) [...tasksContent.querySelectorAll('details')].find(entry => entry.dataset.recordId === focusedRecord)?.querySelector('summary')?.focus({ preventScroll: true });
+    }
+    function requestTasks() {
+      if (!tasksPanel.open || document.hidden || !state || state.phase !== 'ready' || state.sessionId !== taskSession) return;
+      clearTimeout(taskPoll); clearTimeout(taskTimeout);
+      const requestId = ++taskRequest; tasksRefresh.disabled = true;
+      tasksStatus.classList.remove('error'); tasksStatus.textContent = taskSnapshot ? 'Refreshing…' : 'Reading tasks…';
+      vscode.postMessage({ type: 'inspect-tasks', sessionId: taskSession, requestId, ...(taskChild ? { childId: taskChild } : {}) });
+      taskTimeout = setTimeout(() => {
+        if (!tasksPanel.open || requestId !== taskRequest) return;
+        ++taskRequest; tasksRefresh.disabled = false;
+        vscode.postMessage({ type: 'close-tasks' }); tasksStatus.classList.add('error'); tasksStatus.textContent = 'Tasks timed out. Try Refresh.';
+      }, 30000);
+    }
+    function receiveTasks(message) {
+      if (!tasksPanel.open || !state || state.phase !== 'ready' || taskSession !== state.sessionId || message.sessionId !== taskSession || message.requestId !== taskRequest) return;
+      clearTimeout(taskTimeout); tasksRefresh.disabled = false;
+      if (message.error) { tasksStatus.classList.add('error'); tasksStatus.textContent = message.error + ' Displayed data may be out of date.'; return; }
+      if (!message.inspection || message.inspection.sessionId !== taskSession) return;
+      taskSnapshot = message.inspection; renderTasks();
+      tasksStatus.textContent = 'Updated ' + new Date().toLocaleTimeString();
+      taskPoll = setTimeout(requestTasks, 3000);
     }
     function renderConversation(current) {
       if (renderedSessionId !== current.sessionId) {
@@ -1574,6 +1663,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     function render(current) {
       const preservingHistory = historyAnchor && historyAnchor.sessionId === current.sessionId;
       state = current;
+      if (tasksPanel.open && (current.phase !== 'ready' || current.sessionId !== taskSession)) tasksPanel.close();
       if (renderedChrome.workspaceName !== current.workspaceName || renderedChrome.cwd !== current.cwd) {
         elements.workspace.textContent = current.workspaceName || 'Workspace'; elements.project.title = current.cwd ? 'DeepSeek project: ' + current.cwd : 'Choose DeepSeek project';
       }
@@ -1584,7 +1674,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const policyChanged = renderedChrome.agentPreset !== current.agentPreset || renderedChrome.permissions !== current.permissions || renderedChrome.plan !== current.plan || renderedChrome.running !== current.running || renderedChrome.phase !== current.phase;
       if (policyChanged) renderPolicyState(current);
       if (renderedChrome.usage !== current.usage || renderedChrome.phase !== current.phase || renderedChrome.sessionId !== current.sessionId) renderUsage(current);
-      if (renderedChrome.jobs !== current.jobs) renderJobs();
+      if (renderedChrome.jobs !== current.jobs || renderedChrome.subagentCount !== current.subagentCount || renderedChrome.phase !== current.phase) renderJobs();
       renderConversation(current);
       const sessionReady = current.phase === 'ready' && Boolean(current.sessionId);
       const enabled = sessionReady && current.routable !== false;
@@ -1595,7 +1685,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       renderedChrome = {
         workspaceName: current.workspaceName, cwd: current.cwd, sessions: current.sessions, sessionId: current.sessionId, models: current.models,
         agentPreset: current.agentPreset, permissions: current.permissions, plan: current.plan, running: current.running,
-        phase: current.phase, usage: current.usage, jobs: current.jobs, commands: current.commands, skills: current.skills,
+        phase: current.phase, usage: current.usage, jobs: current.jobs, subagentCount: current.subagentCount, commands: current.commands, skills: current.skills,
       };
       if (preservingHistory && current.loadingHistory !== true) {
         const anchor = historyAnchor; historyAnchor = undefined;
@@ -1739,7 +1829,24 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       event.stopPropagation(); policyMenuOpen = !policyMenuOpen; usageOpen = false; elements.usagePanel.classList.add('hidden'); elements.usageTrigger.setAttribute('aria-expanded', 'false'); elements.commandMenu.classList.add('hidden'); elements.mentionMenu.classList.add('hidden'); if (state) renderPolicyState(state);
     });
     elements.jobsTrigger.addEventListener('click', event => {
-      event.stopPropagation(); jobsOpen = !jobsOpen; elements.jobsMenu.classList.toggle('hidden', !jobsOpen); elements.jobsTrigger.setAttribute('aria-expanded', String(jobsOpen)); renderJobs();
+      event.stopPropagation(); if (!state || state.phase !== 'ready') return;
+      closeSessionMenu(false); taskSession = state.sessionId; taskChild = undefined; taskSnapshot = undefined; taskSignature = '';
+      tasksPanel.showModal(); elements.jobsTrigger.setAttribute('aria-expanded', 'true'); renderTasks(); requestTasks();
+    });
+    document.getElementById('tasksClose').addEventListener('click', () => tasksPanel.close());
+    tasksRefresh.addEventListener('click', requestTasks);
+    tasksBack.addEventListener('click', () => { taskChild = undefined; renderTasks(); tasksRefresh.focus(); requestTasks(); });
+    tasksPanel.addEventListener('close', () => {
+      if (tasksPanel.open) return;
+      clearTimeout(taskPoll); clearTimeout(taskTimeout); ++taskRequest; taskSnapshot = undefined; taskSession = undefined;
+      tasksContent.replaceChildren(); vscode.postMessage({ type: 'close-tasks' }); elements.jobsTrigger.setAttribute('aria-expanded', 'false');
+      if (!elements.jobsControl.classList.contains('hidden')) elements.jobsTrigger.focus();
+    });
+    document.addEventListener('visibilitychange', () => {
+      if (!tasksPanel.open) return;
+      clearTimeout(taskPoll); clearTimeout(taskTimeout); ++taskRequest; tasksRefresh.disabled = false;
+      vscode.postMessage({ type: 'close-tasks' });
+      if (!document.hidden) requestTasks();
     });
     elements.project.addEventListener('click', () => vscode.postMessage({ type: 'choose-workspace' }));
     elements.githubStar.addEventListener('click', () => vscode.postMessage({ type: 'open-link', href: 'https://github.com/Lixxx1/dsh-vscode' }));
@@ -1765,9 +1872,6 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (usageOpen && !elements.usagePanel.contains(event.target) && !elements.usageTrigger.contains(event.target)) {
         usageOpen = false; elements.usagePanel.classList.add('hidden'); elements.usageTrigger.setAttribute('aria-expanded', 'false');
       }
-      if (jobsOpen && !elements.jobsMenu.contains(event.target) && !elements.jobsTrigger.contains(event.target)) {
-        jobsOpen = false; elements.jobsMenu.classList.add('hidden'); elements.jobsTrigger.setAttribute('aria-expanded', 'false'); renderJobs();
-      }
       if (sessionMenuOpen && !elements.sessionControl.contains(event.target)) closeSessionMenu(false);
     });
     document.addEventListener('keydown', event => {
@@ -1779,6 +1883,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     });
     window.addEventListener('message', event => {
       if (!event.data) return;
+      if (event.data.type === 'task-inspection') receiveTasks(event.data);
       if (event.data.type === 'context-inspection') receiveInspection(event.data);
       if (event.data.type === 'state') { pendingMessageAppends.clear(); scheduleRender(event.data.state); }
       if (event.data.type === 'state-update') applyStateUpdate(event.data.update);

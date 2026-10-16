@@ -46,6 +46,7 @@ function testClient() {
       blank: true, running: false, agentPreset: 'standard', projections: { values: { ...projections } } })) })),
     openSession: vi.fn(async () => ({ events: [], hasMore: false, projections: { ...projections }, isCurrent: () => true, activate() {} })),
     history: vi.fn(async (): Promise<{ events: HistoryEntry[]; hasMore: boolean }> => ({ events: [], hasMore: false })),
+    inspectTasks: vi.fn(async () => ({ sessionId: 'a', tasks: [], truncated: false })),
     models: vi.fn(async () => models()), currentModels: vi.fn(() => models()),
     listCommands: vi.fn(async () => [{ name: 'plan', description: 'Plan' }]),
     listSkills: vi.fn(async (): Promise<SkillDescriptor[]> => []),
@@ -79,6 +80,33 @@ async function harness(connection?: DshConnection) {
   const next = () => { const next = testClient(); mocks.client = next.client; return next }
   return { client, controller, output, emit, fail, runtime, reviews, next }
 }
+
+describe('task inspection isolation', () => {
+  it('does not switch the main conversation or alter its messages', async () => {
+    const h = await harness(); const before = h.controller.state.messages
+    h.client.openSession.mockClear()
+    await h.controller.inspectTasks('a', 'child')
+    expect(h.client.inspectTasks).toHaveBeenCalledWith('a', 'child', undefined)
+    expect(h.client.openSession).not.toHaveBeenCalled()
+    expect(h.controller.state.messages).toBe(before)
+    await expect(h.controller.inspectTasks('b')).rejects.toThrow('Select a conversation')
+  })
+  it('invalidates late results when switching conversations', async () => {
+    const h = await harness(); const pending = Promise.withResolvers<any>()
+    h.client.inspectTasks.mockReturnValueOnce(pending.promise)
+    const request = h.controller.inspectTasks('a')
+    await h.controller.selectSession('b')
+    pending.resolve({ sessionId: 'a', tasks: [], truncated: false })
+    await expect(request).rejects.toThrow('conversation changed')
+  })
+  it('updates the task entry from official catalogs and clears it on session switch', async () => {
+    const h = await harness()
+    h.emit({ type: 'session/projection', sessionId: 'a', key: 'subagentCatalog', value: [{ id: 'child', mode: 'continuable' }] }, 'mux')
+    expect(h.controller.state.subagentCount).toBe(1)
+    await h.controller.selectSession('b')
+    expect(h.controller.state.subagentCount).toBe(0)
+  })
+})
 
 describe('context inspection', () => {
   it('reads older input on demand without backfilling visible chat or moving the snapshot boundary', async () => {

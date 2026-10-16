@@ -7,6 +7,8 @@ import type { PluginInventorySnapshot } from './plugin-profile.js'
 import type { SettingsDescription, SettingsMutation, SettingsNamespace } from './runtime-settings.js'
 import { RemoteRead } from './remote-read.js'
 import { DshCommandTransport } from './dsh-command-transport.js'
+import { inspectSubagents } from './dsh-subagents.js'
+import type { TaskInspection } from './subagents.js'
 
 export interface SessionSummary {
   sessionId: string
@@ -170,6 +172,11 @@ export class DshClient {
   }
 
   get handledSessionIds(): string[] { return this.feed.handledSessionIds }
+
+  inspectTasks(sessionId: string, childId?: string, signal?: AbortSignal): Promise<TaskInspection> {
+    return inspectSubagents(this.connection, sessionId, childId, id => this.feed.sessionRunning(id),
+      AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(25_000), ...(signal ? [signal] : [])]))
+  }
 
   onFrame(listener: (frame: DshFrame) => void): () => void {
     this.frameListeners.add(listener)
