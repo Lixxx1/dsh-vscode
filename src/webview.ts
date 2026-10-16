@@ -63,7 +63,6 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .jobs-trigger { width: auto; min-width: 28px; padding: 0 7px; display: flex; gap: 5px; font-size: 11px; }
     .jobs-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--vscode-descriptionForeground); }
     .jobs-trigger.live .jobs-dot { background: var(--vscode-charts-blue, #4d6bfe); box-shadow: 0 0 0 2px color-mix(in srgb, var(--vscode-charts-blue, #4d6bfe) 20%, transparent); }
-    .jobs-menu { position: absolute; z-index: 20; top: calc(100% + 5px); right: 0; width: min(340px, calc(100vw - 20px)); max-height: min(420px, 70vh); padding: 6px; overflow: auto; border: 1px solid var(--vscode-widget-border); border-radius: 8px; background: var(--vscode-menu-background, var(--vscode-editor-background)); box-shadow: 0 5px 18px var(--vscode-widget-shadow); }
     .jobs-title { padding: 5px 7px 7px; font-size: 11px; font-weight: 600; }
     .job-row { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 2px 7px; padding: 7px; border-radius: 5px; }
     .job-row + .job-row { border-top: 1px solid color-mix(in srgb, var(--vscode-widget-border) 50%, transparent); }
@@ -262,6 +261,37 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .usage-row dd { color: var(--vscode-foreground); font-variant-numeric: tabular-nums; }
     .usage-swatch { width: 7px; height: 7px; margin-right: 6px; display: inline-block; border-radius: 2px; }
     .usage-stats { min-width: 0; padding: 0 12px 8px; overflow: hidden; color: var(--vscode-descriptionForeground); font-size: 10px; line-height: 14px; text-overflow: ellipsis; white-space: nowrap; }
+    .inspect-action { display: block; width: 100%; margin-top: 10px; padding: 7px 0 0; border: 0; border-top: 1px solid var(--vscode-widget-border); color: var(--vscode-textLink-foreground); background: transparent; text-align: left; }
+    .inspector { width: min(620px, calc(100vw - 24px)); max-width: none; max-height: calc(100vh - 24px); padding: 0; border: 1px solid var(--vscode-widget-border); border-radius: 10px; color: var(--vscode-foreground); background: var(--vscode-sideBar-background); box-shadow: 0 12px 36px var(--vscode-widget-shadow); }
+    .inspector[open] { display: flex; flex-direction: column; }
+    .inspector::backdrop { background: #0006; }
+    .inspector-header { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--vscode-widget-border); }
+    .inspector-header h2 { flex: 1; min-width: 0; margin: 0; font-size: 13px; font-weight: 600; }
+    .inspector-refresh { border: 0; padding: 4px 6px; border-radius: 4px; color: var(--vscode-textLink-foreground); background: transparent; font-size: 11px; }
+    .inspector-refresh:hover { background: var(--vscode-toolbar-hoverBackground); }
+    .inspector-body { min-height: 120px; padding: 14px; overflow: auto; overscroll-behavior: contain; overflow-wrap: anywhere; }
+    .inspector-caption { margin: 0 0 12px; color: var(--vscode-descriptionForeground); font-size: 11px; line-height: 1.6; }
+    .inspector-status { margin: 0 0 12px; font-size: 12px; line-height: 1.6; white-space: pre-wrap; }
+    .inspector-status.error { color: var(--vscode-errorForeground); }
+    .inspector-warning { margin: 0 0 10px; padding-left: 8px; border-left: 2px solid var(--vscode-editorWarning-foreground); color: var(--vscode-descriptionForeground); font-size: 11px; line-height: 1.5; }
+    .inspector-filters { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+    .inspector-search { flex: 1 1 120px; min-width: 0; width: 120px; padding: 6px 8px; border: 1px solid var(--vscode-input-border, var(--vscode-widget-border)); border-radius: 4px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); }
+    .inspector-sort { max-width: 100%; padding: 4px; border: 1px solid var(--vscode-widget-border); border-radius: 4px; color: var(--vscode-foreground); background: var(--vscode-editor-background); font-size: 11px; }
+    .inspector-group { border-top: 1px solid var(--vscode-widget-border); }
+    .inspector-group > summary { padding: 11px 0; cursor: pointer; font-size: 12px; font-weight: 600; }
+    .inspector-count { margin-left: 6px; color: var(--vscode-descriptionForeground); font-weight: 400; font-variant-numeric: tabular-nums; }
+    .inspector-entry { margin: 0 0 10px; border-left: 1px solid var(--vscode-widget-border); padding-left: 10px; }
+    .inspector-entry > summary { padding: 3px 0; cursor: pointer; font-size: 12px; }
+    .inspector-source { margin: 5px 0; color: var(--vscode-descriptionForeground); font-size: 10px; line-height: 1.5; }
+    .inspector-content { max-height: 260px; margin: 6px 0; padding: 10px; overflow: auto; border-radius: 4px; background: var(--vscode-editor-background); font-family: var(--vscode-editor-font-family); font-size: 11px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 2; }
+    .task-row { display: block; width: 100%; padding: 10px 8px; border: 0; border-bottom: 1px solid var(--vscode-widget-border); text-align: left; color: var(--vscode-foreground); background: transparent; }
+    .task-row:hover { background: var(--vscode-list-hoverBackground); }
+    .task-label { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; }
+    .task-meta { display: block; margin-top: 4px; color: var(--vscode-descriptionForeground); font-size: 10px; line-height: 1.5; }
+    .task-row[data-status="running"] .task-meta { color: var(--vscode-progressBar-background); }
+    .task-record { padding: 10px 0; border-top: 1px solid var(--vscode-widget-border); }
+    .task-record > summary { cursor: pointer; font-size: 11px; }
+    .task-text { margin: 6px 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.65 var(--vscode-font-family); }
     .project { width: 100%; min-width: 0; height: 28px; padding: 0 4px; overflow: hidden; display: flex; align-items: center; gap: 5px; border: 0; border-radius: 6px; color: var(--vscode-descriptionForeground); background: transparent; }
     .project:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
     .project span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -290,8 +320,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         </div>
       </div>
       <div id="jobsControl" class="jobs-control hidden">
-        <button id="jobsTrigger" class="icon-button jobs-trigger" title="Background jobs" aria-label="Background jobs" aria-haspopup="menu" aria-expanded="false"><span class="jobs-dot"></span><span id="jobsCount">0</span></button>
-        <div id="jobsMenu" class="jobs-menu hidden" role="menu" aria-label="Background jobs"></div>
+        <button id="jobsTrigger" class="icon-button jobs-trigger" title="Tasks" aria-label="Tasks" aria-haspopup="dialog" aria-expanded="false"><span class="jobs-dot"></span><span id="jobsCount">0</span></button>
       </div>
       <button id="newSession" class="icon-button" title="New conversation" aria-label="New conversation"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
     </header>
@@ -328,6 +357,36 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       </div>
     </footer>
   </div>
+  <dialog id="contextInspector" class="inspector" aria-labelledby="inspectorTitle" aria-describedby="inspectorCaption">
+    <header class="inspector-header">
+      <h2 id="inspectorTitle">Context inspector</h2>
+      <button id="inspectorRefresh" class="inspector-refresh" type="button">Refresh</button>
+      <button id="inspectorClose" class="icon-button" type="button" aria-label="Close context inspector" title="Close (Escape)"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+    </header>
+    <div class="inspector-body">
+      <p id="inspectorCaption" class="inspector-caption">Inspect recorded inputs and the current skill catalog. This is a read-only snapshot, not a preview of the next model request.</p>
+      <p id="inspectorStatus" class="inspector-status" role="status" aria-live="polite"></p>
+      <div id="inspectorWarnings"></div>
+      <div id="inspectorFilters" class="inspector-filters hidden">
+        <input id="inspectorSearch" class="inspector-search" type="search" placeholder="Find in context…" aria-label="Find in context" autofocus>
+        <select id="inspectorSort" class="inspector-sort" aria-label="Context sort order"><option value="source">Source order</option><option value="size">Largest first</option></select>
+      </div>
+      <div id="inspectorGroups"></div>
+    </div>
+  </dialog>
+  <dialog id="tasksPanel" class="inspector" aria-labelledby="tasksTitle">
+    <header class="inspector-header">
+      <button id="tasksBack" class="icon-button hidden" type="button" aria-label="Back to tasks">←</button>
+      <h2 id="tasksTitle">Tasks</h2>
+      <button id="tasksRefresh" class="inspector-refresh" type="button">Refresh</button>
+      <button id="tasksClose" class="icon-button" type="button" aria-label="Close tasks" title="Close (Escape)">×</button>
+    </header>
+    <div class="inspector-body">
+      <p class="inspector-caption">Subagents and background jobs for this conversation. Read-only; your main chat keeps running.</p>
+      <p id="tasksStatus" class="inspector-status" role="status" aria-live="polite"></p>
+      <div id="tasksContent"></div>
+    </div>
+  </dialog>
   <script nonce="${token}" src="${escapeHtml(markdownAssets.script.toString(true))}"></script>
   <script nonce="${token}" src="${escapeHtml(markdownAssets.scroll.toString(true))}"></script>
   <script nonce="${token}">
@@ -342,12 +401,13 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     const elements = {
       conversation: document.getElementById('conversation'), scroll: document.getElementById('scroll'),
       conversationStatus: document.getElementById('conversationStatus'), conversationHistory: document.getElementById('conversationHistory'), messages: document.getElementById('messages'), conversationTail: document.getElementById('conversationTail'),
-      githubStar: document.getElementById('githubStar'), sessionControl: document.getElementById('sessionControl'), sessionTrigger: document.getElementById('sessionTrigger'), sessionTriggerTitle: document.getElementById('sessionTriggerTitle'), sessionMenu: document.getElementById('sessionMenu'), sessionSearch: document.getElementById('sessionSearch'), sessionList: document.getElementById('sessionList'), newSession: document.getElementById('newSession'), jobsControl: document.getElementById('jobsControl'), jobsTrigger: document.getElementById('jobsTrigger'), jobsCount: document.getElementById('jobsCount'), jobsMenu: document.getElementById('jobsMenu'),
+      githubStar: document.getElementById('githubStar'), sessionControl: document.getElementById('sessionControl'), sessionTrigger: document.getElementById('sessionTrigger'), sessionTriggerTitle: document.getElementById('sessionTriggerTitle'), sessionMenu: document.getElementById('sessionMenu'), sessionSearch: document.getElementById('sessionSearch'), sessionList: document.getElementById('sessionList'), newSession: document.getElementById('newSession'), jobsControl: document.getElementById('jobsControl'), jobsTrigger: document.getElementById('jobsTrigger'), jobsCount: document.getElementById('jobsCount'),
       prompt: document.getElementById('prompt'), project: document.getElementById('project'), workspace: document.getElementById('workspace'),
       models: document.getElementById('models'), efforts: document.getElementById('efforts'),
       policyTrigger: document.getElementById('policyTrigger'), policyMenu: document.getElementById('policyMenu'),
       send: document.getElementById('send'), cancel: document.getElementById('cancel'),
       usageControl: document.getElementById('usageControl'), usageTrigger: document.getElementById('usageTrigger'), usageFill: document.getElementById('usageFill'), usagePanel: document.getElementById('usagePanel'), usageStats: document.getElementById('usageStats'),
+      inspector: document.getElementById('contextInspector'), inspectorRefresh: document.getElementById('inspectorRefresh'), inspectorClose: document.getElementById('inspectorClose'), inspectorStatus: document.getElementById('inspectorStatus'), inspectorWarnings: document.getElementById('inspectorWarnings'), inspectorFilters: document.getElementById('inspectorFilters'), inspectorSearch: document.getElementById('inspectorSearch'), inspectorSort: document.getElementById('inspectorSort'), inspectorGroups: document.getElementById('inspectorGroups'),
       attach: document.getElementById('attach'), attachments: document.getElementById('attachments'),
       queueDock: document.getElementById('queueDock'),
       modeChips: document.getElementById('modeChips'), contextChips: document.getElementById('contextChips'), mentionMenu: document.getElementById('mentionMenu'), commandMenu: document.getElementById('commandMenu'),
@@ -364,10 +424,19 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     let queueRenderSignature = '';
     let policyMenuOpen = false;
     let usageOpen = false;
-    let jobsOpen = false;
+    let inspection;
+    let inspectionSession;
+    let inspectionRequest = 0;
+    let inspectionTimer;
+    const tasksPanel = document.getElementById('tasksPanel');
+    const tasksContent = document.getElementById('tasksContent');
+    const tasksStatus = document.getElementById('tasksStatus');
+    const tasksRefresh = document.getElementById('tasksRefresh');
+    const tasksBack = document.getElementById('tasksBack');
+    let taskSession, taskChild, taskSnapshot, taskPoll, taskTimeout;
+    let taskRequest = 0, taskSignature = '';
     let sessionMenuOpen = false;
     let sessionActionId;
-    let jobsTimer;
     let historyAnchor;
     let renderFrame;
     let pendingRenderState;
@@ -1070,8 +1139,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     function formatTokens(value) {
       if (!Number.isFinite(value)) return '0';
       if (value < 1000) return String(Math.round(value));
-      if (value < 1000000) return (value / 1000).toFixed(value < 10000 ? 1 : 0).replace(/\.0$/, '') + 'K';
-      return (value / 1000000).toFixed(value < 10000000 ? 1 : 0).replace(/\.0$/, '') + 'M';
+      if (value < 1000000) return (value / 1000).toFixed(value < 10000 ? 1 : 0).replace(/\\.0$/, '') + 'K';
+      return (value / 1000000).toFixed(value < 10000000 ? 1 : 0).replace(/\\.0$/, '') + 'M';
     }
     function formatDuration(value) {
       if (!Number.isFinite(value) || value <= 0) return '0ms';
@@ -1123,8 +1192,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       elements.usageStats.textContent = stats;
       elements.usageStats.title = usageStatsLine(usage);
       elements.usageStats.classList.toggle('hidden', stats === '');
-      elements.usageControl.classList.toggle('hidden', usage.available !== true);
-      if (usage.available !== true) {
+      const ready = current.phase === 'ready' && Boolean(current.sessionId);
+      elements.usageControl.classList.toggle('hidden', !ready && usage.available !== true);
+      if (!ready && usage.available !== true) {
         usageOpen = false;
         elements.usagePanel.classList.add('hidden');
         elements.usageTrigger.setAttribute('aria-expanded', 'false');
@@ -1135,13 +1205,15 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       elements.usageFill.setAttribute('stroke-dasharray', (circumference * percent / 100) + ' ' + circumference);
       elements.usageTrigger.classList.toggle('warning', percent >= 75 && percent < 90);
       elements.usageTrigger.classList.toggle('danger', percent >= 90);
-      elements.usageTrigger.title = 'Context ' + percent + '% used';
+      elements.usageTrigger.title = usage.available ? 'Context ' + percent + '% used' : 'Inspect context';
       elements.usageTrigger.setAttribute('aria-label', elements.usageTrigger.title);
       elements.usageTrigger.setAttribute('aria-expanded', String(usageOpen));
       elements.usagePanel.replaceChildren();
       if (usageOpen) {
         const header = node('div', 'usage-header');
-        header.append(node('span', '', 'Context'), node('span', 'usage-percent', percent + '% used'), node('span', 'usage-figures', '~' + formatTokens(usage.usedTokens) + ' / ' + formatTokens(usage.contextWindow)));
+        header.append(node('span', '', 'Context'));
+        if (usage.available) header.append(node('span', 'usage-percent', percent + '% used'), node('span', 'usage-figures', '~' + formatTokens(usage.usedTokens) + ' / ' + formatTokens(usage.contextWindow)));
+        else header.append(node('span', '', 'Usage not available yet'));
         const bar = node('div', 'usage-bar');
         const breakdown = usage.breakdown;
         const parts = breakdown ? [
@@ -1159,7 +1231,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         } else {
           const segment = node('span', 'usage-segment usage-messages'); segment.style.width = percent + '%'; bar.append(segment);
         }
-        elements.usagePanel.append(header, bar);
+        elements.usagePanel.append(header);
+        if (usage.available) elements.usagePanel.append(bar);
         if (breakdown) {
           const rows = node('dl', 'usage-rows');
           for (const part of parts) {
@@ -1169,8 +1242,75 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
           }
           elements.usagePanel.append(rows);
         }
+        const inspect = node('button', 'inspect-action', 'Inspect context…');
+        inspect.type = 'button'; inspect.disabled = !ready; inspect.addEventListener('click', openContextInspector);
+        elements.usagePanel.append(inspect);
       }
       elements.usagePanel.classList.toggle('hidden', !usageOpen);
+    }
+    function renderInspectionGroups() {
+      elements.inspectorGroups.replaceChildren();
+      if (!inspection) return;
+      const query = elements.inspectorSearch.value.trim().toLowerCase();
+      let matches = 0;
+      for (const group of inspection.groups) {
+        const entries = group.entries.filter(entry => !query || [entry.label, entry.source, entry.content].join(' ').toLowerCase().includes(query));
+        if (query && !entries.length) continue;
+        matches += entries.length;
+        if (elements.inspectorSort.value === 'size') entries.sort((a, b) => b.characters - a.characters);
+        const section = node('details', 'inspector-group'); section.open = Boolean(query);
+        const summary = node('summary', '', group.label);
+        summary.append(node('span', 'inspector-count', query ? entries.length + ' matches' : String(group.total)));
+        section.append(summary, node('p', 'inspector-caption', group.description));
+        if (!entries.length) section.append(node('p', 'inspector-caption', 'No entries in this snapshot.'));
+        for (const entry of entries) {
+          const details = node('details', 'inspector-entry');
+          details.append(node('summary', '', entry.label), node('p', 'inspector-source', entry.source + ' · ' + entry.characters.toLocaleString() + ' characters'));
+          // Context can contain untrusted project/plugin text. Never render it as HTML.
+          details.append(node('pre', 'inspector-content', entry.content || '(No text content)'));
+          if (entry.truncated) details.append(node('p', 'inspector-caption', 'Content truncated for display. Search covers the displayed excerpt.'));
+          section.append(details);
+        }
+        if (!query && group.total > group.entries.length) section.append(node('p', 'inspector-caption', (group.total - group.entries.length) + ' more entries omitted by the display limit.'));
+        elements.inspectorGroups.append(section);
+      }
+      if (query && !matches) elements.inspectorGroups.append(node('p', 'inspector-caption', 'No matching context.'));
+    }
+    function requestInspection() {
+      if (!state || state.phase !== 'ready' || !state.sessionId || !elements.inspector.open) return;
+      clearTimeout(inspectionTimer); inspection = undefined; inspectionSession = state.sessionId;
+      const requestId = ++inspectionRequest;
+      elements.inspectorRefresh.disabled = true;
+      elements.inspectorStatus.classList.remove('error'); elements.inspectorStatus.textContent = 'Reading recorded context…';
+      elements.inspectorWarnings.replaceChildren(); elements.inspectorGroups.replaceChildren(); elements.inspectorFilters.classList.add('hidden');
+      vscode.postMessage({ type: 'inspect-context', sessionId: inspectionSession, requestId });
+      inspectionTimer = setTimeout(() => {
+        if (inspectionRequest !== requestId || !elements.inspector.open) return;
+        ++inspectionRequest; vscode.postMessage({ type: 'close-context' });
+        elements.inspectorRefresh.disabled = false; elements.inspectorStatus.classList.add('error');
+        elements.inspectorStatus.textContent = 'Context inspection timed out. Try Refresh.';
+      }, 45000);
+    }
+    function openContextInspector() {
+      if (!state || state.phase !== 'ready' || !state.sessionId) return;
+      usageOpen = false; elements.usagePanel.classList.add('hidden'); elements.usageTrigger.setAttribute('aria-expanded', 'false');
+      closeSessionMenu(false); elements.inspectorSearch.value = ''; elements.inspectorSort.value = 'source';
+      if (!elements.inspector.open) elements.inspector.showModal();
+      requestInspection();
+    }
+    function receiveInspection(message) {
+      if (!elements.inspector.open || !state || state.phase !== 'ready' || state.sessionId !== inspectionSession || message.sessionId !== inspectionSession || message.requestId !== inspectionRequest) return;
+      clearTimeout(inspectionTimer); elements.inspectorRefresh.disabled = false;
+      if (typeof message.error === 'string') {
+        elements.inspectorStatus.classList.add('error'); elements.inspectorStatus.textContent = message.error; return;
+      }
+      if (!message.inspection || message.inspection.sessionId !== inspectionSession) return;
+      inspection = message.inspection;
+      const usage = inspection.usage;
+      const summary = usage.available ? 'Context ' + usage.percent + '% · ~' + formatTokens(usage.usedTokens) + ' / ' + formatTokens(usage.contextWindow) + ' tokens' : 'Context usage not available yet';
+      elements.inspectorStatus.textContent = summary + '\\nSnapshot at ' + new Date(inspection.capturedAt).toLocaleTimeString() + (inspection.throughSeq === undefined ? '' : ' · through event ' + inspection.throughSeq);
+      elements.inspectorWarnings.replaceChildren(...inspection.warnings.map(warning => node('p', 'inspector-warning', warning)));
+      elements.inspectorFilters.classList.remove('hidden'); renderInspectionGroups();
     }
     function sameSelection(left, right) {
       return left && right && left.path === right.path && left.startLine === right.startLine && left.endLine === right.endLine;
@@ -1391,22 +1531,87 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     function renderJobs() {
       const jobs = array(state && state.jobs);
       const live = jobs.filter(liveJob).length;
-      elements.jobsControl.classList.toggle('hidden', jobs.length === 0);
+      const count = jobs.length + Number(state && state.subagentCount || 0);
+      elements.jobsControl.classList.toggle('hidden', count === 0 || state.phase !== 'ready');
       elements.jobsTrigger.classList.toggle('live', live > 0);
-      elements.jobsCount.textContent = String(live || jobs.length);
-      elements.jobsTrigger.title = live > 0 ? live + ' background ' + (live === 1 ? 'job' : 'jobs') + ' running' : jobs.length + ' background ' + (jobs.length === 1 ? 'job' : 'jobs');
-      if (!jobs.length) { jobsOpen = false; elements.jobsMenu.classList.add('hidden'); elements.jobsTrigger.setAttribute('aria-expanded', 'false'); }
-      elements.jobsMenu.replaceChildren();
-      if (jobs.length) {
-        elements.jobsMenu.append(node('div', 'jobs-title', live > 0 ? 'Background jobs · ' + live + ' running' : 'Background jobs'));
-        const ordered = [...jobs].sort((a, b) => liveJob(a) !== liveJob(b) ? (liveJob(a) ? -1 : 1) : (liveJob(a) ? Number(a.startedAt) - Number(b.startedAt) : Number(b.finishedAt || b.startedAt) - Number(a.finishedAt || a.startedAt)));
-        for (const job of ordered) {
-          const row = node('div', 'job-row'); const status = string(job.detail) || string(job.status);
-          row.title = status; row.append(node('span', 'job-kind', string(job.kind, 'job')), node('span', 'job-label', string(job.label, 'Background job')), node('span', 'job-detail', status), node('span', 'job-duration', jobDuration(job))); elements.jobsMenu.append(row);
+      elements.jobsCount.textContent = String(count);
+      elements.jobsTrigger.title = 'Tasks · ' + count + ' agents / jobs';
+      if (tasksPanel.open) renderTasks();
+    }
+    function taskStatus(task) {
+      return ({ running: 'Running', completed: 'Turn completed', interrupted: 'Turn ended without completion', inactive: 'Inactive', unavailable: 'Unavailable' })[task.status] || 'Unknown';
+    }
+    function renderTasks() {
+      const signature = JSON.stringify([taskChild, taskSnapshot, state.jobs, !taskChild && array(state.jobs).some(liveJob) ? Math.floor(Date.now() / 1000) : 0]);
+      if (signature === taskSignature) return;
+      taskSignature = signature;
+      const focusedId = document.activeElement && document.activeElement.dataset.taskId;
+      const focusedRecord = document.activeElement?.closest('.task-record')?.dataset.recordId;
+      const openRecords = new Set([...tasksContent.querySelectorAll('details[open]')].map(item => item.dataset.recordId));
+      const scroll = tasksContent.parentElement.scrollTop;
+      tasksContent.replaceChildren(); tasksBack.classList.toggle('hidden', !taskChild);
+      if (taskChild) {
+        const task = taskSnapshot && taskSnapshot.tasks.find(item => item.address.childSessionId === taskChild);
+        if (task) tasksContent.append(node('h3', 'task-label', task.label), node('p', 'inspector-caption', taskStatus(task) + ' · ' + task.address.mode));
+        const detail = taskSnapshot && taskSnapshot.detail;
+        if (detail && detail.childSessionId === taskChild) {
+          tasksContent.append(node('p', 'inspector-caption', 'Recorded messages and tool results. In-progress text appears after it is recorded by DSH.'));
+          if (detail.truncated) tasksContent.append(node('p', 'inspector-warning', 'Showing a bounded excerpt of recent activity; earlier or lengthy output is omitted.'));
+          if (!detail.messages.length) tasksContent.append(node('p', 'inspector-caption', 'No recorded messages yet.'));
+          for (const message of detail.messages) {
+            const tool = message.role === 'tool';
+            const entry = node(tool ? 'details' : 'section', 'task-record'); entry.dataset.recordId = message.id;
+            if (tool) { entry.open = openRecords.has(message.id); entry.append(node('summary', '', (message.failed ? 'Failed · ' : '') + message.text)); }
+            else entry.append(node('span', 'task-meta', message.role), node('pre', 'task-text', message.text));
+            if (message.detail) entry.append(node('pre', 'inspector-content', message.detail));
+            tasksContent.append(entry);
+          }
         }
+      } else {
+        const tasks = taskSnapshot ? taskSnapshot.tasks : [];
+        if (tasks.length) tasksContent.append(node('div', 'jobs-title', 'Subagents · ' + tasks.length));
+        for (const task of tasks) {
+          const row = node('button', 'task-row'); row.type = 'button'; row.dataset.taskId = task.address.childSessionId; row.dataset.status = task.status;
+          row.style.paddingLeft = (8 + task.depth * 10) + 'px';
+          const seconds = Math.floor(task.elapsedMs / 1000);
+          row.append(node('span', 'task-label', task.label), node('span', 'task-meta', taskStatus(task) + ' · ' + task.address.mode + ' · ' + seconds + 's recorded'));
+          if (task.error) row.append(node('span', 'task-meta', task.error));
+          row.addEventListener('click', () => { taskChild = task.address.childSessionId; taskSnapshot.detail = undefined; renderTasks(); tasksBack.focus(); requestTasks(); });
+          tasksContent.append(row);
+        }
+        if (taskSnapshot && taskSnapshot.truncated) tasksContent.append(node('p', 'inspector-warning', 'Task tree display limit reached (40 agents / 5 levels).'));
+        const jobs = array(state.jobs);
+        if (jobs.length) tasksContent.append(node('div', 'jobs-title', 'Background jobs · ' + jobs.length));
+        for (const job of jobs) {
+          const row = node('div', 'job-row'); const status = string(job.detail) || string(job.status);
+          row.title = status; row.append(node('span', 'job-kind', string(job.kind, 'job')), node('span', 'job-label', string(job.label, 'Background job')), node('span', 'job-detail', status), node('span', 'job-duration', jobDuration(job))); tasksContent.append(row);
+        }
+        if (taskSnapshot && !tasks.length && !jobs.length) tasksContent.append(node('p', 'inspector-caption', 'No subagents or background jobs in this conversation.'));
       }
-      if (jobsTimer) { clearInterval(jobsTimer); jobsTimer = undefined; }
-      if (jobsOpen && live > 0) jobsTimer = setInterval(renderJobs, 1000);
+      tasksContent.parentElement.scrollTop = scroll;
+      if (focusedId) [...tasksContent.querySelectorAll('button')].find(button => button.dataset.taskId === focusedId)?.focus({ preventScroll: true });
+      else if (focusedRecord) [...tasksContent.querySelectorAll('details')].find(entry => entry.dataset.recordId === focusedRecord)?.querySelector('summary')?.focus({ preventScroll: true });
+    }
+    function requestTasks() {
+      if (!tasksPanel.open || document.hidden || !state || state.phase !== 'ready' || state.sessionId !== taskSession) return;
+      clearTimeout(taskPoll); clearTimeout(taskTimeout);
+      const requestId = ++taskRequest; tasksRefresh.disabled = true;
+      tasksStatus.classList.remove('error'); tasksStatus.textContent = taskSnapshot ? 'Refreshing…' : 'Reading tasks…';
+      vscode.postMessage({ type: 'inspect-tasks', sessionId: taskSession, requestId, ...(taskChild ? { childId: taskChild } : {}) });
+      taskTimeout = setTimeout(() => {
+        if (!tasksPanel.open || requestId !== taskRequest) return;
+        ++taskRequest; tasksRefresh.disabled = false;
+        vscode.postMessage({ type: 'close-tasks' }); tasksStatus.classList.add('error'); tasksStatus.textContent = 'Tasks timed out. Try Refresh.';
+      }, 30000);
+    }
+    function receiveTasks(message) {
+      if (!tasksPanel.open || !state || state.phase !== 'ready' || taskSession !== state.sessionId || message.sessionId !== taskSession || message.requestId !== taskRequest) return;
+      clearTimeout(taskTimeout); tasksRefresh.disabled = false;
+      if (message.error) { tasksStatus.classList.add('error'); tasksStatus.textContent = message.error + ' Displayed data may be out of date.'; return; }
+      if (!message.inspection || message.inspection.sessionId !== taskSession) return;
+      taskSnapshot = message.inspection; renderTasks();
+      tasksStatus.textContent = 'Updated ' + new Date().toLocaleTimeString();
+      taskPoll = setTimeout(requestTasks, 3000);
     }
     function renderConversation(current) {
       if (renderedSessionId !== current.sessionId) {
@@ -1458,6 +1663,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     function render(current) {
       const preservingHistory = historyAnchor && historyAnchor.sessionId === current.sessionId;
       state = current;
+      if (tasksPanel.open && (current.phase !== 'ready' || current.sessionId !== taskSession)) tasksPanel.close();
       if (renderedChrome.workspaceName !== current.workspaceName || renderedChrome.cwd !== current.cwd) {
         elements.workspace.textContent = current.workspaceName || 'Workspace'; elements.project.title = current.cwd ? 'DeepSeek project: ' + current.cwd : 'Choose DeepSeek project';
       }
@@ -1467,8 +1673,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       }
       const policyChanged = renderedChrome.agentPreset !== current.agentPreset || renderedChrome.permissions !== current.permissions || renderedChrome.plan !== current.plan || renderedChrome.running !== current.running || renderedChrome.phase !== current.phase;
       if (policyChanged) renderPolicyState(current);
-      if (renderedChrome.usage !== current.usage) renderUsage(current);
-      if (renderedChrome.jobs !== current.jobs) renderJobs();
+      if (renderedChrome.usage !== current.usage || renderedChrome.phase !== current.phase || renderedChrome.sessionId !== current.sessionId) renderUsage(current);
+      if (renderedChrome.jobs !== current.jobs || renderedChrome.subagentCount !== current.subagentCount || renderedChrome.phase !== current.phase) renderJobs();
       renderConversation(current);
       const sessionReady = current.phase === 'ready' && Boolean(current.sessionId);
       const enabled = sessionReady && current.routable !== false;
@@ -1479,7 +1685,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       renderedChrome = {
         workspaceName: current.workspaceName, cwd: current.cwd, sessions: current.sessions, sessionId: current.sessionId, models: current.models,
         agentPreset: current.agentPreset, permissions: current.permissions, plan: current.plan, running: current.running,
-        phase: current.phase, usage: current.usage, jobs: current.jobs, commands: current.commands, skills: current.skills,
+        phase: current.phase, usage: current.usage, jobs: current.jobs, subagentCount: current.subagentCount, commands: current.commands, skills: current.skills,
       };
       if (preservingHistory && current.loadingHistory !== true) {
         const anchor = historyAnchor; historyAnchor = undefined;
@@ -1488,6 +1694,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       conversationScroller.changed();
     }
     function scheduleRender(current) {
+      if (elements.inspector.open && (current.phase !== 'ready' || current.sessionId !== inspectionSession)) elements.inspector.close();
       state = current; pendingRenderState = current;
       if (renderFrame !== undefined) return;
       renderFrame = requestAnimationFrame(() => {
@@ -1608,11 +1815,38 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     elements.usageTrigger.addEventListener('click', event => {
       event.stopPropagation(); usageOpen = !usageOpen; policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false'); if (state) renderUsage(state);
     });
+    elements.inspectorClose.addEventListener('click', () => elements.inspector.close());
+    elements.inspectorRefresh.addEventListener('click', requestInspection);
+    elements.inspectorSearch.addEventListener('input', renderInspectionGroups);
+    elements.inspectorSort.addEventListener('change', renderInspectionGroups);
+    elements.inspector.addEventListener('close', () => {
+      if (elements.inspector.open) return;
+      clearTimeout(inspectionTimer); ++inspectionRequest; inspection = undefined; inspectionSession = undefined;
+      elements.inspectorGroups.replaceChildren(); vscode.postMessage({ type: 'close-context' });
+      if (!elements.usageControl.classList.contains('hidden')) elements.usageTrigger.focus();
+    });
     elements.policyTrigger.addEventListener('click', event => {
       event.stopPropagation(); policyMenuOpen = !policyMenuOpen; usageOpen = false; elements.usagePanel.classList.add('hidden'); elements.usageTrigger.setAttribute('aria-expanded', 'false'); elements.commandMenu.classList.add('hidden'); elements.mentionMenu.classList.add('hidden'); if (state) renderPolicyState(state);
     });
     elements.jobsTrigger.addEventListener('click', event => {
-      event.stopPropagation(); jobsOpen = !jobsOpen; elements.jobsMenu.classList.toggle('hidden', !jobsOpen); elements.jobsTrigger.setAttribute('aria-expanded', String(jobsOpen)); renderJobs();
+      event.stopPropagation(); if (!state || state.phase !== 'ready') return;
+      closeSessionMenu(false); taskSession = state.sessionId; taskChild = undefined; taskSnapshot = undefined; taskSignature = '';
+      tasksPanel.showModal(); elements.jobsTrigger.setAttribute('aria-expanded', 'true'); renderTasks(); requestTasks();
+    });
+    document.getElementById('tasksClose').addEventListener('click', () => tasksPanel.close());
+    tasksRefresh.addEventListener('click', requestTasks);
+    tasksBack.addEventListener('click', () => { taskChild = undefined; renderTasks(); tasksRefresh.focus(); requestTasks(); });
+    tasksPanel.addEventListener('close', () => {
+      if (tasksPanel.open) return;
+      clearTimeout(taskPoll); clearTimeout(taskTimeout); ++taskRequest; taskSnapshot = undefined; taskSession = undefined;
+      tasksContent.replaceChildren(); vscode.postMessage({ type: 'close-tasks' }); elements.jobsTrigger.setAttribute('aria-expanded', 'false');
+      if (!elements.jobsControl.classList.contains('hidden')) elements.jobsTrigger.focus();
+    });
+    document.addEventListener('visibilitychange', () => {
+      if (!tasksPanel.open) return;
+      clearTimeout(taskPoll); clearTimeout(taskTimeout); ++taskRequest; tasksRefresh.disabled = false;
+      vscode.postMessage({ type: 'close-tasks' });
+      if (!document.hidden) requestTasks();
     });
     elements.project.addEventListener('click', () => vscode.postMessage({ type: 'choose-workspace' }));
     elements.githubStar.addEventListener('click', () => vscode.postMessage({ type: 'open-link', href: 'https://github.com/Lixxx1/dsh-vscode' }));
@@ -1638,9 +1872,6 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (usageOpen && !elements.usagePanel.contains(event.target) && !elements.usageTrigger.contains(event.target)) {
         usageOpen = false; elements.usagePanel.classList.add('hidden'); elements.usageTrigger.setAttribute('aria-expanded', 'false');
       }
-      if (jobsOpen && !elements.jobsMenu.contains(event.target) && !elements.jobsTrigger.contains(event.target)) {
-        jobsOpen = false; elements.jobsMenu.classList.add('hidden'); elements.jobsTrigger.setAttribute('aria-expanded', 'false'); renderJobs();
-      }
       if (sessionMenuOpen && !elements.sessionControl.contains(event.target)) closeSessionMenu(false);
     });
     document.addEventListener('keydown', event => {
@@ -1652,6 +1883,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     });
     window.addEventListener('message', event => {
       if (!event.data) return;
+      if (event.data.type === 'task-inspection') receiveTasks(event.data);
+      if (event.data.type === 'context-inspection') receiveInspection(event.data);
       if (event.data.type === 'state') { pendingMessageAppends.clear(); scheduleRender(event.data.state); }
       if (event.data.type === 'state-update') applyStateUpdate(event.data.update);
       if (event.data.type === 'tool-output' && state && event.data.sessionId === state.sessionId && typeof event.data.messageId === 'string') {

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { subagentCatalog, type TaskInspection } from './subagents.js'
 import * as path from 'node:path'
 import * as vscode from 'vscode'
 import { ConversationProjector, type ConversationImage, type ConversationMessage, type DshEvent } from './conversation.js'
@@ -71,6 +72,7 @@ import type { DshConnection } from './dsh-connection.js'
 import { canRetryConnection, reconnectAttempts } from './dsh-reconnect.js'
 import { ExistingRuntimeConnectionError, existingRuntimeUrl, type RuntimeTarget } from './runtime-target.js'
 import { pickExistingRuntime, pickManagedRuntime } from './runtime-picker.js'
+import { inspectContext, readContextHistory, type ContextInspection } from './context-inspector.js'
 
 let activeRuntime: DshRuntime | undefined
 
@@ -151,6 +153,7 @@ interface ChatViewState {
   changedFiles: ChangedFileGroup[]
   queue: QueueItemState[]
   jobs: JobItem[]
+  subagentCount: number
   hasMoreHistory: boolean
   loadingHistory: boolean
 }
@@ -211,6 +214,7 @@ function initialState(cwd: string): ChatViewState {
     changedFiles: [],
     queue: [],
     jobs: [],
+    subagentCount: 0,
     hasMoreHistory: false,
     loadingHistory: false,
   }
@@ -591,6 +595,37 @@ export class DshChatController implements vscode.Disposable {
     this.unreadSessionIds.delete(sessionId)
     this.persistUnreadSessions()
     await this.loadSessions()
+  }
+
+  async inspectContext(sessionId: string, active: () => boolean = () => true): Promise<ContextInspection> {
+    this.requireReady()
+    if (sessionId !== this._state.sessionId || sessionId === '') throw new Error('Select a conversation first.')
+    const client = this.requireClient()
+    const generation = this.sessionLoadGeneration
+    const current = () => active() && this.client === client && this._state.phase === 'ready'
+      && this._state.sessionId === sessionId && this.sessionLoadGeneration === generation
+    // Capture a fixed tail. Streaming continues independently and never moves
+    // this inspection's boundary while older pages are being read.
+    const initial = [...this.historyEntries]
+    const usage = this._state.usage
+    const [history, skills] = await Promise.all([
+      readContextHistory(initial, this._state.hasMoreHistory, before => client.history(sessionId, before), current),
+      client.listSkills(sessionId).catch(() => undefined),
+    ])
+    if (!current()) throw new Error('The conversation changed. Reopen the context inspector.')
+    return inspectContext(sessionId, history.entries, history.complete, skills, usage)
+  }
+
+  async inspectTasks(sessionId: string, childId?: string, signal?: AbortSignal): Promise<TaskInspection> {
+    this.requireReady()
+    if (!sessionId || sessionId !== this._state.sessionId) throw new Error('Select a conversation first.')
+    const client = this.requireClient()
+    const generation = this.sessionLoadGeneration
+    const result = await client.inspectTasks(sessionId, childId, signal)
+    signal?.throwIfAborted()
+    if (this.client !== client || this._state.phase !== 'ready' || sessionId !== this._state.sessionId
+      || generation !== this.sessionLoadGeneration) throw new Error('The conversation changed. Reopen Tasks.')
+    return result
   }
 
   async loadOlderHistory(): Promise<void> {
@@ -1007,6 +1042,7 @@ export class DshChatController implements vscode.Disposable {
       changedFiles: this.diffReviews.rebuild(sessionId, this.cwd, events),
       queue: [],
       jobs: this.jobsBySession.get(sessionId) ?? [],
+      subagentCount: subagentCatalog(opening.projections.subagentCatalog).length,
       hasMoreHistory: hasMore,
       loadingHistory: false,
       ...this.modelPatch(models),
@@ -1293,6 +1329,9 @@ export class DshChatController implements vscode.Disposable {
       if (payload.key === 'imageLimits' && sessionId === this._state.sessionId) {
         this.publish({ imageLimits: imageLimitsOf(payload.value) })
       }
+      if (payload.key === 'subagentCatalog' && sessionId === this._state.sessionId) {
+        this.publish({ subagentCount: subagentCatalog(payload.value).length })
+      }
       if (payload.key === 'permissions' && sessionId === this._state.sessionId) {
         if (this.client !== undefined && this._state.phase === 'ready') void this.loadPermissions(this.client, sessionId)
       }
@@ -1544,6 +1583,8 @@ class DshSurface implements vscode.Disposable {
   private postedState: ChatViewState | undefined
   private stateTimer: NodeJS.Timeout | undefined
   private statePosts: Promise<void> = Promise.resolve()
+  private contextRequest = 0
+  private taskRequest: AbortController | undefined
 
   constructor(
     private readonly webview: vscode.Webview,
@@ -1584,6 +1625,8 @@ class DshSurface implements vscode.Disposable {
   }
 
   dispose(): void {
+    this.contextRequest++
+    this.taskRequest?.abort()
     if (this.stateTimer !== undefined) clearTimeout(this.stateTimer)
     for (const disposable of this.disposables) disposable.dispose()
   }
@@ -1833,6 +1876,34 @@ class DshSurface implements vscode.Disposable {
             }
           }
           return
+        case 'inspect-context': {
+          if (typeof value.sessionId !== 'string' || !Number.isSafeInteger(value.requestId)) return
+          const request = ++this.contextRequest
+          try {
+            const inspection = await this.controller.inspectContext(value.sessionId, () => request === this.contextRequest)
+            if (request === this.contextRequest) await this.webview.postMessage({ type: 'context-inspection', sessionId: value.sessionId, requestId: value.requestId, inspection })
+          } catch (error) {
+            if (request === this.contextRequest) await this.webview.postMessage({ type: 'context-inspection', sessionId: value.sessionId, requestId: value.requestId,
+              error: error instanceof Error ? error.message : 'Could not read the recorded context.' })
+          }
+          return
+        }
+        case 'close-context': this.contextRequest++; return
+        case 'inspect-tasks': {
+          if (typeof value.sessionId !== 'string' || !Number.isSafeInteger(value.requestId)
+            || (value.childId !== undefined && typeof value.childId !== 'string')) return
+          this.taskRequest?.abort()
+          const request = this.taskRequest = new AbortController()
+          try {
+            const inspection = await this.controller.inspectTasks(value.sessionId, value.childId, request.signal)
+            if (!request.signal.aborted) await this.webview.postMessage({ type: 'task-inspection', sessionId: value.sessionId, requestId: value.requestId, inspection })
+          } catch (error) {
+            if (!request.signal.aborted) await this.webview.postMessage({ type: 'task-inspection', sessionId: value.sessionId, requestId: value.requestId,
+              error: error instanceof Error ? error.message : 'Could not read tasks.' })
+          }
+          return
+        }
+        case 'close-tasks': this.taskRequest?.abort(); return
         case 'load-history': await this.controller.loadOlderHistory(); return
         case 'load-tool-output':
           if (typeof value.messageId === 'string' && typeof value.requestId === 'number') {

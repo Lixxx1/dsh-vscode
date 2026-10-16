@@ -11,6 +11,12 @@ function chatHtml(webview: vscode.Webview, mark: vscode.Uri): string {
 }
 
 describe('chat webview', () => {
+  it('formats context token totals without stripping whole-number zeroes in the emitted script', () => {
+    const html = chatHtml({ cspSource: 'vscode-webview:' } as vscode.Webview, { toString: () => 'mark' } as vscode.Uri)
+    const source = html.slice(html.indexOf('function formatTokens('), html.indexOf('function formatDuration('))
+    const format = new Function(`${source}; return formatTokens;`)()
+    expect([1000, 10000, 24000, 100000, 1000000, 10000000].map(format)).toEqual(['1K', '10K', '24K', '100K', '1M', '10M'])
+  })
   it('keeps model selection enabled when the current model is unroutable, but blocks sending', () => {
     const html = chatHtml({ cspSource: 'vscode-webview:' } as vscode.Webview, { toString: () => 'mark' } as vscode.Uri)
     const source = html.slice(html.indexOf('const sessionReady ='), html.indexOf('elements.cancel.classList.toggle'))
