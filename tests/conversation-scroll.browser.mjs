@@ -298,6 +298,93 @@ try {
     ensure(!sent.some(message=>message.type==='webview-error'), JSON.stringify(sent.filter(message=>message.type==='webview-error')));
   })()`)
   console.log('PASS: task tree, read-only child output, background jobs, draft/focus preservation, errors, Escape and session isolation at 300px')
+  // Search results are host snapshots; selecting one reveals a real chat node.
+  // Keep both state-before-ack and ack-before-render delivery orders covered.
+  await evaluate(`(async () => {
+    showState({...baseline,messages:[{id:'question',role:'user',text:'Investigate the invoice'},...baseline.messages]}); await tick();
+    elements.prompt.value='Unsent draft'; elements.prompt.focus();
+    window.navigationFixture={sessionId:state.sessionId,query:'',total:1,indexedMessages:2,hasMore:true,limited:false,matches:[{id:'question',role:'user',label:'You',snippet:'Investigate the invoice'}]};
+    window.navigationReply=(request,extra={})=>window.dispatchEvent(new MessageEvent('message',{data:{type:'conversation-search',sessionId:request.sessionId,requestId:request.requestId,result:{...navigationFixture,query:request.query.trim()},...extra}}));
+    window.navigationAck=request=>window.dispatchEvent(new MessageEvent('message',{data:{type:'conversation-revealed',sessionId:request.sessionId,requestId:request.requestId,messageId:request.messageId}}));
+  })()`)
+  await page('Input.dispatchKeyEvent', { type: 'keyDown', key: 'f', code: 'KeyF', modifiers: 2, windowsVirtualKeyCode: 70 })
+  await page('Input.dispatchKeyEvent', { type: 'keyUp', key: 'f', code: 'KeyF', windowsVirtualKeyCode: 70 })
+  await evaluate(`(async () => {
+    ensure(navigationPanel.open && document.activeElement===navigationQuery, 'Ctrl+F did not focus search');
+    const request=sent.findLast(message=>message.type==='search-conversation');
+    navigationReply({...request,requestId:request.requestId-1}); ensure(!navigationResult, 'accepted stale search');
+    navigationReply(request);
+    ensure(navigationResults.querySelectorAll('button').length===1 && !navigationOlder.classList.contains('hidden'), 'missing outline/history button');
+    const originalMessages=state.messages;
+    navigationOlder.click(); const older=sent.findLast(message=>message.type==='search-conversation');
+    ensure(older.older===true, 'earlier history was not requested');
+    navigationReply(older); ensure(state.messages===originalMessages, 'search modified conversation');
+    navigationQuery.value='invoice'; navigationQuery.dispatchEvent(new Event('input')); await tick(220);
+    const query=sent.findLast(message=>message.type==='search-conversation');
+    navigationReply(older); ensure(!navigationResults.children.length, 'old query replaced current results');
+    navigationFixture={...navigationFixture,query:'invoice',total:2,matches:[
+      {id:'older-question',role:'user',label:'You',snippet:'Check invoice totals <img src=x>',matchStart:6,matchLength:7},
+      {id:'older-tool',role:'tool',label:'Tool · Read invoice.log',snippet:'Invoice total: 12; expected 36.',matchStart:0,matchLength:7}
+    ]}; navigationReply(query);
+    ensure(navigationResults.querySelectorAll('mark').length===2 && !navigationPanel.querySelector('img'), 'unsafe/missing highlighted text');
+    const box=navigationPanel.getBoundingClientRect();
+    ensure(box.left>=0 && box.right<=innerWidth && box.top>=0 && box.bottom<=innerHeight && navigationPanel.scrollWidth<=navigationPanel.clientWidth, 'search overflow at 300px');
+    ensure(elements.prompt.value==='Unsent draft', 'search erased draft');
+  })()`)
+  if (process.env.DSH_NAVIGATION_SCREENSHOT) {
+    const { data } = await page('Page.captureScreenshot', { format: 'png' })
+    await writeFile(process.env.DSH_NAVIGATION_SCREENSHOT, Buffer.from(data, 'base64'))
+  }
+  await evaluate(`navigationQuery.focus(); navigationQuery.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true}));
+    ensure(document.activeElement===navigationResults.querySelector('button'), 'ArrowDown did not enter results');
+    document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowUp',bubbles:true}));
+    ensure(document.activeElement===navigationQuery, 'ArrowUp did not return to query');
+    Object.entries({'--vscode-foreground':'#333333','--vscode-descriptionForeground':'#616161','--vscode-sideBar-background':'#f3f3f3','--vscode-editor-background':'#ffffff','--vscode-widget-border':'#cccccc','--vscode-input-background':'#ffffff','--vscode-input-foreground':'#333333','--vscode-textLink-foreground':'#005fb8'}).forEach(([key,value]) => document.documentElement.style.setProperty(key,value)); tick();`)
+  if (process.env.DSH_NAVIGATION_LIGHT_SCREENSHOT) {
+    const { data } = await page('Page.captureScreenshot', { format: 'png' })
+    await writeFile(process.env.DSH_NAVIGATION_LIGHT_SCREENSHOT, Buffer.from(data, 'base64'))
+  }
+  await evaluate(`(async () => {
+    navigationResults.querySelector('button').click(); const reveal=sent.findLast(message=>message.type==='reveal-conversation-message');
+    navigationAck(reveal); await tick(); ensure(navigationPanel.open, 'closed before target was rendered');
+    showState({...state,messages:[{id:'older-question',role:'user',text:'Check invoice totals <img src=x>'},...state.messages]}); await tick();
+    const target=renderedMessages.get('older-question').node;
+    ensure(!navigationPanel.open && !conversationScroller.following && target===document.activeElement, 'jump/focus/paused intent failed');
+    ensure(target.querySelector('mark').textContent==='invoice' && !target.querySelector('img'), 'match excerpt was unsafe or missing');
+    ensure(Math.abs(target.getBoundingClientRect().top-elements.scroll.getBoundingClientRect().top-12)<3, 'jump landed at wrong position');
+    const top=elements.scroll.scrollTop;
+    showState({...state,messages:[...state.messages,{id:'stream-tail',role:'assistant',text:'More streamed content\\n\\n'.repeat(30),streaming:true}]}); await tick();
+    ensure(!conversationScroller.following && Math.abs(elements.scroll.scrollTop-top)<2, 'streaming stole navigation position');
+    // Jump to a collapsed tool near the bottom, after full state arrives first.
+    navigationTrigger.click(); navigationFixture={...navigationFixture,query:'',total:1,matches:[{id:'last-tool',role:'tool',label:'Tool',snippet:'Final output'}]};
+    navigationReply(sent.findLast(message=>message.type==='search-conversation'));
+    navigationResults.querySelector('button').click(); const next=sent.findLast(message=>message.type==='reveal-conversation-message');
+    showState({...state,messages:[...state.messages,{id:'last-tool',role:'tool',text:'Read file',rawResult:'Final output',detail:'Completed'}]}); await tick();
+    navigationAck(next); await tick();
+    const tool=renderedMessages.get('last-tool').node;
+    ensure(tool.open && !conversationScroller.following && gap()<=2, 'near-bottom reveal must expand tool without resuming follow: '+JSON.stringify({open:tool.open,following:conversationScroller.following,gap:gap(),tag:tool.tagName}));
+    showState({...state,messages:[...state.messages,{id:'next-chunk',role:'assistant',text:'New paragraph\\n\\n'.repeat(20)}]}); await tick();
+    ensure(!conversationScroller.following && gap()>100 && !document.getElementById('jumpLatest').hidden, 'jump was lost on next chunk');
+    document.getElementById('jumpLatest').click(); await tick(); ensure(conversationScroller.following && gap()<=2, 'cannot resume after navigation');
+    navigationTrigger.click(); navigationReply(sent.findLast(message=>message.type==='search-conversation'));
+  })()`)
+  await page('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+  await page('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+  await evaluate(`(async () => {
+    await tick(); ensure(!navigationPanel.open && document.activeElement===navigationTrigger, 'Escape did not restore search trigger focus');
+    navigationTrigger.click(); const request=sent.findLast(message=>message.type==='search-conversation');
+    navigationReply(request,{error:'History unavailable'});
+    ensure(!navigationRefresh.disabled && navigationStatus.textContent==='History unavailable', 'cannot retry failed search');
+    navigationRefresh.click(); const retry=sent.findLast(message=>message.type==='search-conversation');
+    navigationReply(request); ensure(!navigationResults.children.length, 'late result replaced retry');
+    showState({...state,sessionId:'new-conversation'}); await tick(); navigationReply(retry);
+    ensure(!navigationPanel.open && !navigationResult, 'search survived session switch');
+    navigationTrigger.click(); const old=sent.findLast(message=>message.type==='search-conversation');
+    showState({...state,phase:'connecting'}); await tick(); navigationReply(old);
+    ensure(!navigationPanel.open && navigationTrigger.disabled, 'search survived reconnect');
+    ensure(!sent.some(message=>message.type==='webview-error'), JSON.stringify(sent.filter(message=>message.type==='webview-error')));
+  })()`)
+  console.log('PASS: search/outline, older pages, literal highlights, stale replies, keyboard, draft isolation and jump without auto-follow at 300px')
 } finally {
   clearTimeout(timeout)
   socket?.terminate()

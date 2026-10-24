@@ -292,6 +292,15 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .task-record { padding: 10px 0; border-top: 1px solid var(--vscode-widget-border); }
     .task-record > summary { cursor: pointer; font-size: 11px; }
     .task-text { margin: 6px 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.65 var(--vscode-font-family); }
+    .navigation-search { width: 100%; min-width: 0; margin-bottom: 12px; }
+    .navigation-results { margin: 0; padding: 0; list-style: none; }
+    .navigation-result { display: block; width: 100%; padding: 10px 4px; border: 0; border-top: 1px solid var(--vscode-widget-border); background: transparent; color: var(--vscode-foreground); text-align: left; }
+    .navigation-result:hover { background: var(--vscode-list-hoverBackground); }
+    .navigation-result small { display: block; margin-bottom: 5px; color: var(--vscode-descriptionForeground); font-size: 10px; }
+    .navigation-snippet { display: block; font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .navigation-snippet mark { color: inherit; background: var(--vscode-editor-findMatchHighlightBackground, #ea5c0055); border: 1px solid var(--vscode-editor-findMatchHighlightBorder, transparent); }
+    .navigation-target { outline: 1px solid var(--vscode-focusBorder); outline-offset: 4px; }
+    .navigation-excerpt { padding: 8px; margin: 8px 0; border-left: 2px solid var(--vscode-focusBorder); color: var(--vscode-descriptionForeground); }
     .project { width: 100%; min-width: 0; height: 28px; padding: 0 4px; overflow: hidden; display: flex; align-items: center; gap: 5px; border: 0; border-radius: 6px; color: var(--vscode-descriptionForeground); background: transparent; }
     .project:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
     .project span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -323,6 +332,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         <button id="jobsTrigger" class="icon-button jobs-trigger" title="Tasks" aria-label="Tasks" aria-haspopup="dialog" aria-expanded="false"><span class="jobs-dot"></span><span id="jobsCount">0</span></button>
       </div>
       <button id="newSession" class="icon-button" title="New conversation" aria-label="New conversation"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+      <button id="navigationTrigger" class="icon-button" title="Find in conversation (Cmd/Ctrl+F)" aria-label="Find in conversation" aria-haspopup="dialog" aria-expanded="false"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg></button>
     </header>
     <div class="conversation-pane">
       <main id="scroll" class="scroll" tabindex="0" aria-label="Conversation"><div id="conversation" class="conversation"><div id="conversationStatus" class="conversation-slot"></div><div id="conversationHistory" class="conversation-slot"></div><div id="messages" class="messages"></div><div id="conversationTail" class="conversation-slot"></div></div></main>
@@ -387,6 +397,21 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       <div id="tasksContent"></div>
     </div>
   </dialog>
+  <dialog id="navigationPanel" class="inspector" aria-labelledby="navigationTitle">
+    <header class="inspector-header">
+      <h2 id="navigationTitle">Find in conversation</h2>
+      <button id="navigationRefresh" class="inspector-refresh" type="button" title="Refresh from the latest messages">Refresh</button>
+      <button id="navigationClose" class="icon-button" type="button" aria-label="Close conversation search" title="Close (Escape)">×</button>
+    </header>
+    <div class="inspector-body">
+      <p class="inspector-caption">Jump to one of your messages, or search messages and tool output. Newest first.</p>
+      <input id="navigationQuery" class="inspector-search navigation-search" type="search" maxlength="200" placeholder="Find text…" aria-label="Find text in this conversation" autofocus>
+      <p id="navigationStatus" class="inspector-status" role="status" aria-live="polite"></p>
+      <p id="navigationCoverage" class="inspector-caption"></p>
+      <ol id="navigationResults" class="navigation-results"></ol>
+      <button id="navigationOlder" class="inspect-action hidden" type="button">Include earlier messages</button>
+    </div>
+  </dialog>
   <script nonce="${token}" src="${escapeHtml(markdownAssets.script.toString(true))}"></script>
   <script nonce="${token}" src="${escapeHtml(markdownAssets.scroll.toString(true))}"></script>
   <script nonce="${token}">
@@ -435,6 +460,16 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     const tasksBack = document.getElementById('tasksBack');
     let taskSession, taskChild, taskSnapshot, taskPoll, taskTimeout;
     let taskRequest = 0, taskSignature = '';
+    const navigationPanel = document.getElementById('navigationPanel');
+    const navigationTrigger = document.getElementById('navigationTrigger');
+    const navigationQuery = document.getElementById('navigationQuery');
+    const navigationResults = document.getElementById('navigationResults');
+    const navigationStatus = document.getElementById('navigationStatus');
+    const navigationCoverage = document.getElementById('navigationCoverage');
+    const navigationOlder = document.getElementById('navigationOlder');
+    const navigationRefresh = document.getElementById('navigationRefresh');
+    let navigationSession, navigationResult, navigationTimer, navigationTimeout, navigationJump, navigationRestore;
+    let navigationRequest = 0, navigationDidJump = false;
     let sessionMenuOpen = false;
     let sessionActionId;
     let historyAnchor;
@@ -452,6 +487,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     let attachmentRequestId = 0;
     const renderedMessages = new Map();
     const expandedToolIds = new Set();
+    const initializeToolContent = new WeakMap();
     const loadingToolRequests = new Map();
     const toolOutputErrors = new Map();
     const toolOutputPages = new Map();
@@ -846,6 +882,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
           const body = node('div', 'tool-body'); item.append(body); attachDeferredOutput(message, body, page => renderToolBody(page, record(page.callView), record(page.resultView)));
         } else item.append(renderToolBody(message, callView, resultView));
       };
+      initializeToolContent.set(item, initializeContent);
       if (item.open) initializeContent();
       item.addEventListener('toggle', () => {
         if (item.open) { expandedToolIds.add(message.id); initializeContent(); }
@@ -1613,6 +1650,101 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       tasksStatus.textContent = 'Updated ' + new Date().toLocaleTimeString();
       taskPoll = setTimeout(requestTasks, 3000);
     }
+    function matchSnippet(match) {
+      const snippet = node('span', 'navigation-snippet');
+      if (Number.isInteger(match.matchStart) && match.matchStart >= 0 && match.matchLength > 0) {
+        const start = match.matchStart, end = start + match.matchLength;
+        snippet.append(document.createTextNode(match.snippet.slice(0, start)), node('mark', '', match.snippet.slice(start, end)), document.createTextNode(match.snippet.slice(end)));
+      } else snippet.textContent = match.snippet;
+      return snippet;
+    }
+    function requestNavigation(options = {}) {
+      if (!navigationPanel.open || !state || state.phase !== 'ready' || state.sessionId !== navigationSession) return;
+      clearTimeout(navigationTimer); clearTimeout(navigationTimeout);
+      const requestId = ++navigationRequest;
+      navigationResults.replaceChildren(); navigationOlder.disabled = true; navigationRefresh.disabled = true;
+      navigationStatus.classList.remove('error'); navigationStatus.textContent = options.older ? 'Reading earlier messages…' : 'Searching…';
+      vscode.postMessage({ type: 'search-conversation', sessionId: navigationSession, requestId, query: navigationQuery.value, ...options });
+      navigationTimeout = setTimeout(() => {
+        if (!navigationPanel.open || requestId !== navigationRequest) return;
+        ++navigationRequest; vscode.postMessage({ type: 'close-navigation' });
+        navigationRefresh.disabled = false; navigationStatus.classList.add('error'); navigationStatus.textContent = 'Search timed out. Try Refresh.';
+      }, 30000);
+    }
+    function openNavigation() {
+      if (!state || state.phase !== 'ready' || !state.sessionId || elements.inspector.open || tasksPanel.open) return;
+      closeSessionMenu(false);
+      if (!navigationPanel.open) {
+        navigationSession = state.sessionId; navigationResult = undefined; navigationQuery.value = ''; navigationQuery.disabled = false;
+        navigationCoverage.textContent = ''; navigationOlder.classList.add('hidden');
+        navigationPanel.showModal(); navigationTrigger.setAttribute('aria-expanded', 'true'); requestNavigation({ refresh: true });
+      }
+      navigationQuery.focus(); navigationQuery.select();
+    }
+    function receiveNavigation(message) {
+      if (!navigationPanel.open || !state || state.phase !== 'ready' || state.sessionId !== navigationSession || message.sessionId !== navigationSession || message.requestId !== navigationRequest) return;
+      clearTimeout(navigationTimeout); navigationRefresh.disabled = false;
+      if (message.error) { navigationStatus.classList.add('error'); navigationStatus.textContent = message.error; navigationOlder.disabled = false; return; }
+      const result = message.result;
+      if (!result || result.sessionId !== navigationSession || result.query !== navigationQuery.value.trim()) return;
+      navigationResult = result;
+      navigationStatus.textContent = result.total ? String(result.total) + (result.query ? ' matching messages' : ' prompts') : (result.query ? 'No matches in the indexed messages.' : 'No prompts in the indexed messages.');
+      navigationCoverage.textContent = result.indexedMessages + ' messages indexed. ' + (result.limited ? 'Search limit reached; some history is not indexed.' : result.hasMore ? 'Earlier history is not included yet.' : 'All available recorded history included.') + (result.total > result.matches.length ? ' Showing the newest ' + result.matches.length + ' results; narrow your search for more.' : '') + ' Refresh to include new replies.';
+      navigationOlder.classList.toggle('hidden', !result.hasMore || result.limited); navigationOlder.disabled = false;
+      navigationResults.replaceChildren();
+      for (const match of result.matches) {
+        const item = node('li', ''); const button = node('button', 'navigation-result'); button.type = 'button'; button.title = 'Jump to message';
+        button.append(node('small', '', match.label), matchSnippet(match)); button.addEventListener('click', () => revealNavigation(match));
+        item.append(button); navigationResults.append(item);
+      }
+    }
+    function revealNavigation(match) {
+      if (!navigationPanel.open || navigationJump) return;
+      clearTimeout(navigationTimer); clearTimeout(navigationTimeout);
+      const requestId = ++navigationRequest;
+      navigationJump = { sessionId: navigationSession, requestId, match, ready: false };
+      navigationRestore = conversationScroller.preserveHistory();
+      navigationQuery.disabled = true; navigationOlder.disabled = true; navigationRefresh.disabled = true;
+      for (const button of navigationResults.querySelectorAll('button')) button.disabled = true;
+      navigationStatus.classList.remove('error'); navigationStatus.textContent = 'Opening message…';
+      vscode.postMessage({ type: 'reveal-conversation-message', sessionId: navigationSession, requestId, messageId: match.id });
+      navigationTimeout = setTimeout(() => {
+        if (!navigationJump || navigationJump.requestId !== requestId) return;
+        receiveNavigationReveal({ sessionId: navigationSession, requestId, error: 'Opening the message timed out. Try again.' });
+      }, 30000);
+    }
+    function receiveNavigationReveal(message) {
+      if (!navigationJump || !navigationPanel.open || message.requestId !== navigationJump.requestId || message.sessionId !== navigationSession || state.sessionId !== navigationSession || state.phase !== 'ready') return;
+      if (message.error) {
+        clearTimeout(navigationTimeout); navigationJump = undefined; if (navigationRestore) navigationRestore(); navigationRestore = undefined;
+        navigationQuery.disabled = false; navigationRefresh.disabled = false; navigationOlder.disabled = false;
+        for (const button of navigationResults.querySelectorAll('button')) button.disabled = false;
+        navigationStatus.classList.add('error'); navigationStatus.textContent = message.error; return;
+      }
+      if (message.messageId !== navigationJump.match.id) return;
+      navigationJump.ready = true; requestAnimationFrame(finishNavigationJump);
+    }
+    function finishNavigationJump() {
+      if (!navigationJump || !navigationJump.ready || !state || state.phase !== 'ready' || state.sessionId !== navigationJump.sessionId) return;
+      const target = renderedMessages.get(navigationJump.match.id)?.node;
+      if (!target || !target.isConnected) return; // The state patch may still be waiting for the next render frame.
+      const match = navigationJump.match;
+      for (const previous of elements.messages.querySelectorAll('.navigation-target')) previous.classList.remove('navigation-target');
+      for (const previous of elements.messages.querySelectorAll('.navigation-excerpt')) previous.remove();
+      target.classList.add('navigation-target'); target.tabIndex = -1;
+      if (navigationResult && navigationResult.query) {
+        const excerpt = node('div', 'navigation-excerpt'); excerpt.append(node('small', '', 'Search match'), matchSnippet(match));
+        target.insertBefore(excerpt, target.tagName === 'DETAILS' ? target.children[1] || null : target.firstChild);
+      }
+      if (target.tagName === 'DETAILS') {
+        expandedToolIds.add(match.id); target.open = true;
+        // Build the first output page before measuring the jump. The native
+        // toggle event is asynchronous and could otherwise clip a short card.
+        initializeToolContent.get(target)?.();
+      }
+      clearTimeout(navigationTimeout); navigationDidJump = true; navigationJump = undefined; navigationRestore = undefined;
+      navigationPanel.close(); target.focus({ preventScroll: true }); conversationScroller.reveal(target);
+    }
     function renderConversation(current) {
       if (renderedSessionId !== current.sessionId) {
         if (renderedSessionId) sessionDrafts.set(renderedSessionId, elements.prompt.value);
@@ -1663,6 +1795,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     function render(current) {
       const preservingHistory = historyAnchor && historyAnchor.sessionId === current.sessionId;
       state = current;
+      navigationTrigger.disabled = current.phase !== 'ready' || !current.sessionId;
+      if (navigationPanel.open && (current.phase !== 'ready' || current.sessionId !== navigationSession)) navigationPanel.close();
       if (tasksPanel.open && (current.phase !== 'ready' || current.sessionId !== taskSession)) tasksPanel.close();
       if (renderedChrome.workspaceName !== current.workspaceName || renderedChrome.cwd !== current.cwd) {
         elements.workspace.textContent = current.workspaceName || 'Workspace'; elements.project.title = current.cwd ? 'DeepSeek project: ' + current.cwd : 'Choose DeepSeek project';
@@ -1676,6 +1810,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (renderedChrome.usage !== current.usage || renderedChrome.phase !== current.phase || renderedChrome.sessionId !== current.sessionId) renderUsage(current);
       if (renderedChrome.jobs !== current.jobs || renderedChrome.subagentCount !== current.subagentCount || renderedChrome.phase !== current.phase) renderJobs();
       renderConversation(current);
+      finishNavigationJump();
       const sessionReady = current.phase === 'ready' && Boolean(current.sessionId);
       const enabled = sessionReady && current.routable !== false;
       elements.prompt.disabled = !enabled; elements.attach.disabled = !enabled; elements.project.disabled = current.running === true; elements.newSession.disabled = current.phase !== 'ready'; elements.sessionTrigger.disabled = current.phase !== 'ready';
@@ -1849,6 +1984,33 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (!document.hidden) requestTasks();
     });
     elements.project.addEventListener('click', () => vscode.postMessage({ type: 'choose-workspace' }));
+    navigationTrigger.addEventListener('click', openNavigation);
+    document.getElementById('navigationClose').addEventListener('click', () => navigationPanel.close());
+    navigationRefresh.addEventListener('click', () => requestNavigation({ refresh: true }));
+    navigationOlder.addEventListener('click', () => requestNavigation({ older: true }));
+    navigationQuery.addEventListener('input', () => {
+      clearTimeout(navigationTimer); clearTimeout(navigationTimeout); ++navigationRequest;
+      navigationResults.replaceChildren(); navigationOlder.disabled = true; navigationStatus.textContent = 'Searching…';
+      navigationTimer = setTimeout(() => requestNavigation(), 180);
+    });
+    navigationQuery.addEventListener('keydown', event => {
+      if (event.key === 'ArrowDown' || event.key === 'Enter') { const first = navigationResults.querySelector('button'); if (first) { event.preventDefault(); first.focus(); } }
+    });
+    navigationResults.addEventListener('keydown', event => {
+      if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+      const buttons = [...navigationResults.querySelectorAll('button')]; const index = buttons.indexOf(document.activeElement);
+      if (index < 0) return; event.preventDefault();
+      const next = index + (event.key === 'ArrowDown' ? 1 : -1);
+      if (next < 0) navigationQuery.focus(); else buttons[Math.min(next, buttons.length - 1)]?.focus();
+    });
+    navigationPanel.addEventListener('close', () => {
+      if (navigationPanel.open) return;
+      clearTimeout(navigationTimer); clearTimeout(navigationTimeout); ++navigationRequest;
+      if (navigationRestore) navigationRestore(); navigationRestore = undefined; navigationJump = undefined;
+      navigationSession = undefined; navigationResult = undefined; navigationResults.replaceChildren(); navigationQuery.disabled = false;
+      vscode.postMessage({ type: 'close-navigation' }); navigationTrigger.setAttribute('aria-expanded', 'false');
+      if (!navigationDidJump && !navigationTrigger.disabled) navigationTrigger.focus(); navigationDidJump = false;
+    });
     elements.githubStar.addEventListener('click', () => vscode.postMessage({ type: 'open-link', href: 'https://github.com/Lixxx1/dsh-vscode' }));
     elements.sessionTrigger.addEventListener('click', event => {
       event.stopPropagation();
@@ -1875,6 +2037,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (sessionMenuOpen && !elements.sessionControl.contains(event.target)) closeSessionMenu(false);
     });
     document.addEventListener('keydown', event => {
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'f' && state && state.phase === 'ready' && !elements.inspector.open && !tasksPanel.open) {
+        event.preventDefault(); event.stopPropagation(); openNavigation(); return;
+      }
       if (event.key === 'Escape' && sessionMenuOpen) {
         event.preventDefault(); closeSessionMenu(true);
       } else if (event.key === 'Escape' && usageOpen) {
@@ -1883,6 +2048,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     });
     window.addEventListener('message', event => {
       if (!event.data) return;
+      if (event.data.type === 'conversation-search') receiveNavigation(event.data);
+      if (event.data.type === 'conversation-revealed') receiveNavigationReveal(event.data);
       if (event.data.type === 'task-inspection') receiveTasks(event.data);
       if (event.data.type === 'context-inspection') receiveInspection(event.data);
       if (event.data.type === 'state') { pendingMessageAppends.clear(); scheduleRender(event.data.state); }

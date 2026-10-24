@@ -70,7 +70,7 @@ async function harness(connection?: DshConnection) {
   mocks.client = client
   const output = { appendLine: vi.fn() }
   const runtime = { start: vi.fn(async () => {}), stop: vi.fn(async () => {}), connection: connection ?? { canReauthenticate: true, reauthenticate: vi.fn(async () => {}) }, state: { kind: 'ready' } }
-  const reviews = { clear: vi.fn(), rebuild: vi.fn(() => []), accept: () => false, dispose() {} }
+  const reviews = { clear: vi.fn(), rebuild: vi.fn(() => []), prependHistory: vi.fn(() => []), accept: () => false, dispose() {} }
   const controller = new DshChatController(runtime as any,
     output as any, {} as any, reviews as any,
     { get: () => [], update: async () => {} } as any, '/workspace')
@@ -80,6 +80,56 @@ async function harness(connection?: DshConnection) {
   const next = () => { const next = testClient(); mocks.client = next.client; return next }
   return { client, controller, output, emit, fail, runtime, reviews, next }
 }
+
+describe('conversation navigation isolation', () => {
+  const prompt = (seq: number): HistoryEntry => ({ event: { seq, time: seq, type: 'user/message', surfaceOp: 'append',
+    data: { id: `user:${seq}`, source: { kind: 'user' }, content: [{ type: 'text', text: `Question ${seq}` }] } } })
+
+  it('does not change visible history until a result is selected, then preserves live output', async () => {
+    const h = await harness()
+    h.client.openSession.mockResolvedValueOnce({ events: [prompt(10)], hasMore: true, projections: {}, isCurrent: () => true, activate() {} } as any)
+    await h.controller.selectSession('b')
+    const before = h.controller.state
+    const navigation = h.controller.createNavigation('b')
+    expect(h.client.history).not.toHaveBeenCalled()
+    h.client.history.mockResolvedValueOnce({ events: [prompt(1)], hasMore: false })
+    await navigation.loadEarlier(new AbortController().signal)
+    expect(navigation.search('Question 1').total).toBe(2)
+    expect(h.controller.state).toBe(before)
+    h.emit({ type: 'session/event', sessionId: 'b', event: prompt(11).event }, 'mux')
+    h.emit({ type: 'session/assistant-stream', sessionId: 'b', update: { kind: 'start', attemptId: 'b:1', turn: 3, step: 1 } }, 'mux')
+    h.emit({ type: 'session/assistant-stream', sessionId: 'b', update: { kind: 'chunk', attemptId: 'b:1', chunk: { type: 'text-delta', text: 'Still writing' } } }, 'mux')
+    h.controller.revealConversationMessage(navigation, 'user:1')
+    expect(h.controller.state.messages.map(message => message.text)).toEqual(['Question 1', 'Question 10', 'Question 11', 'Still writing'])
+    expect(h.controller.state.messages.at(-1)?.streaming).toBe(true)
+    expect(h.controller.state.hasMoreHistory).toBe(false)
+    expect(h.reviews.prependHistory).toHaveBeenCalledExactlyOnceWith('b', '/workspace', [prompt(1)])
+    h.controller.revealConversationMessage(navigation, 'user:10')
+    expect(h.reviews.prependHistory).toHaveBeenCalledTimes(1)
+    expect(h.client.prompt).not.toHaveBeenCalled()
+    expect(h.client.executeCommand).not.toHaveBeenCalled()
+  })
+
+  it('rejects forged targets and snapshots from a different conversation or session generation', async () => {
+    const h = await harness()
+    h.emit({ type: 'session/event', sessionId: 'a', event: prompt(1).event }, 'mux')
+    expect(() => h.controller.createNavigation('b')).toThrow('Select a conversation')
+    const navigation = h.controller.createNavigation('a')
+    expect(() => h.controller.revealConversationMessage(navigation, 'unknown')).toThrow('not in the search snapshot')
+    await h.controller.selectSession('b'); await h.controller.selectSession('a')
+    expect(navigation.isCurrent()).toBe(false)
+    expect(() => h.controller.revealConversationMessage(navigation, 'user:1')).toThrow('conversation changed')
+    expect(h.reviews.prependHistory).not.toHaveBeenCalled()
+  })
+
+  it('invalidates a search when the connection fails', async () => {
+    const h = await harness()
+    const navigation = h.controller.createNavigation('a')
+    h.fail(new DshStreamError('Invalid stream frame'))
+    expect(navigation.isCurrent()).toBe(false)
+    expect(() => navigation.search('')).toThrow('conversation changed')
+  })
+})
 
 describe('task inspection isolation', () => {
   it('does not switch the main conversation or alter its messages', async () => {

@@ -188,12 +188,12 @@ export class DshSessionFeed {
     })
   }
 
-  async page(sessionId: string, beforeSeq: number): Promise<{ events: HistoryEntry[]; hasMore: boolean }> {
+  async page(sessionId: string, beforeSeq: number, signal?: AbortSignal): Promise<{ events: HistoryEntry[]; hasMore: boolean }> {
     const state = this.follow
     if (state?.sessionId !== sessionId || state.cursor < 0) throw new Error('Open the session before loading older history.')
     const result = await this.connection.call<{ records: unknown; hasMore: boolean }>('session/page', {
       request: { address: { kind: 'session', sessionId }, throughSeq: state.cursor, beforeSeq, maxMessages: 100 },
-    })
+    }, 30_000, signal)
     if (this.follow !== state) throw new Error('The conversation changed while loading history.')
     if (typeof result.hasMore !== 'boolean') throw new Error('Invalid history page.')
     return { events: decodeHistory(result.records), hasMore: result.hasMore }

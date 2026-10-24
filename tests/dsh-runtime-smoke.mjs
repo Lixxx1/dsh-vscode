@@ -25,10 +25,11 @@ const entry = join(root, 'client.cjs')
 await build({ stdin: { contents: `export { DshConnection } from './src/dsh-connection.ts';
 export { DshClient } from './src/dsh-client.ts'; export { redactDshSecrets } from './src/runtime-output.ts';
 export { ConversationProjector } from './src/conversation.ts';
+export { ConversationNavigation } from './src/conversation-navigation.ts';
 export { inspectContext, readContextHistory } from './src/context-inspector.ts';`,
   resolveDir: process.cwd(), loader: 'ts' }, outfile: entry, bundle: true, platform: 'node', format: 'cjs',
   external: ['bufferutil', 'utf-8-validate'], logLevel: 'silent' })
-const { DshConnection, DshClient, redactDshSecrets, ConversationProjector, inspectContext, readContextHistory } = createRequire(import.meta.url)(entry)
+const { DshConnection, DshClient, redactDshSecrets, ConversationProjector, ConversationNavigation, inspectContext, readContextHistory } = createRequire(import.meta.url)(entry)
 let modelServer, requests = 0, releaseFirst
 const firstResponse = new Promise(resolveFirst => { releaseFirst = resolveFirst })
 let releaseChild
@@ -191,6 +192,19 @@ try {
     const history = await client.openSession(first.sessionId); history.activate()
     replay.reset(history.events)
     assert.deepEqual(replay.messages().filter(message => message.role === 'tool'), tools)
+    // Start with just the tail to exercise real session/page history reads.
+    const navigation = new ConversationNavigation(first.sessionId, history.events.slice(-1), true,
+      (before, signal) => client.history(first.sessionId, before, signal), () => true)
+    await navigation.loadEarlier(AbortSignal.timeout(10_000))
+    const found = navigation.search('Runtime smoke passed')
+    assert(found.matches.some(match => match.role === 'assistant'))
+    assert(found.matches.some(match => match.role === 'tool'))
+    assert(navigation.search('').matches.every(match => match.role === 'user'))
+    assert.equal(found.hasMore, false)
+    const revealed = new ConversationProjector()
+    revealed.reset(navigation.reveal(found.matches[0].id).entries)
+    assert.deepEqual(revealed.messages(), replay.messages())
+    console.log(`PASS ${version}: conversation search, real earlier-history paging and reveal with unchanged message projection`)
     if (version.startsWith('0.2.')) {
       const recorded = await readContextHistory(history.events, history.hasMore, before => client.history(first.sessionId, before), () => true)
       const snapshot = inspectContext(first.sessionId, recorded.entries, recorded.complete, await client.listSkills(first.sessionId), { available: false })

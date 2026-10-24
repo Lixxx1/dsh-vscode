@@ -210,7 +210,7 @@ export class DshClient {
     return this.call('workspace/archiveSession', { request: { sessionId } })
   }
   createSession(cwd: string): Promise<{ sessionId: string; agentPreset?: string }> { return this.api.createSession(cwd) }
-  history(sessionId: string, beforeSeq: number): Promise<{ events: HistoryEntry[]; hasMore: boolean }> { return this.feed.page(sessionId, beforeSeq) }
+  history(sessionId: string, beforeSeq: number, signal?: AbortSignal): Promise<{ events: HistoryEntry[]; hasMore: boolean }> { return this.feed.page(sessionId, beforeSeq, signal) }
 
   async models(sessionId: string): Promise<SessionModels> {
     await this.catalog.read()
