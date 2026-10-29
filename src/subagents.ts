@@ -22,7 +22,7 @@ export interface TaskInspection {
   truncated: boolean
   detail?: {
     childSessionId: string
-    messages: { id: string; role: string; text: string; detail: string; failed: boolean }[]
+    messages: { id: string; role: string; text: string; detail: string; failed: boolean; rawInput?: string; rawResult?: string }[]
     truncated: boolean
   }
 }
@@ -90,8 +90,8 @@ export function subagentDetail(childSessionId: string, entries: HistoryEntry[], 
   const messages = projector.messages()
   let budget = 60_000
   let truncated = hasMore || messages.length > 60
-  // Keep the newest output, then restore chronological order. Do not ship raw
-  // tool views, image data or executable markdown into the read-only panel.
+  // Keep the newest output, then restore chronological order. Only pass bounded
+  // text, not tool views or image blocks, into the read-only panel.
   const excerpts = messages.slice(-60).reverse().map(message => {
     const take = (text: string) => {
       const size = Math.min(8_000, budget)
@@ -100,7 +100,12 @@ export function subagentDetail(childSessionId: string, entries: HistoryEntry[], 
       budget -= excerpt.length
       return excerpt
     }
-    return { id: message.id, role: message.role, text: take(message.text), detail: take(message.detail ?? ''), failed: message.failed === true }
-  }).filter(message => message.text || message.detail).reverse()
+    return {
+      id: message.id, role: message.role, text: take(message.text), detail: take(message.detail ?? ''), failed: message.failed === true,
+      // Give results (including errors) priority over arguments when little budget remains.
+      ...(message.role === 'tool' && message.rawResult !== undefined ? { rawResult: take(message.rawResult) } : {}),
+      ...(message.role === 'tool' && message.rawInput !== undefined ? { rawInput: take(message.rawInput) } : {}),
+    }
+  }).filter(message => message.text || message.detail || message.rawInput || message.rawResult).reverse()
   return { childSessionId, messages: excerpts, truncated }
 }

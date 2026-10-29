@@ -272,13 +272,23 @@ try {
     ensure(request.childId==='child-a', 'child address not sent');
     taskReply(request,{inspection:{...taskFixture,detail:{childSessionId:'child-a',truncated:true,messages:[
       {id:'reply',role:'assistant',text:'Found the cause. <img src=x onerror="alert(1)">',detail:'',failed:false},
-      {id:'tool',role:'tool',text:'Read src/api.ts',detail:'Recorded tool output',failed:false}
+      {id:'tool',role:'tool',text:'Read',detail:'Completed',failed:false,rawInput:'{"path":"src/api.ts"}',rawResult:'export const html = "<img src=x onerror=alert(1)>";'},
+      {id:'failed-tool',role:'tool',text:'Bash',detail:'Failed',failed:true,rawInput:'{"command":"node debug-demo.js"}',rawResult:'Error: ENOENT: no such file, invoice.json'}
     ]}}});
     ensure(!tasksContent.querySelector('img'), 'agent output executed as markup');
     ensure(tasksContent.textContent.includes('bounded excerpt'), 'missing truncation notice');
-    tasksContent.querySelector('details').open=true;
+    const records=tasksContent.querySelectorAll('details');
+    records.forEach(record=>{record.open=true;});
+    ensure(JSON.stringify([...records[0].querySelectorAll('pre')].map(pre=>pre.textContent))===JSON.stringify(['Completed','{"path":"src/api.ts"}','export const html = "<img src=x onerror=alert(1)>";']), 'missing or changed tool input/output');
+    ensure(records[0].querySelectorAll('.task-meta')[0].textContent==='Input' && records[0].querySelectorAll('.task-meta')[1].textContent==='Output', 'missing tool section labels');
+    ensure(records[1].querySelector('summary').textContent==='Failed · Bash' && records[1].textContent.includes('Error / Output'), 'failed tool was not labeled');
+    ensure(records[1].querySelector('pre:last-child').textContent==='Error: ENOENT: no such file, invoice.json', 'failure reason was lost');
+    ensure(!tasksContent.querySelector('img, a'), 'tool input/output was rendered as markup');
+    ensure(tasksPanel.scrollWidth<=tasksPanel.clientWidth, 'tool output overflows narrow sidebar');
+    records[1].querySelector('summary').focus();
     requestTasks(); taskReply(sent.findLast(message=>message.type==='inspect-tasks'),{inspection:taskSnapshot});
-    ensure(tasksContent.querySelector('details').open, 'refresh collapsed tool output');
+    ensure([...tasksContent.querySelectorAll('details')].every(record=>record.open), 'refresh collapsed tool output');
+    ensure(document.activeElement.closest('.task-record')?.dataset.recordId==='failed-tool', 'refresh stole tool focus');
     ensure(elements.prompt.value==='Keep this draft' && state.sessionId===taskSession, 'inspection changed parent draft/session');
     tasksBack.click(); taskReply(sent.findLast(message=>message.type==='inspect-tasks'));
     ensure(!taskChild && tasksContent.querySelectorAll('.task-row').length===2, 'back navigation failed');

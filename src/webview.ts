@@ -1601,6 +1601,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
             if (tool) { entry.open = openRecords.has(message.id); entry.append(node('summary', '', (message.failed ? 'Failed · ' : '') + message.text)); }
             else entry.append(node('span', 'task-meta', message.role), node('pre', 'task-text', message.text));
             if (message.detail) entry.append(node('pre', 'inspector-content', message.detail));
+            if (tool && message.rawInput) entry.append(node('span', 'task-meta', 'Input'), node('pre', 'inspector-content', message.rawInput));
+            if (tool && message.rawResult) entry.append(node('span', 'task-meta', message.failed ? 'Error / Output' : 'Output'), node('pre', 'inspector-content', message.rawResult));
             tasksContent.append(entry);
           }
         }

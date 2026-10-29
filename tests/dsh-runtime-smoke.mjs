@@ -32,7 +32,7 @@ export { inspectContext, readContextHistory } from './src/context-inspector.ts';
 const { DshConnection, DshClient, redactDshSecrets, ConversationProjector, ConversationNavigation, inspectContext, readContextHistory } = createRequire(import.meta.url)(entry)
 let modelServer, requests = 0, releaseFirst
 const firstResponse = new Promise(resolveFirst => { releaseFirst = resolveFirst })
-let releaseChild
+let releaseChild, childRequests = 0
 const childResponse = new Promise(resolveChild => { releaseChild = resolveChild })
 const patchArgs = []
 if (withTools) {
@@ -45,23 +45,26 @@ if (withTools) {
     // The runtime can concurrently ask this route for a session title. That
     // non-tool request must not consume the scripted agent turn or its gate.
     const isChild = withSubagents && input.messages.some(message => message.role === 'user' && JSON.stringify(message.content).includes('SUBAGENT_SMOKE_ONLY'))
-    const index = isChild ? -2 : input.tools?.length ? requests++ : -1
-    if (index === 0) await firstResponse
+    const index = isChild ? childRequests++ : input.tools?.length ? requests++ : -1
+    if (!isChild && index === 0) await firstResponse
     if (isChild) await childResponse
     if (response.destroyed) return
-    const tools = [
+    const tools = isChild ? [
+      ['read', { file_path: 'smoke.txt' }],
+      ['read', { file_path: 'missing-child.txt' }],
+    ] : [
       ['write', { file_path: 'smoke.txt', content: 'Runtime smoke passed\n' }],
       ['read', { file_path: 'missing.txt' }],
       ['read', { file_path: 'smoke.txt' }],
       ...(version.startsWith('0.2.') ? [['bash', { command: 'node -e "setTimeout(() => {}, 30000)"',
         description: 'Start temporary compatibility test background process', run_in_background: true }]] : []),
-      ...(withSubagents ? [['subagent', { description: 'Inspect local smoke fixture', prompt: 'SUBAGENT_SMOKE_ONLY: Reply with Child task verified.', run_in_background: false }]] : []),
+      ...(withSubagents ? [['subagent', { description: 'Inspect local smoke fixture', prompt: 'SUBAGENT_SMOKE_ONLY: Read smoke.txt and missing-child.txt, then reply with Child task verified.', run_in_background: false }]] : []),
     ]
     const tool = tools[index]
     response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
     const send = (delta, finish_reason) => response.write(`data: ${JSON.stringify({ id: `smoke-${index}`, object: 'chat.completion.chunk',
       created: 1, model: 'smoke', choices: [{ index: 0, delta, finish_reason }] })}\n\n`)
-    send(tool ? { role: 'assistant', tool_calls: [{ index: 0, id: `call-${index}`, type: 'function', function: { name: tool[0], arguments: JSON.stringify(tool[1]) } }] }
+    send(tool ? { role: 'assistant', tool_calls: [{ index: 0, id: `call-${isChild ? 'child-' : ''}${index}`, type: 'function', function: { name: tool[0], arguments: JSON.stringify(tool[1]) } }] }
       : { role: 'assistant', content: isChild ? 'Child task verified.' : 'Runtime smoke passed.' }, null)
     send({}, tool ? 'tool_calls' : 'stop')
     response.end('data: [DONE]\n\n')
@@ -178,7 +181,16 @@ try {
       const settled = await client.inspectTasks(first.sessionId, childId)
       assert.equal(settled.tasks[0].status, 'completed')
       assert(settled.detail.messages.some(message => message.text.includes('Child task verified.')))
+      const childTools = settled.detail.messages.filter(message => message.role === 'tool')
+      assert.equal(childTools.length, 2)
+      assert.equal(childTools[0].rawInput, JSON.stringify({ file_path: 'smoke.txt' }))
+      assert.equal(childTools[0].failed, false)
+      assert(childTools[0].rawResult.includes('Runtime smoke passed'), 'Child tool success output must reach the detail panel')
+      assert.equal(childTools[1].rawInput, JSON.stringify({ file_path: 'missing-child.txt' }))
+      assert.equal(childTools[1].failed, true)
+      assert(childTools[1].rawResult.includes('missing-child.txt'), 'Child tool failure must include the actual error, not only Failed')
       console.log(`PASS ${version}: real subagent catalog, running/completed states, read-only child history and parent stream isolation`)
+      console.log(`PASS ${version}: actual child tool inputs, file contents and missing-file errors in task detail`)
     }
     await waitFor(() => frames.some(frame => frame.type === 'session/event' && frame.sessionId === first.sessionId && frame.event.type === 'turn/end'))
     assert.equal(await readFile(join(workspace, 'smoke.txt'), 'utf8'), 'Runtime smoke passed\n')

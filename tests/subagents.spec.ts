@@ -3,9 +3,20 @@ import { describe, expect, it, vi } from 'vitest'
 import { subagentCatalog, subagentProgress, readSubagentTasks, subagentDetail } from '../src/subagents.js'
 import { inspectSubagents, readChildSnapshot } from '../src/dsh-subagents.js'
 import type { DshConnection } from '../src/dsh-connection.js'
+import type { HistoryEntry } from '../src/dsh-client.js'
 
 const child = (id: string) => ({ id, label: `Task ${id}`, mode: 'continuable' })
 const signal = () => new AbortController().signal
+function toolEntries(id: string, input: string, output: string, failed = false, version = 'V4'): HistoryEntry[] {
+  const content = [{ type: 'text', text: output }]
+  return [
+    { event: { type: 'tool/call', seq: 1, time: 1, data: { callId: id, name: 'Bash', arguments: input } } },
+    { event: { type: 'tool/result', seq: 2, time: 2, data: { message: version === 'V4'
+      ? { source: { callId: id }, isError: failed, content }
+      : { content: [{ type: 'tool-result', toolCallId: id, isError: failed, content }] } } } },
+  ]
+}
+
 describe('read-only subagent tasks', () => {
   it('validates and deduplicates parent-owned catalogs', () => {
     expect(subagentCatalog([child('a'), child('a'), { id: 'b', mode: 'unknown' }, {}, { id: 'bad', mode: 'invalid' }]))
@@ -53,7 +64,54 @@ describe('read-only subagent tasks', () => {
     expect(connection.openStreamSocket).not.toHaveBeenCalled()
     expect(connection.call).toHaveBeenCalledWith('session/projections', { request: { sessionId: 'root' } }, 10_000, expect.any(AbortSignal))
   })
-  it('bounds output and does not expose tool views or raw image payloads', () => {
+  it.each(['V3', 'V4'])('includes recorded tool arguments and success/error output for %s', version => {
+    const input = JSON.stringify({ command: 'node debug-demo.js' })
+    for (const failed of [false, true]) {
+      const output = failed ? 'Error: ENOENT: no such file, invoice.json' : 'Invoice total: $36\nExit 0'
+      expect(subagentDetail('a', toolEntries('call', input, output, failed, version), false)).toEqual({
+        childSessionId: 'a', truncated: false,
+        messages: [{ id: 'tool:call', role: 'tool', text: 'Bash', detail: failed ? 'Failed' : 'Completed', failed, rawInput: input, rawResult: output }],
+      })
+    }
+  })
+  it('keeps arguments for running tools and results when the call is outside the history window', () => {
+    const entries = toolEntries('call', '{"command":"pwd"}', '/workspace')
+    expect(subagentDetail('a', entries.slice(0, 1), false).messages).toEqual([
+      { id: 'tool:call', role: 'tool', text: 'Bash', detail: 'Running…', failed: false, rawInput: '{"command":"pwd"}' },
+    ])
+    expect(subagentDetail('a', entries.slice(1), true)).toEqual({
+      childSessionId: 'a', truncated: true,
+      messages: [{ id: 'tool:call', role: 'tool', text: 'Tool', detail: 'Completed', failed: false, rawResult: '/workspace' }],
+    })
+  })
+  it('bounds tool inputs and results within the shared budget, preserving newest output first', () => {
+    const entries = Array.from({ length: 10 }, (_, index) => toolEntries(String(index), 'i'.repeat(10_000), `Output ${index} ` + 'x'.repeat(10_000)))
+      .flat().map((entry, seq) => ({ ...entry, event: { ...entry.event, seq, time: seq } }))
+    const detail = subagentDetail('a', entries, false)
+    expect(detail.truncated).toBe(true)
+    expect(detail.messages.map(message => message.id)).toEqual(['tool:6', 'tool:7', 'tool:8', 'tool:9'])
+    const fields = detail.messages.flatMap(message => [message.text, message.detail, message.rawInput ?? '', message.rawResult ?? ''])
+    expect(fields.every(text => text.length <= 8_000)).toBe(true)
+    expect(fields.reduce((sum, text) => sum + text.length, 0)).toBe(60_000)
+    expect(detail.messages.at(-1)?.rawResult).toBe(('Output 9 ' + 'x'.repeat(10_000)).slice(0, 8_000))
+    expect(detail.messages[0]?.rawResult).toHaveLength(8_000)
+    expect(detail.messages[0]?.rawInput?.length).toBeLessThan(8_000)
+  })
+  it('excludes tool views and image blocks while retaining text unchanged', () => {
+    const text = '<img src=x onerror="alert(1)">\n[open](command:workbench.action.files.openFile)'
+    const entries = toolEntries('call', '{"command":"pwd"}', text)
+    const result = entries[1]!
+    result.event.data = { message: { source: { callId: 'call' }, content: [
+      { type: 'text', text }, { type: 'image', data: 'PRIVATE_IMAGE_DATA', attachment: { attachmentId: 'image', mediaType: 'image/png', width: 1, height: 1 } },
+    ] } }
+    const detail = subagentDetail('a', entries, false)
+    expect(detail.messages[0]?.rawResult).toBe(text)
+    expect(detail.messages[0]).not.toHaveProperty('callView')
+    expect(detail.messages[0]).not.toHaveProperty('resultView')
+    expect(detail.messages[0]).not.toHaveProperty('images')
+    expect(JSON.stringify(detail)).not.toContain('PRIVATE_IMAGE_DATA')
+  })
+  it('bounds assistant output while preserving the newest messages', () => {
     const detail = subagentDetail('a', Array.from({ length: 70 }, (_, seq) => ({ event: {
       type: 'assistant/message', seq, time: seq, surfaceOp: 'append' as const,
       data: { turn: seq, step: 1, message: { content: [{ type: 'text', text: `Output ${seq} ` + 'x'.repeat(10_000) }] } },
