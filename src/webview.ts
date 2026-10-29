@@ -1710,7 +1710,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       vscode.postMessage({ type: 'reveal-conversation-message', sessionId: navigationSession, requestId, messageId: match.id });
       navigationTimeout = setTimeout(() => {
         if (!navigationJump || navigationJump.requestId !== requestId) return;
-        receiveNavigationReveal({ sessionId: navigationSession, requestId, error: 'Opening the message timed out. Try again.' });
+        const error = navigationJump.ready ? 'The message was confirmed, but its content did not arrive. Try Refresh.' : 'Opening the message timed out. Try again.';
+        receiveNavigationReveal({ sessionId: navigationSession, requestId, error });
       }, 30000);
     }
     function receiveNavigationReveal(message) {
@@ -1722,12 +1723,17 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         navigationStatus.classList.add('error'); navigationStatus.textContent = message.error; return;
       }
       if (message.messageId !== navigationJump.match.id) return;
-      navigationJump.ready = true; requestAnimationFrame(finishNavigationJump);
+      navigationJump.ready = true;
+      navigationStatus.textContent = 'Waiting for message content…';
+      // A native webview may stop receiving animation frames while the display
+      // sleeps. Commit any received state before locating the target instead of
+      // making a completed host request wait for a paint (and falsely time out).
+      flushRender(); finishNavigationJump();
     }
     function finishNavigationJump() {
-      if (!navigationJump || !navigationJump.ready || !state || state.phase !== 'ready' || state.sessionId !== navigationJump.sessionId) return;
+      if (!navigationPanel.open || !navigationJump || !navigationJump.ready || !state || state.phase !== 'ready' || state.sessionId !== navigationJump.sessionId) return;
       const target = renderedMessages.get(navigationJump.match.id)?.node;
-      if (!target || !target.isConnected) return; // The state patch may still be waiting for the next render frame.
+      if (!target || !target.isConnected) return; // The host state may arrive after its acknowledgement.
       const match = navigationJump.match;
       for (const previous of elements.messages.querySelectorAll('.navigation-target')) previous.classList.remove('navigation-target');
       for (const previous of elements.messages.querySelectorAll('.navigation-excerpt')) previous.remove();
@@ -1828,15 +1834,21 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       }
       conversationScroller.changed();
     }
+    function flushRender() {
+      if (renderFrame !== undefined) cancelAnimationFrame(renderFrame);
+      renderFrame = undefined;
+      const pending = pendingRenderState; pendingRenderState = undefined;
+      if (pending) render(pending);
+    }
     function scheduleRender(current) {
       if (elements.inspector.open && (current.phase !== 'ready' || current.sessionId !== inspectionSession)) elements.inspector.close();
+      if (navigationPanel.open && (current.phase !== 'ready' || current.sessionId !== navigationSession)) navigationPanel.close();
       state = current; pendingRenderState = current;
+      // Also handle acknowledgement-before-state without waiting for rAF. Keep
+      // ordinary streaming renders batched as before.
+      if (navigationPanel.open && navigationJump && navigationJump.ready) { flushRender(); return; }
       if (renderFrame !== undefined) return;
-      renderFrame = requestAnimationFrame(() => {
-        renderFrame = undefined;
-        const pending = pendingRenderState; pendingRenderState = undefined;
-        if (pending) render(pending);
-      });
+      renderFrame = requestAnimationFrame(flushRender);
     }
     function applyMessagesPatch(current, patch) {
       if (Array.isArray(patch && patch.reset)) { pendingMessageAppends.clear(); return patch.reset; }

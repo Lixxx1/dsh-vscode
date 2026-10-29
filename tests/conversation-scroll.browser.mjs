@@ -385,6 +385,80 @@ try {
     ensure(!sent.some(message=>message.type==='webview-error'), JSON.stringify(sent.filter(message=>message.type==='webview-error')));
   })()`)
   console.log('PASS: search/outline, older pages, literal highlights, stale replies, keyboard, draft isolation and jump without auto-follow at 300px')
+
+  // Native webviews can stop delivering animation frames while the display is
+  // asleep. Host messages still arrive: navigation must not wait for a paint.
+  await evaluate(`(async () => {
+    window.holdRenderFrames=()=>{
+      const raf=window.requestAnimationFrame, cancel=window.cancelAnimationFrame;
+      const held=new Map(); let id=1000000;
+      window.requestAnimationFrame=callback=>{held.set(++id,callback);return id;};
+      window.cancelAnimationFrame=value=>{if(!held.delete(value)) cancel(value);};
+      return ()=>{
+        window.requestAnimationFrame=raf; window.cancelAnimationFrame=cancel;
+        for(const callback of held.values()) raf(callback);
+      };
+    };
+    window.openNavigationFixture=(id)=>{
+      navigationTrigger.click();
+      navigationFixture={sessionId:state.sessionId,query:'',total:1,indexedMessages:2,hasMore:false,limited:false,matches:[{id,role:'user',label:'You',snippet:'hi'}]};
+      navigationReply(sent.findLast(message=>message.type==='search-conversation'));
+      navigationResults.querySelector('button').click();
+      return sent.findLast(message=>message.type==='reveal-conversation-message');
+    };
+    showState({...baseline,sessionId:'paused-paint',messages:[{id:'first',role:'user',text:'hi'},...baseline.messages]}); await tick();
+    elements.prompt.value='Keep this draft';
+    const request=openNavigationFixture('first');
+    const restore=holdRenderFrames();
+    try {
+      showState(JSON.parse(JSON.stringify({...state,messages:[{id:'first',role:'user',text:'hi, updated'},...baseline.messages]})));
+      navigationAck(request); await tick();
+      const target=renderedMessages.get('first').node;
+      ensure(!navigationPanel.open && target===document.activeElement, 'jump waited for a suspended animation frame');
+      ensure(target.textContent.includes('hi, updated') && target.classList.contains('navigation-target'), 'jump used stale content');
+      ensure(!navigationJump && pendingRenderState===undefined && renderFrame===undefined, 'jump left a pending render');
+      ensure(!conversationScroller.following && elements.prompt.value==='Keep this draft', 'jump changed follow intent or draft');
+      ensure(Math.abs(target.getBoundingClientRect().top-elements.scroll.getBoundingClientRect().top-12)<3, 'paused-frame jump landed incorrectly');
+    } finally { restore(); }
+    await tick();
+    ensure(document.activeElement===renderedMessages.get('first').node, 'resuming paints replaced the focused target');
+
+    // ACK before the older message arrives must wait for data, not for rAF.
+    const older=openNavigationFixture('older-paused');
+    const restoreOlder=holdRenderFrames();
+    try {
+      navigationAck(older); await tick();
+      ensure(navigationPanel.open && navigationStatus.textContent==='Waiting for message content…', 'ACK/data wait was not distinguished');
+      showState({...state,messages:[{id:'older-paused',role:'user',text:'Older prompt'},...state.messages]}); await tick();
+      ensure(!navigationPanel.open && document.activeElement===renderedMessages.get('older-paused').node, 'late content waited for a suspended animation frame');
+      ensure(!conversationScroller.following, 'late content resumed following');
+    } finally { restoreOlder(); }
+    await tick();
+    ensure(!sent.some(message=>message.type==='webview-error'), JSON.stringify(sent.filter(message=>message.type==='webview-error')));
+  })()`)
+  console.log('PASS: paused animation frames, full-state flush, ACK before content, focus/draft preservation and resumed paint')
+  await evaluate(`(async () => {
+    // Explicit Jump to latest must work even when automatic layout work is
+    // waiting for a paint. Keep subsequent streaming batched as before.
+    conversationScroller.pause(); elements.scroll.scrollTop=100; await tick();
+    const restore=holdRenderFrames();
+    try {
+      conversationScroller.resume(); // Queue a follow frame before the click.
+      ensure(gap()>100, 'fixture must start away from the tail');
+      document.getElementById('jumpLatest').click();
+      ensure(gap()<=2 && conversationScroller.following, 'Jump to latest waited for a suspended animation frame');
+      ensure(document.getElementById('jumpLatest').hidden && document.activeElement===elements.scroll, 'jump did not hide its button or transfer focus');
+      ensure(elements.prompt.value==='Keep this draft', 'jump changed the draft');
+      await tick();
+      const before=elements.scroll.scrollTop;
+      const row=document.createElement('div'); row.style.height='200px'; elements.messages.append(row);
+      conversationScroller.changed(); conversationScroller.changed();
+      ensure(elements.scroll.scrollTop===before && gap()>100, 'automatic follow stopped batching');
+    } finally { restore(); }
+    await tick();
+    ensure(gap()<=2 && conversationScroller.following, 'following did not recover after paints resumed');
+  })()`)
+  console.log('PASS: immediate Jump to latest with paused frames, focus/draft preservation and batched streaming')
 } finally {
   clearTimeout(timeout)
   socket?.terminate()

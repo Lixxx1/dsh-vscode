@@ -143,6 +143,10 @@ export function createConversationScroller(scroll: HTMLElement, content: HTMLEle
     // Move keyboard focus off the button before it disappears.
     scroll.focus({ preventScroll: true })
     resume()
+    // Explicit navigation must not wait for a paint (which a native webview
+    // can suspend). Later streamed layout changes still use changed() batching.
+    cancelFrame()
+    writeTop(maximum())
   }, { signal: lifetime.signal })
   const observer = new view.ResizeObserver(changed)
   observer.observe(content)

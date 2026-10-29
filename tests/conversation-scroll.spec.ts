@@ -95,14 +95,57 @@ describe('conversation scroll intent', () => {
     expect(h.scroll.scrollTop).toBe(700)
   })
 
-  it('jump to latest restores following, hides the button, and moves focus to the transcript', () => {
+  it('jump to latest restores following, hides the button, and moves focus without waiting for a frame', () => {
     const h = harness()
     h.scroll.scrollTop = 100; h.fireScroll()
-    h.jump.focus(); h.jump.click(); h.flush()
+    h.jump.focus(); h.jump.click()
     expect(h.scroll.scrollTop).toBe(600)
     expect(h.controller.following).toBe(true)
     expect(h.jump.hidden).toBe(true)
     expect(document.activeElement).toBe(h.scroll)
+    expect(h.frames.size).toBe(0)
+  })
+
+  it('jump to latest cancels an already queued follow frame', () => {
+    const h = harness()
+    h.scroll.scrollTop = 100; h.fireScroll()
+    h.controller.resume()
+    expect(h.frames.size).toBe(1)
+    h.jump.click()
+    expect(h.scroll.scrollTop).toBe(600)
+    expect(h.frames.size).toBe(0)
+    h.fireScroll()
+    expect(h.controller.following).toBe(true)
+  })
+
+  it('keeps streamed layout changes batched after an immediate jump and respects later upward input', () => {
+    const h = harness()
+    h.scroll.scrollTop = 100; h.fireScroll()
+    h.jump.click(); h.fireScroll()
+    expect(h.scroll.scrollTop).toBe(600)
+    h.setHeight(1200); h.resize(); h.resize()
+    expect(h.scroll.scrollTop).toBe(600)
+    expect(h.frames.size).toBe(1)
+    h.flush(); h.fireScroll()
+    expect(h.scroll.scrollTop).toBe(900)
+    h.setHeight(1400); h.resize()
+    h.wheel(-10); h.scroll.scrollTop = 850; h.fireScroll(); h.flush()
+    expect(h.scroll.scrollTop).toBe(850)
+    expect(h.controller.following).toBe(false)
+    expect(h.jump.hidden).toBe(false)
+  })
+
+  it('an immediate jump invalidates a pending history anchor', () => {
+    const h = harness()
+    h.scroll.scrollTop = 100; h.fireScroll()
+    const restore = h.controller.preserveHistory()
+    h.jump.click()
+    expect(h.scroll.scrollTop).toBe(600)
+    h.setHeight(1200); restore()
+    expect(h.scroll.scrollTop).toBe(600)
+    expect(h.controller.following).toBe(true)
+    h.resize(); h.flush()
+    expect(h.scroll.scrollTop).toBe(900)
   })
 
   it.each(['ArrowUp', 'PageUp', 'Home'])('honors %s without requiring wheel input', key => {
