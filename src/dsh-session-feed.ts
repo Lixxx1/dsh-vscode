@@ -42,6 +42,7 @@ export class DshSessionFeed {
   private disposed = false
   private readonly jobSubscriptions = new Map<string, () => void>()
   private readonly running = new Map<string, boolean>()
+  private readonly listedRunning = new Map<string, boolean>()
   private readonly questions = new Map<string, PendingQuestion>()
   private readonly displayedQuestions = new Map<string, string>()
   private readonly requestSessions = new Set<string>()
@@ -99,9 +100,13 @@ export class DshSessionFeed {
   }
 
   get listRevision(): number { return this.addedRevision }
+  sessionRunning(sessionId: string): boolean | undefined { return this.running.get(sessionId) ?? this.listedRunning.get(sessionId) }
   get usesLegacyControl(): boolean { return this.controlReady && !this.separateJobs }
 
   summaries(items: SessionSummary[], sinceRevision: number): SessionSummary[] {
+    // A newly connected client may join a child that was already running.
+    // Later event-stream updates remain authoritative over this list baseline.
+    for (const summary of items) this.listedRunning.set(summary.sessionId, summary.running)
     const summaries = new Map(items.map(summary => [summary.sessionId, summary]))
     // Do not lose a new conversation when its notification races session/list.
     for (const [id, added] of this.addedSessions) {
@@ -183,12 +188,12 @@ export class DshSessionFeed {
     })
   }
 
-  async page(sessionId: string, beforeSeq: number): Promise<{ events: HistoryEntry[]; hasMore: boolean }> {
+  async page(sessionId: string, beforeSeq: number, signal?: AbortSignal): Promise<{ events: HistoryEntry[]; hasMore: boolean }> {
     const state = this.follow
     if (state?.sessionId !== sessionId || state.cursor < 0) throw new Error('Open the session before loading older history.')
     const result = await this.connection.call<{ records: unknown; hasMore: boolean }>('session/page', {
       request: { address: { kind: 'session', sessionId }, throughSeq: state.cursor, beforeSeq, maxMessages: 100 },
-    })
+    }, 30_000, signal)
     if (this.follow !== state) throw new Error('The conversation changed while loading history.')
     if (typeof result.hasMore !== 'boolean') throw new Error('Invalid history page.')
     return { events: decodeHistory(result.records), hasMore: result.hasMore }

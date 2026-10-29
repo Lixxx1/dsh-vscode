@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto'
+import { subagentCatalog, type TaskInspection } from './subagents.js'
+import { ConversationNavigation } from './conversation-navigation.js'
 import * as path from 'node:path'
 import * as vscode from 'vscode'
 import { ConversationProjector, type ConversationImage, type ConversationMessage, type DshEvent } from './conversation.js'
@@ -71,6 +73,7 @@ import type { DshConnection } from './dsh-connection.js'
 import { canRetryConnection, reconnectAttempts } from './dsh-reconnect.js'
 import { ExistingRuntimeConnectionError, existingRuntimeUrl, type RuntimeTarget } from './runtime-target.js'
 import { pickExistingRuntime, pickManagedRuntime } from './runtime-picker.js'
+import { inspectContext, readContextHistory, type ContextInspection } from './context-inspector.js'
 
 let activeRuntime: DshRuntime | undefined
 
@@ -151,6 +154,7 @@ interface ChatViewState {
   changedFiles: ChangedFileGroup[]
   queue: QueueItemState[]
   jobs: JobItem[]
+  subagentCount: number
   hasMoreHistory: boolean
   loadingHistory: boolean
 }
@@ -211,6 +215,7 @@ function initialState(cwd: string): ChatViewState {
     changedFiles: [],
     queue: [],
     jobs: [],
+    subagentCount: 0,
     hasMoreHistory: false,
     loadingHistory: false,
   }
@@ -593,6 +598,37 @@ export class DshChatController implements vscode.Disposable {
     await this.loadSessions()
   }
 
+  async inspectContext(sessionId: string, active: () => boolean = () => true): Promise<ContextInspection> {
+    this.requireReady()
+    if (sessionId !== this._state.sessionId || sessionId === '') throw new Error('Select a conversation first.')
+    const client = this.requireClient()
+    const generation = this.sessionLoadGeneration
+    const current = () => active() && this.client === client && this._state.phase === 'ready'
+      && this._state.sessionId === sessionId && this.sessionLoadGeneration === generation
+    // Capture a fixed tail. Streaming continues independently and never moves
+    // this inspection's boundary while older pages are being read.
+    const initial = [...this.historyEntries]
+    const usage = this._state.usage
+    const [history, skills] = await Promise.all([
+      readContextHistory(initial, this._state.hasMoreHistory, before => client.history(sessionId, before), current),
+      client.listSkills(sessionId).catch(() => undefined),
+    ])
+    if (!current()) throw new Error('The conversation changed. Reopen the context inspector.')
+    return inspectContext(sessionId, history.entries, history.complete, skills, usage)
+  }
+
+  async inspectTasks(sessionId: string, childId?: string, signal?: AbortSignal): Promise<TaskInspection> {
+    this.requireReady()
+    if (!sessionId || sessionId !== this._state.sessionId) throw new Error('Select a conversation first.')
+    const client = this.requireClient()
+    const generation = this.sessionLoadGeneration
+    const result = await client.inspectTasks(sessionId, childId, signal)
+    signal?.throwIfAborted()
+    if (this.client !== client || this._state.phase !== 'ready' || sessionId !== this._state.sessionId
+      || generation !== this.sessionLoadGeneration) throw new Error('The conversation changed. Reopen Tasks.')
+    return result
+  }
+
   async loadOlderHistory(): Promise<void> {
     this.requireReady()
     if (this._state.sessionId === '' || !this._state.hasMoreHistory || this._state.loadingHistory) return
@@ -625,6 +661,35 @@ export class DshChatController implements vscode.Disposable {
         this.publish({ loadingHistory: false })
       }
     }
+  }
+
+  createNavigation(sessionId: string): ConversationNavigation {
+    this.requireReady()
+    if (!sessionId || sessionId !== this._state.sessionId) throw new Error('Select a conversation first.')
+    const client = this.requireClient()
+    const generation = this.sessionLoadGeneration
+    return new ConversationNavigation(sessionId, this.historyEntries, this._state.hasMoreHistory,
+      (before, signal) => client.history(sessionId, before, signal),
+      () => !this.disposed && this.client === client && this._state.phase === 'ready'
+        && this._state.sessionId === sessionId && this.sessionLoadGeneration === generation)
+  }
+
+  revealConversationMessage(navigation: ConversationNavigation, messageId: string): void {
+    this.requireReady()
+    if (!navigation.isCurrent() || navigation.sessionId !== this._state.sessionId) throw new Error('The conversation changed. Reopen Find in conversation.')
+    if (this._state.loadingHistory) throw new Error('Earlier messages are still loading. Try again in a moment.')
+    const snapshot = navigation.reveal(messageId)
+    const unseen = unseenHistoryEntries(this.historyEntries, snapshot.entries)
+    if (unseen.length) {
+      this.historyEntries = mergeHistoryEntries(this.historyEntries, unseen)
+      // New streamed output must survive navigation to an older result.
+      this.projector.reset(this.historyEntries, true)
+      this.publish({ messages: this.projectedMessages(),
+        changedFiles: this.diffReviews.prependHistory(this._state.sessionId, this.cwd, unseen),
+        hasMoreHistory: this._state.hasMoreHistory && snapshot.hasMore })
+      this.hydrateImages(this.requireClient(), this._state.sessionId)
+    }
+    if (!this._state.messages.some(message => message.id === messageId)) throw new Error('This message is no longer available. Refresh the search.')
   }
 
   async send(
@@ -1007,6 +1072,7 @@ export class DshChatController implements vscode.Disposable {
       changedFiles: this.diffReviews.rebuild(sessionId, this.cwd, events),
       queue: [],
       jobs: this.jobsBySession.get(sessionId) ?? [],
+      subagentCount: subagentCatalog(opening.projections.subagentCatalog).length,
       hasMoreHistory: hasMore,
       loadingHistory: false,
       ...this.modelPatch(models),
@@ -1293,6 +1359,9 @@ export class DshChatController implements vscode.Disposable {
       if (payload.key === 'imageLimits' && sessionId === this._state.sessionId) {
         this.publish({ imageLimits: imageLimitsOf(payload.value) })
       }
+      if (payload.key === 'subagentCatalog' && sessionId === this._state.sessionId) {
+        this.publish({ subagentCount: subagentCatalog(payload.value).length })
+      }
       if (payload.key === 'permissions' && sessionId === this._state.sessionId) {
         if (this.client !== undefined && this._state.phase === 'ready') void this.loadPermissions(this.client, sessionId)
       }
@@ -1544,6 +1613,10 @@ class DshSurface implements vscode.Disposable {
   private postedState: ChatViewState | undefined
   private stateTimer: NodeJS.Timeout | undefined
   private statePosts: Promise<void> = Promise.resolve()
+  private contextRequest = 0
+  private taskRequest: AbortController | undefined
+  private navigation: ConversationNavigation | undefined
+  private navigationRequest: AbortController | undefined
 
   constructor(
     private readonly webview: vscode.Webview,
@@ -1561,7 +1634,13 @@ class DshSurface implements vscode.Disposable {
       scroll: webview.asWebviewUri(vscode.Uri.joinPath(renderRoot, 'scroll.js')),
     })
     this.disposables = [
-      controller.onDidChangeState(state => { this.queueState(state) }),
+      controller.onDidChangeState(state => {
+        if (this.navigation && !this.navigation.isCurrent()) {
+          this.navigationRequest?.abort()
+          this.navigation = undefined
+        }
+        this.queueState(state)
+      }),
       editorContext.onDidChange(state => { void webview.postMessage({ type: 'ide-context', state }) }),
       webview.onDidReceiveMessage(message => { this.acceptMessage(message) }),
     ]
@@ -1584,6 +1663,10 @@ class DshSurface implements vscode.Disposable {
   }
 
   dispose(): void {
+    this.contextRequest++
+    this.taskRequest?.abort()
+    this.navigationRequest?.abort()
+    this.navigation = undefined
     if (this.stateTimer !== undefined) clearTimeout(this.stateTimer)
     for (const disposable of this.disposables) disposable.dispose()
   }
@@ -1833,6 +1916,70 @@ class DshSurface implements vscode.Disposable {
             }
           }
           return
+        case 'inspect-context': {
+          if (typeof value.sessionId !== 'string' || !Number.isSafeInteger(value.requestId)) return
+          const request = ++this.contextRequest
+          try {
+            const inspection = await this.controller.inspectContext(value.sessionId, () => request === this.contextRequest)
+            if (request === this.contextRequest) await this.webview.postMessage({ type: 'context-inspection', sessionId: value.sessionId, requestId: value.requestId, inspection })
+          } catch (error) {
+            if (request === this.contextRequest) await this.webview.postMessage({ type: 'context-inspection', sessionId: value.sessionId, requestId: value.requestId,
+              error: error instanceof Error ? error.message : 'Could not read the recorded context.' })
+          }
+          return
+        }
+        case 'close-context': this.contextRequest++; return
+        case 'inspect-tasks': {
+          if (typeof value.sessionId !== 'string' || !Number.isSafeInteger(value.requestId)
+            || (value.childId !== undefined && typeof value.childId !== 'string')) return
+          this.taskRequest?.abort()
+          const request = this.taskRequest = new AbortController()
+          try {
+            const inspection = await this.controller.inspectTasks(value.sessionId, value.childId, request.signal)
+            if (!request.signal.aborted) await this.webview.postMessage({ type: 'task-inspection', sessionId: value.sessionId, requestId: value.requestId, inspection })
+          } catch (error) {
+            if (!request.signal.aborted) await this.webview.postMessage({ type: 'task-inspection', sessionId: value.sessionId, requestId: value.requestId,
+              error: error instanceof Error ? error.message : 'Could not read tasks.' })
+          }
+          return
+        }
+        case 'close-tasks': this.taskRequest?.abort(); return
+        case 'search-conversation': {
+          if (typeof value.sessionId !== 'string' || typeof value.query !== 'string' || !Number.isSafeInteger(value.requestId)) return
+          this.navigationRequest?.abort()
+          const request = this.navigationRequest = new AbortController()
+          try {
+            if (value.refresh === true || this.navigation?.sessionId !== value.sessionId || !this.navigation.isCurrent()) {
+              this.navigation = this.controller.createNavigation(value.sessionId)
+            }
+            const navigation = this.navigation
+            if (value.older === true) await navigation.loadEarlier(AbortSignal.any([request.signal, AbortSignal.timeout(25_000)]))
+            if (!request.signal.aborted) await this.webview.postMessage({ type: 'conversation-search', sessionId: value.sessionId, requestId: value.requestId,
+              result: navigation.search(value.query) })
+          } catch (error) {
+            if (!request.signal.aborted) await this.webview.postMessage({ type: 'conversation-search', sessionId: value.sessionId, requestId: value.requestId,
+              error: error instanceof Error ? error.message : 'Could not search this conversation.' })
+          }
+          return
+        }
+        case 'reveal-conversation-message': {
+          if (typeof value.sessionId !== 'string' || typeof value.messageId !== 'string' || !Number.isSafeInteger(value.requestId)) return
+          this.navigationRequest?.abort()
+          const request = this.navigationRequest = new AbortController()
+          try {
+            const navigation = this.navigation
+            if (!navigation || navigation.sessionId !== value.sessionId) throw new Error('Reopen Find in conversation and try again.')
+            this.controller.revealConversationMessage(navigation, value.messageId)
+            await this.resyncState()
+            if (!navigation.isCurrent()) throw new Error('The conversation changed.')
+            if (!request.signal.aborted) await this.webview.postMessage({ type: 'conversation-revealed', sessionId: value.sessionId, requestId: value.requestId, messageId: value.messageId })
+          } catch (error) {
+            if (!request.signal.aborted) await this.webview.postMessage({ type: 'conversation-revealed', sessionId: value.sessionId, requestId: value.requestId,
+              error: error instanceof Error ? error.message : 'Could not reveal this message.' })
+          }
+          return
+        }
+        case 'close-navigation': this.navigationRequest?.abort(); this.navigation = undefined; return
         case 'load-history': await this.controller.loadOlderHistory(); return
         case 'load-tool-output':
           if (typeof value.messageId === 'string' && typeof value.requestId === 'number') {

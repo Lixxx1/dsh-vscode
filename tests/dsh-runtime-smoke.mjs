@@ -14,6 +14,8 @@ import { build } from 'esbuild'
 
 const cli = process.argv[2]
 const withTools = process.argv.includes('--tools')
+const withSubagents = process.argv.includes('--subagents')
+assert(!withSubagents || withTools, '--subagents requires --tools')
 assert(cli, 'Pass the absolute path to an installed DSH lib/bin.js; this test never installs or upgrades DSH.')
 const version = JSON.parse(await readFile(join(dirname(resolve(cli)), '../package.json'), 'utf8')).version
 const root = await mkdtemp(join(tmpdir(), 'dsh-sidebar-compat-'))
@@ -22,14 +24,19 @@ await mkdir(workspace)
 const entry = join(root, 'client.cjs')
 await build({ stdin: { contents: `export { DshConnection } from './src/dsh-connection.ts';
 export { DshClient } from './src/dsh-client.ts'; export { redactDshSecrets } from './src/runtime-output.ts';
-export { ConversationProjector } from './src/conversation.ts';`,
+export { ConversationProjector } from './src/conversation.ts';
+export { ConversationNavigation } from './src/conversation-navigation.ts';
+export { inspectContext, readContextHistory } from './src/context-inspector.ts';`,
   resolveDir: process.cwd(), loader: 'ts' }, outfile: entry, bundle: true, platform: 'node', format: 'cjs',
   external: ['bufferutil', 'utf-8-validate'], logLevel: 'silent' })
-const { DshConnection, DshClient, redactDshSecrets, ConversationProjector } = createRequire(import.meta.url)(entry)
+const { DshConnection, DshClient, redactDshSecrets, ConversationProjector, ConversationNavigation, inspectContext, readContextHistory } = createRequire(import.meta.url)(entry)
 let modelServer, requests = 0, releaseFirst
 const firstResponse = new Promise(resolveFirst => { releaseFirst = resolveFirst })
+let releaseChild, childRequests = 0
+const childResponse = new Promise(resolveChild => { releaseChild = resolveChild })
 const patchArgs = []
 if (withTools) {
+  await writeFile(join(workspace, 'AGENTS.md'), 'Use the local compatibility fixture.\n')
   modelServer = createServer(async (request, response) => {
     if (request.method !== 'POST' || !request.url?.endsWith('/chat/completions')) { response.writeHead(404); response.end(); return }
     let body = ''
@@ -37,22 +44,28 @@ if (withTools) {
     const input = JSON.parse(body)
     // The runtime can concurrently ask this route for a session title. That
     // non-tool request must not consume the scripted agent turn or its gate.
-    const index = input.tools?.length ? requests++ : -1
-    if (index === 0) await firstResponse
+    const isChild = withSubagents && input.messages.some(message => message.role === 'user' && JSON.stringify(message.content).includes('SUBAGENT_SMOKE_ONLY'))
+    const index = isChild ? childRequests++ : input.tools?.length ? requests++ : -1
+    if (!isChild && index === 0) await firstResponse
+    if (isChild) await childResponse
     if (response.destroyed) return
-    const tools = [
+    const tools = isChild ? [
+      ['read', { file_path: 'smoke.txt' }],
+      ['read', { file_path: 'missing-child.txt' }],
+    ] : [
       ['write', { file_path: 'smoke.txt', content: 'Runtime smoke passed\n' }],
       ['read', { file_path: 'missing.txt' }],
       ['read', { file_path: 'smoke.txt' }],
       ...(version.startsWith('0.2.') ? [['bash', { command: 'node -e "setTimeout(() => {}, 30000)"',
         description: 'Start temporary compatibility test background process', run_in_background: true }]] : []),
+      ...(withSubagents ? [['subagent', { description: 'Inspect local smoke fixture', prompt: 'SUBAGENT_SMOKE_ONLY: Read smoke.txt and missing-child.txt, then reply with Child task verified.', run_in_background: false }]] : []),
     ]
     const tool = tools[index]
     response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
     const send = (delta, finish_reason) => response.write(`data: ${JSON.stringify({ id: `smoke-${index}`, object: 'chat.completion.chunk',
       created: 1, model: 'smoke', choices: [{ index: 0, delta, finish_reason }] })}\n\n`)
-    send(tool ? { role: 'assistant', tool_calls: [{ index: 0, id: `call-${index}`, type: 'function', function: { name: tool[0], arguments: JSON.stringify(tool[1]) } }] }
-      : { role: 'assistant', content: 'Runtime smoke passed.' }, null)
+    send(tool ? { role: 'assistant', tool_calls: [{ index: 0, id: `call-${isChild ? 'child-' : ''}${index}`, type: 'function', function: { name: tool[0], arguments: JSON.stringify(tool[1]) } }] }
+      : { role: 'assistant', content: isChild ? 'Child task verified.' : 'Runtime smoke passed.' }, null)
     send({}, tool ? 'tool_calls' : 'stop')
     response.end('data: [DONE]\n\n')
   })
@@ -145,18 +158,75 @@ try {
     await waitFor(() => queue().some(item => item.placement === 'steering') || frames.some(frame => frame.type === 'session/event'
       && frame.event.type === 'user/message' && frame.event.data.content?.some(part => part.text === 'Keep the test focused.')))
     releaseFirst()
+    if (withSubagents) {
+      await waitFor(() => frames.some(frame => frame.type === 'session/projection' && frame.sessionId === first.sessionId
+        && frame.key === 'subagentCatalog' && frame.value.length > 0))
+      const tasks = await client.inspectTasks(first.sessionId)
+      assert.equal(tasks.tasks.length, 1)
+      assert.equal(tasks.tasks[0].status, 'running')
+      const childId = tasks.tasks[0].address.childSessionId
+      const before = frames.filter(frame => frame.type === 'session/event').length
+      const detail = await client.inspectTasks(first.sessionId, childId)
+      assert.equal(detail.detail.childSessionId, childId)
+      assert.equal(opening.isCurrent(), true, 'Inspecting a child must not replace the parent follow')
+      const observer = new DshClient(connection)
+      try {
+        await observer.startStreams()
+        await observer.listSessions()
+        assert.equal((await observer.inspectTasks(first.sessionId)).tasks[0].status, 'running', 'A newly connected sidebar must see an already-running child')
+      } finally { observer.dispose() }
+      releaseChild()
+      await waitFor(() => frames.slice(before).some(frame => frame.type === 'session/event'
+        && frame.sessionId === first.sessionId && frame.event.type === 'turn/end'))
+      const settled = await client.inspectTasks(first.sessionId, childId)
+      assert.equal(settled.tasks[0].status, 'completed')
+      assert(settled.detail.messages.some(message => message.text.includes('Child task verified.')))
+      const childTools = settled.detail.messages.filter(message => message.role === 'tool')
+      assert.equal(childTools.length, 2)
+      assert.equal(childTools[0].rawInput, JSON.stringify({ file_path: 'smoke.txt' }))
+      assert.equal(childTools[0].failed, false)
+      assert(childTools[0].rawResult.includes('Runtime smoke passed'), 'Child tool success output must reach the detail panel')
+      assert.equal(childTools[1].rawInput, JSON.stringify({ file_path: 'missing-child.txt' }))
+      assert.equal(childTools[1].failed, true)
+      assert(childTools[1].rawResult.includes('missing-child.txt'), 'Child tool failure must include the actual error, not only Failed')
+      console.log(`PASS ${version}: real subagent catalog, running/completed states, read-only child history and parent stream isolation`)
+      console.log(`PASS ${version}: actual child tool inputs, file contents and missing-file errors in task detail`)
+    }
     await waitFor(() => frames.some(frame => frame.type === 'session/event' && frame.sessionId === first.sessionId && frame.event.type === 'turn/end'))
     assert.equal(await readFile(join(workspace, 'smoke.txt'), 'utf8'), 'Runtime smoke passed\n')
     const live = new ConversationProjector()
     for (const frame of frames) if (frame.type === 'session/event' && frame.sessionId === first.sessionId) live.apply(frame.event)
     const tools = live.messages().filter(message => message.role === 'tool')
-    assert.equal(tools.length, version.startsWith('0.2.') ? 4 : 3)
+    assert.equal(tools.length, (version.startsWith('0.2.') ? 4 : 3) + (withSubagents ? 1 : 0))
     assert.equal(tools.filter(message => message.failed).length, 1, tools.filter(message => message.failed).map(message => message.rawResult).join('\n'))
     assert(tools.every(message => message.rawResult?.length > 0))
     const replay = new ConversationProjector()
     const history = await client.openSession(first.sessionId); history.activate()
     replay.reset(history.events)
     assert.deepEqual(replay.messages().filter(message => message.role === 'tool'), tools)
+    // Start with just the tail to exercise real session/page history reads.
+    const navigation = new ConversationNavigation(first.sessionId, history.events.slice(-1), true,
+      (before, signal) => client.history(first.sessionId, before, signal), () => true)
+    await navigation.loadEarlier(AbortSignal.timeout(10_000))
+    const found = navigation.search('Runtime smoke passed')
+    assert(found.matches.some(match => match.role === 'assistant'))
+    assert(found.matches.some(match => match.role === 'tool'))
+    assert(navigation.search('').matches.every(match => match.role === 'user'))
+    assert.equal(found.hasMore, false)
+    const revealed = new ConversationProjector()
+    revealed.reset(navigation.reveal(found.matches[0].id).entries)
+    assert.deepEqual(revealed.messages(), replay.messages())
+    console.log(`PASS ${version}: conversation search, real earlier-history paging and reveal with unchanged message projection`)
+    if (version.startsWith('0.2.')) {
+      const recorded = await readContextHistory(history.events, history.hasMore, before => client.history(first.sessionId, before), () => true)
+      const snapshot = inspectContext(first.sessionId, recorded.entries, recorded.complete, await client.listSkills(first.sessionId), { available: false })
+      const group = id => snapshot.groups.find(group => group.id === id)
+      assert(group('tools').entries.some(entry => entry.label === 'read'), 'Inspect the actual recorded tool schema')
+      assert(group('system').entries.length > 0, 'Inspect the actual recorded system prompt')
+      assert(group('instructions').entries.some(entry => entry.content.includes('Use the local compatibility fixture.')), 'Inspect recorded AGENTS.md injection')
+      assert.deepEqual(snapshot.warnings, [])
+      console.log(`PASS ${version}: context inspector reads real system prompt, tool schemas and project rules`)
+    }
     if (version.startsWith('0.2.')) {
       const jobs = () => frames.filter(frame => frame.type === 'session/jobs' && frame.sessionId === first.sessionId).at(-1)?.jobs ?? []
       await waitFor(() => jobs().some(job => job.status === 'running'))
@@ -183,6 +253,7 @@ try {
 } finally {
   client?.dispose(); connection?.dispose()
   releaseFirst()
+  releaseChild()
   if (!exited) {
     child.kill('SIGTERM')
     const timer = setTimeout(() => child.kill('SIGKILL'), 5_000)

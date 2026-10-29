@@ -143,6 +143,10 @@ export function createConversationScroller(scroll: HTMLElement, content: HTMLEle
     // Move keyboard focus off the button before it disappears.
     scroll.focus({ preventScroll: true })
     resume()
+    // Explicit navigation must not wait for a paint (which a native webview
+    // can suspend). Later streamed layout changes still use changed() batching.
+    cancelFrame()
+    writeTop(maximum())
   }, { signal: lifetime.signal })
   const observer = new view.ResizeObserver(changed)
   observer.observe(content)
@@ -151,6 +155,15 @@ export function createConversationScroller(scroll: HTMLElement, content: HTMLEle
 
   return {
     changed, pause, resume,
+    reveal(element: HTMLElement) {
+      if (disposed || !content.contains(element)) return
+      historyGeneration++
+      history = undefined
+      pause()
+      // Register the scroll as ours, including targets near the bottom, so
+      // the resulting scroll event cannot silently resume following.
+      writeTop(scroll.scrollTop + element.getBoundingClientRect().top - scroll.getBoundingClientRect().top - 12)
+    },
     get following() { return following },
     get intentVersion() { return intentVersion },
     reset() {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { DshFrame, SessionModels, SkillDescriptor } from '../src/dsh-client.js'
+import type { DshFrame, HistoryEntry, SessionModels, SkillDescriptor } from '../src/dsh-client.js'
 import { withIdeContext } from '../src/ide-context.js'
 import { DshStreamError } from '../src/dsh-streams.js'
 import { DshConnection } from '../src/dsh-connection.js'
@@ -45,6 +45,8 @@ function testClient() {
     listSessions: vi.fn(async () => ({ items: ['a', 'b'].map(sessionId => ({ sessionId, cwd: '/workspace', updatedAt: 1,
       blank: true, running: false, agentPreset: 'standard', projections: { values: { ...projections } } })) })),
     openSession: vi.fn(async () => ({ events: [], hasMore: false, projections: { ...projections }, isCurrent: () => true, activate() {} })),
+    history: vi.fn(async (): Promise<{ events: HistoryEntry[]; hasMore: boolean }> => ({ events: [], hasMore: false })),
+    inspectTasks: vi.fn(async () => ({ sessionId: 'a', tasks: [], truncated: false })),
     models: vi.fn(async () => models()), currentModels: vi.fn(() => models()),
     listCommands: vi.fn(async () => [{ name: 'plan', description: 'Plan' }]),
     listSkills: vi.fn(async (): Promise<SkillDescriptor[]> => []),
@@ -68,7 +70,7 @@ async function harness(connection?: DshConnection) {
   mocks.client = client
   const output = { appendLine: vi.fn() }
   const runtime = { start: vi.fn(async () => {}), stop: vi.fn(async () => {}), connection: connection ?? { canReauthenticate: true, reauthenticate: vi.fn(async () => {}) }, state: { kind: 'ready' } }
-  const reviews = { clear: vi.fn(), rebuild: vi.fn(() => []), accept: () => false, dispose() {} }
+  const reviews = { clear: vi.fn(), rebuild: vi.fn(() => []), prependHistory: vi.fn(() => []), accept: () => false, dispose() {} }
   const controller = new DshChatController(runtime as any,
     output as any, {} as any, reviews as any,
     { get: () => [], update: async () => {} } as any, '/workspace')
@@ -78,6 +80,129 @@ async function harness(connection?: DshConnection) {
   const next = () => { const next = testClient(); mocks.client = next.client; return next }
   return { client, controller, output, emit, fail, runtime, reviews, next }
 }
+
+describe('conversation navigation isolation', () => {
+  const prompt = (seq: number): HistoryEntry => ({ event: { seq, time: seq, type: 'user/message', surfaceOp: 'append',
+    data: { id: `user:${seq}`, source: { kind: 'user' }, content: [{ type: 'text', text: `Question ${seq}` }] } } })
+
+  it('does not change visible history until a result is selected, then preserves live output', async () => {
+    const h = await harness()
+    h.client.openSession.mockResolvedValueOnce({ events: [prompt(10)], hasMore: true, projections: {}, isCurrent: () => true, activate() {} } as any)
+    await h.controller.selectSession('b')
+    const before = h.controller.state
+    const navigation = h.controller.createNavigation('b')
+    expect(h.client.history).not.toHaveBeenCalled()
+    h.client.history.mockResolvedValueOnce({ events: [prompt(1)], hasMore: false })
+    await navigation.loadEarlier(new AbortController().signal)
+    expect(navigation.search('Question 1').total).toBe(2)
+    expect(h.controller.state).toBe(before)
+    h.emit({ type: 'session/event', sessionId: 'b', event: prompt(11).event }, 'mux')
+    h.emit({ type: 'session/assistant-stream', sessionId: 'b', update: { kind: 'start', attemptId: 'b:1', turn: 3, step: 1 } }, 'mux')
+    h.emit({ type: 'session/assistant-stream', sessionId: 'b', update: { kind: 'chunk', attemptId: 'b:1', chunk: { type: 'text-delta', text: 'Still writing' } } }, 'mux')
+    h.controller.revealConversationMessage(navigation, 'user:1')
+    expect(h.controller.state.messages.map(message => message.text)).toEqual(['Question 1', 'Question 10', 'Question 11', 'Still writing'])
+    expect(h.controller.state.messages.at(-1)?.streaming).toBe(true)
+    expect(h.controller.state.hasMoreHistory).toBe(false)
+    expect(h.reviews.prependHistory).toHaveBeenCalledExactlyOnceWith('b', '/workspace', [prompt(1)])
+    h.controller.revealConversationMessage(navigation, 'user:10')
+    expect(h.reviews.prependHistory).toHaveBeenCalledTimes(1)
+    expect(h.client.prompt).not.toHaveBeenCalled()
+    expect(h.client.executeCommand).not.toHaveBeenCalled()
+  })
+
+  it('rejects forged targets and snapshots from a different conversation or session generation', async () => {
+    const h = await harness()
+    h.emit({ type: 'session/event', sessionId: 'a', event: prompt(1).event }, 'mux')
+    expect(() => h.controller.createNavigation('b')).toThrow('Select a conversation')
+    const navigation = h.controller.createNavigation('a')
+    expect(() => h.controller.revealConversationMessage(navigation, 'unknown')).toThrow('not in the search snapshot')
+    await h.controller.selectSession('b'); await h.controller.selectSession('a')
+    expect(navigation.isCurrent()).toBe(false)
+    expect(() => h.controller.revealConversationMessage(navigation, 'user:1')).toThrow('conversation changed')
+    expect(h.reviews.prependHistory).not.toHaveBeenCalled()
+  })
+
+  it('invalidates a search when the connection fails', async () => {
+    const h = await harness()
+    const navigation = h.controller.createNavigation('a')
+    h.fail(new DshStreamError('Invalid stream frame'))
+    expect(navigation.isCurrent()).toBe(false)
+    expect(() => navigation.search('')).toThrow('conversation changed')
+  })
+})
+
+describe('task inspection isolation', () => {
+  it('does not switch the main conversation or alter its messages', async () => {
+    const h = await harness(); const before = h.controller.state.messages
+    h.client.openSession.mockClear()
+    await h.controller.inspectTasks('a', 'child')
+    expect(h.client.inspectTasks).toHaveBeenCalledWith('a', 'child', undefined)
+    expect(h.client.openSession).not.toHaveBeenCalled()
+    expect(h.controller.state.messages).toBe(before)
+    await expect(h.controller.inspectTasks('b')).rejects.toThrow('Select a conversation')
+  })
+  it('invalidates late results when switching conversations', async () => {
+    const h = await harness(); const pending = Promise.withResolvers<any>()
+    h.client.inspectTasks.mockReturnValueOnce(pending.promise)
+    const request = h.controller.inspectTasks('a')
+    await h.controller.selectSession('b')
+    pending.resolve({ sessionId: 'a', tasks: [], truncated: false })
+    await expect(request).rejects.toThrow('conversation changed')
+  })
+  it('updates the task entry from official catalogs and clears it on session switch', async () => {
+    const h = await harness()
+    h.emit({ type: 'session/projection', sessionId: 'a', key: 'subagentCatalog', value: [{ id: 'child', mode: 'continuable' }] }, 'mux')
+    expect(h.controller.state.subagentCount).toBe(1)
+    await h.controller.selectSession('b')
+    expect(h.controller.state.subagentCount).toBe(0)
+  })
+})
+
+describe('context inspection', () => {
+  it('reads older input on demand without backfilling visible chat or moving the snapshot boundary', async () => {
+    const h = await harness()
+    expect(h.client.history).not.toHaveBeenCalled()
+    const header = { seq: 10, time: 10, type: 'request/header', data: { header: { tools: [{ name: 'read' }] } } }
+    h.client.openSession.mockResolvedValueOnce({ events: [{ event: header }], hasMore: true, projections: {}, isCurrent: () => true, activate() {} } as any)
+    await h.controller.selectSession('b')
+    const before = h.controller.state
+    const page = Promise.withResolvers<{ events: HistoryEntry[]; hasMore: boolean }>()
+    h.client.history.mockReturnValueOnce(page.promise)
+    const pending = h.controller.inspectContext('b')
+    h.emit({ type: 'session/event', sessionId: 'b', event: { ...header, seq: 11, data: { header: { tools: [{ name: 'new-tool' }] } } } }, 'mux')
+    page.resolve({ events: [{ event: { seq: 1, time: 1, type: 'system/message', surfaceOp: 'append', data: { message: { content: [{ type: 'text', text: 'Earlier prompt' }] } } } }], hasMore: false })
+    const snapshot = await pending
+    expect(snapshot.throughSeq).toBe(10)
+    expect(snapshot.groups.find(group => group.id === 'tools')?.entries[0]?.label).toBe('read')
+    expect(snapshot.groups.find(group => group.id === 'system')?.entries[0]?.content).toBe('Earlier prompt')
+    expect(h.controller.state.messages).toEqual(before.messages)
+    expect(h.controller.state.hasMoreHistory).toBe(true)
+    expect(h.client.history).toHaveBeenCalledExactlyOnceWith('b', 10)
+    expect(h.client.prompt).not.toHaveBeenCalled()
+    expect(h.client.executeCommand).not.toHaveBeenCalled()
+  })
+
+  it.each(['switch', 'close', 'reconnect'])('rejects results after inspector %s', async action => {
+    const h = await harness()
+    const skills = Promise.withResolvers<SkillDescriptor[]>()
+    h.client.listSkills.mockReturnValueOnce(skills.promise)
+    let active = true
+    const pending = expect(h.controller.inspectContext('a', () => active)).rejects.toThrow('conversation changed')
+    if (action === 'switch') await h.controller.selectSession('b')
+    if (action === 'close') active = false
+    if (action === 'reconnect') h.fail(new DshStreamError('Invalid stream frame'))
+    skills.resolve([])
+    await pending
+  })
+
+  it('allows inspecting recorded input when the skills catalog fails, with an explicit warning', async () => {
+    const h = await harness()
+    h.client.listSkills.mockRejectedValueOnce(new Error('Unavailable'))
+    const snapshot = await h.controller.inspectContext('a')
+    expect(snapshot.warnings.join(' ')).toContain('catalog is unavailable')
+    await expect(h.controller.inspectContext('b')).rejects.toThrow('Select a conversation')
+  })
+})
 
 describe('runtime selection', () => {
   it('treats unknown job state as busy and preserves jobs after an Agent is disposed', async () => {
