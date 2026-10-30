@@ -528,7 +528,12 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     const toolOutputChunkSize = 20000;
 
     const conversationScroller = dshConversationScroll.createConversationScroller(elements.scroll, elements.conversation, document.getElementById('jumpLatest'));
-    window.addEventListener('pagehide', () => conversationScroller.dispose(), { once: true });
+    const reasoningScrollers = new Map();
+    window.addEventListener('pagehide', () => {
+      conversationScroller.dispose();
+      for (const scroller of reasoningScrollers.values()) scroller.dispose();
+      reasoningScrollers.clear();
+    }, { once: true });
 
     function node(tag, className, text) {
       const value = document.createElement(tag);
@@ -965,23 +970,55 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const body = view && view.plainText === true ? node('div', 'streaming-plain', page.text) : renderMarkdown(page.text);
       body.classList.add('assistant-page'); appendImages(body, page.images); return body;
     }
+    function pruneReasoningScrollers() {
+      for (const [viewport, scroller] of reasoningScrollers) {
+        if (!viewport.isConnected) { scroller.dispose(); reasoningScrollers.delete(viewport); }
+      }
+    }
+    function createReasoningStream(viewport, text, omitted) {
+      let value = '', active = false, paintedValue, paintedActive, pendingDelta;
+      const paint = () => {
+        // Keep the reader's snapshot while paused, including when the live tail
+        // is truncated or advances to a different reasoning step. The latest
+        // state is painted immediately when the reader returns to the bottom.
+        if (active && !scroller.following) return;
+        if (active && paintedActive && typeof pendingDelta === 'string' && paintedValue !== undefined && value.length === paintedValue.length + pendingDelta.length) {
+          text.appendData(pendingDelta);
+          if (text.length > 20000) text.deleteData(0, text.length - 20000);
+        } else if (paintedValue !== value || paintedActive !== active) {
+          text.data = active ? value.slice(-20000) : value;
+        }
+        omitted.hidden = !active || value.length <= 20000;
+        paintedValue = value; paintedActive = active; pendingDelta = undefined;
+        scroller.changed();
+      };
+      let scroller = dshConversationScroll.createConversationScroller(viewport, viewport, undefined, paint);
+      reasoningScrollers.set(viewport, scroller);
+      return {
+        update(nextValue, nextActive, delta) {
+          if (!reasoningScrollers.has(viewport)) {
+            const following = scroller.following;
+            scroller = dshConversationScroll.createConversationScroller(viewport, viewport, undefined, paint);
+            if (!following) scroller.pause();
+            reasoningScrollers.set(viewport, scroller);
+          }
+          const wasActive = active;
+          pendingDelta = paintedValue === value ? delta : undefined;
+          value = nextValue; active = nextActive;
+          if (active && !wasActive) scroller.resume();
+          else if (!active && (wasActive || paintedValue === undefined)) scroller.pause();
+          paint();
+        },
+      };
+    }
     function updateReasoning(view, reasoning, delta) {
       const active = reasoning.active === true;
       const text = string(reasoning.text);
       if (view.active !== active) view.details.open = active;
       const duration = Number.isFinite(reasoning.durationMs) ? 'Thought for ' + (Math.max(0, reasoning.durationMs) / 1000).toFixed(1).replace(/[.]0$/, '') + 's' : 'Thinking time unknown';
       view.summary.textContent = active ? 'Thinking' : duration + ' · ' + (reasoning.estimated ? 'about ' : '') + String(reasoning.tokens || 0) + ' tokens';
-      if (active && view.active && typeof delta === 'string' && view.value !== undefined && text.length === view.value.length + delta.length) {
-        view.text.appendData(delta);
-        if (view.text.length > 20000) view.text.deleteData(0, view.text.length - 20000);
-      } else if (view.value !== text || view.active !== active) {
-        view.text.data = active ? text.slice(-20000) : text;
-      }
-      view.omitted.hidden = !active || text.length <= 20000;
-      view.active = active; view.value = text;
-      if (active && view.details.open) requestAnimationFrame(() => {
-        if (view.active && view.details.open && view.details.isConnected) view.viewport.scrollTop = view.viewport.scrollHeight;
-      });
+      view.stream.update(text, active, delta);
+      view.active = active;
     }
     function createReasoning(reasoning) {
       const details = document.createElement('details'); details.className = 'reasoning';
@@ -990,7 +1027,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const viewport = node('div', 'reasoning-viewport'); viewport.tabIndex = 0;
       const omitted = node('div', 'reasoning-omitted', 'Earlier reasoning omitted from live view');
       const text = document.createTextNode(''); viewport.append(omitted, text); details.append(summary, viewport);
-      const view = { details, summary, viewport, omitted, text, active: undefined, value: undefined };
+      const view = { details, summary, viewport, omitted, text, active: undefined, stream: createReasoningStream(viewport, text, omitted) };
       updateReasoning(view, reasoning); return view;
     }
     function renderMessage(message, toolOpen = false, reasoningView, suppressReasoning = false) {
@@ -1078,7 +1115,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
           let view = group.reasoningViews.get(message.id);
           if (!view) { view = createReasoning(reasoning); group.reasoningViews.set(message.id, view); }
           else updateReasoning(view, reasoning, pendingReasoningAppends.get(message.id));
-          desired = view.details;
+          desired = view.details; desired.dataset.scrollId = 'turn-reasoning-' + message.id;
         } else if (message.role === 'tool') {
           desired = messageNode(message); desired.dataset.scrollId = message.id;
         }
@@ -1090,15 +1127,21 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       for (const id of group.reasoningViews.keys()) if (!ids.has(id)) group.reasoningViews.delete(id);
     }
     function createTurnActivity(turn) {
-      const root = node('div', 'turn-activity'); root.dataset.scrollId = 'turn-activity-' + turn;
+      const root = node('div', 'turn-activity');
       const details = document.createElement('details'); const summary = document.createElement('summary');
+      // Anchor the visible header, not a wrapper spanning every record in the turn.
+      summary.dataset.scrollId = 'turn-activity-' + turn;
       const log = node('div', 'turn-activity-log'); details.append(summary, log);
       const preview = node('div', 'turn-activity-preview reasoning-viewport'); preview.tabIndex = 0;
+      preview.dataset.scrollId = 'turn-preview-' + turn;
       const omitted = node('div', 'reasoning-omitted', 'Earlier reasoning omitted from live view');
       const text = document.createTextNode(''); preview.append(omitted, text); root.append(details, preview);
-      const group = { root, details, summary, log, preview, omitted, text, messages: [], reasoningViews: new Map(), settled: false, seenRunning: false, sourceId: undefined, value: undefined };
+      const group = { root, details, summary, log, preview, omitted, text, stream: createReasoningStream(preview, text, omitted), messages: [], reasoningViews: new Map(), settled: false, seenRunning: false, sourceId: undefined };
       summary.addEventListener('click', () => { if (!details.open) conversationScroller.pause(); });
-      details.addEventListener('toggle', () => { preview.hidden = group.settled || details.open || !group.sourceId; if (details.open && root.isConnected) reconcileActivityLog(group); });
+      details.addEventListener('toggle', () => {
+        preview.hidden = group.settled || details.open || !group.sourceId;
+        if (details.open && root.isConnected) { reconcileActivityLog(group); pruneReasoningScrollers(); }
+      });
       return group;
     }
     function reconcileTurnActivity(group, messages, current, newerTurn) {
@@ -1125,15 +1168,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const latest = reasoning[reasoning.length - 1];
       if (latest) {
         const value = string(latest.reasoning.text); const delta = pendingReasoningAppends.get(latest.id);
-        if (group.sourceId === latest.id && typeof delta === 'string' && group.value !== undefined && value.length === group.value.length + delta.length) {
-          group.text.appendData(delta);
-          if (group.text.length > 20000) group.text.deleteData(0, group.text.length - 20000);
-        } else if (group.sourceId !== latest.id || group.value !== value) group.text.data = value.slice(-20000);
-        group.sourceId = latest.id; group.value = value; group.omitted.hidden = value.length <= 20000;
-        if (!settled && !group.details.open) requestAnimationFrame(() => {
-          if (!group.settled && !group.details.open && group.preview.isConnected) group.preview.scrollTop = group.preview.scrollHeight;
-        });
-      } else { group.sourceId = undefined; group.value = undefined; group.text.data = ''; }
+        group.stream.update(value, !settled, group.sourceId === latest.id ? delta : undefined);
+        group.sourceId = latest.id;
+      } else { group.sourceId = undefined; group.stream.update('', false); }
       group.preview.hidden = settled || group.details.open || !latest;
       reconcileActivityLog(group);
     }
@@ -2055,6 +2092,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (renderedChrome.usage !== current.usage || renderedChrome.phase !== current.phase || renderedChrome.sessionId !== current.sessionId) renderUsage(current);
       if (renderedChrome.jobs !== current.jobs || renderedChrome.subagentCount !== current.subagentCount || renderedChrome.phase !== current.phase) renderJobs();
       renderConversation(current);
+      pruneReasoningScrollers();
       finishNavigationJump();
       const sessionReady = current.phase === 'ready' && Boolean(current.sessionId);
       const enabled = sessionReady && current.routable !== false;

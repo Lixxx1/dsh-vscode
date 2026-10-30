@@ -41,7 +41,7 @@ const child = spawn(browser, ['--headless=new', '--disable-gpu', '--no-first-run
 { stdio: ['ignore', 'ignore', 'pipe'] })
 const exited = once(child, 'exit')
 let socket
-const timeout = setTimeout(() => { console.error('Browser scroll test timed out'); socket?.terminate(); child.kill(); process.exitCode = 1 }, 60_000)
+const timeout = setTimeout(() => { console.error('Browser scroll test timed out'); socket?.terminate(); child.kill(); process.exitCode = 1 }, 90_000)
 try {
   const endpoint = await new Promise((resolve, reject) => {
     let output = ''
@@ -359,7 +359,7 @@ try {
     ensure(details.open && preview.hidden, 'running state reactivated a settled turn');
     const older = {id:'older-turn',role:'assistant',turn:6,text:'Older',reasoning:reason('Unknown',false,undefined,4)};
     showState({...state,messages:[older,...state.messages]}); await tick();
-    ensure(document.querySelectorAll('.turn-activity').length===2 && document.querySelector('[data-scroll-id="turn-activity-7"]')===activity && details.open, 'history prepend replaced activity or expansion');
+    ensure(document.querySelectorAll('.turn-activity').length===2 && document.querySelector('[data-scroll-id="turn-activity-7"]').closest('.turn-activity')===activity && details.open, 'history prepend replaced activity or expansion');
     ensure(document.querySelector('[data-scroll-id="turn-activity-6"] .tool-title').textContent==='Thinking time unknown · about 4 tokens · 0 tools', 'unknown duration summary incorrect');
     showState({...baseline,sessionId:'activity-reset',running:false,messages:[{id:'only-tool',role:'tool',turn:7,text:'Only'}]}); await tick();
     ensure(document.querySelector('.turn-activity')!==activity && !document.querySelector('.turn-activity details').open && document.querySelector('.turn-activity .tool-title').textContent==='Thought for 0s · 0 tokens · 1 tool', 'session reset or tool-only summary incorrect');
@@ -1013,6 +1013,90 @@ try {
     ensure(gap()<=2 && conversationScroller.following, 'following did not recover after paints resumed');
   })()`)
   console.log('PASS: immediate Jump to latest with paused frames, focus/draft preservation and batched streaming')
+  await page('Emulation.setDeviceMetricsOverride', { width: 410, height: 720, deviceScaleFactor: 1, mobile: false })
+  for (const kind of ['tool', 'reasoning', 'collapsed']) {
+    const result = await evaluate(`(async () => {
+      const kind = '${kind}';
+      const message = n => kind === 'reasoning'
+        ? {id:'anchor-reasoning-'+n,role:'assistant',turn:8,turnEnded:true,text:'',reasoning:{text:'Thought '+n,active:false,durationMs:100,tokens:5}}
+        : {id:'anchor-tool-'+n,role:'tool',turn:8,turnEnded:true,text:'Tool '+n,detail:'Completed',rawResult:'Result '+n};
+      const loaded = Array.from({length:35},(_,i)=>message(i+30));
+      if (kind === 'collapsed') loaded.push({id:'anchor-answer',role:'assistant',turn:8,turnEnded:true,text:'Answer paragraph.\\n\\n'.repeat(100)});
+      showState({...baseline,sessionId:'history-'+kind,running:false,hasMoreHistory:true,messages:loaded}); await tick();
+      const group = document.querySelector('.turn-activity > details'); group.open=true; await tick();
+      if (kind === 'collapsed') { group.open=false; await tick(); }
+      conversationScroller.pause(); elements.scroll.scrollTop=0; await tick();
+      document.querySelector('.history-button').click();
+      showState({...state,loadingHistory:true}); await tick();
+      const target = kind === 'collapsed' ? group.querySelector('summary')
+        : document.querySelector('[data-scroll-id="' + (kind === 'tool' ? 'anchor-tool-45' : 'turn-reasoning-anchor-reasoning-45') + '"]');
+      // Move the reader after the request starts, before earlier records arrive.
+      elements.scroll.scrollTop += target.getBoundingClientRect().top-elements.scroll.getBoundingClientRect().top-12;
+      await tick();
+      const before=target.getBoundingClientRect().top-elements.scroll.getBoundingClientRect().top;
+      const earlier=Array.from({length:30},(_,i)=>({...message(i),...(kind==='collapsed'?{turn:7}:{})}));
+      showState({...state,loadingHistory:false,messages:[...earlier,...loaded]}); await tick();
+      const after=target.getBoundingClientRect().top-elements.scroll.getBoundingClientRect().top;
+      ensure(Math.abs(after-before)<2, kind+' history moved the visible record: '+JSON.stringify({before,after}));
+      ensure(group.open === (kind !== 'collapsed') && !conversationScroller.following, 'history changed disclosure or following');
+      return {before,after};
+    })()`)
+    console.log('PASS: history anchors preserve visible ' + kind + ' records', result)
+  }
+
+  for (const mode of ['preview', 'expanded', 'legacy']) {
+    const point = await evaluate(`(async () => {
+      const message={id:'reading-thought',role:'assistant',...('${mode}'==='legacy'?{}:{turn:9}),text:'',streaming:true,
+        reasoning:{text:'A reasoning line\\n'.repeat(400),active:true,tokens:100,estimated:true}};
+      showState({...baseline,sessionId:'reading-${mode}',running:true,messages:[message]}); await tick();
+      if ('${mode}'==='expanded') { document.querySelector('.turn-activity > details').open=true; await tick(); }
+      window.reasoningViewport=document.querySelector('${mode}'==='preview'?'.turn-activity-preview':'.reasoning .reasoning-viewport');
+      window.appendReasoning=text => window.dispatchEvent(new MessageEvent('message',{data:{type:'state-update',update:{messages:{appends:[
+        {id:state.messages.at(-1).id,text:'',streaming:true,reasoning:{text,active:true,tokens:104,estimated:true}}
+      ]}}}}));
+      ensure(reasoningScrollers.get(reasoningViewport).following && reasoningViewport.scrollHeight-reasoningViewport.scrollTop-reasoningViewport.clientHeight<=2, 'reasoning did not initially follow');
+      window.outerFollowing=conversationScroller.following;
+      const rect=reasoningViewport.getBoundingClientRect(); return {x:rect.left+rect.width/2,y:rect.top+rect.height/2};
+    })()`)
+    await page('Input.dispatchMouseEvent', { type: 'mouseWheel', x: point.x, y: point.y, deltaX: 0, deltaY: -96 })
+    await evaluate(`(async () => {
+      await tick();
+      ensure(!reasoningScrollers.get(reasoningViewport).following, 'native upward wheel did not pause ${mode}');
+      window.reasoningTop=reasoningViewport.scrollTop; window.reasoningSnapshot=reasoningViewport.lastChild.data;
+      appendReasoning('New live text\\n'.repeat(3000)); await tick();
+      ensure(reasoningViewport.scrollTop===reasoningTop && reasoningViewport.lastChild.data===reasoningSnapshot, 'streaming or truncation replaced the reading snapshot');
+      ensure(conversationScroller.following===outerFollowing, 'nested wheel changed conversation following');
+      if ('${mode}'==='preview') {
+        // A new step with the same length must not append its delta to the old step.
+        const next={...state.messages.at(-1),id:'next-thought',reasoning:{text:'B'.repeat(reasoningSnapshot.length),active:true,tokens:100,estimated:true}};
+        showState({...state,messages:[...state.messages,next]}); await tick();
+        appendReasoning('C'); await tick();
+        ensure(reasoningViewport.lastChild.data===reasoningSnapshot && reasoningViewport.scrollTop===reasoningTop, 'next step stole the paused preview');
+      }
+      reasoningViewport.focus({preventScroll:true});
+    })()`)
+    await page('Input.dispatchKeyEvent', { type: 'keyDown', key: 'End', code: 'End', windowsVirtualKeyCode: 35 })
+    await page('Input.dispatchKeyEvent', { type: 'keyUp', key: 'End', code: 'End', windowsVirtualKeyCode: 35 })
+    await evaluate(`(async () => {
+      await tick(350);
+      ensure(reasoningScrollers.get(reasoningViewport).following, 'End did not resume ${mode}: '+JSON.stringify({top:reasoningViewport.scrollTop,height:reasoningViewport.scrollHeight,client:reasoningViewport.clientHeight,focused:document.activeElement===reasoningViewport,connected:reasoningViewport.isConnected}));
+      ensure(reasoningViewport.lastChild.data===state.messages.at(-1).reasoning.text.slice(-20000), 'resume did not immediately show the latest reasoning');
+      ensure(reasoningViewport.scrollHeight-reasoningViewport.scrollTop-reasoningViewport.clientHeight<=2, 'resume did not reach the latest text');
+      appendReasoning('Still following\\n'); await tick();
+      ensure(reasoningViewport.scrollHeight-reasoningViewport.scrollTop-reasoningViewport.clientHeight<=2, 'following did not continue');
+      // Input between a render and its queued scroll write must cancel that write.
+      const latest=state.messages.at(-1);
+      render({...state,messages:[...state.messages.slice(0,-1),{...latest,reasoning:{...latest.reasoning,text:latest.reasoning.text+'Racing chunk\\n'}}]});
+      reasoningViewport.dispatchEvent(new WheelEvent('wheel',{deltaY:-60,bubbles:true}));
+      reasoningViewport.scrollTop=Math.max(0,reasoningViewport.scrollTop-60);
+      reasoningViewport.dispatchEvent(new Event('scroll'));
+      const top=reasoningViewport.scrollTop; await tick();
+      ensure(!reasoningScrollers.get(reasoningViewport).following && reasoningViewport.scrollTop===top, 'pending frame overrode upward intent');
+      render({...baseline,sessionId:'reading-cleanup',messages:[]}); await tick();
+      ensure(reasoningScrollers.size===0, 'removed reasoning observers were not disposed');
+    })()`)
+    console.log('PASS: ' + mode + ' reasoning respects native input, truncation, resume, pending frames and disposal')
+  }
 } finally {
   clearTimeout(timeout)
   socket?.terminate()
