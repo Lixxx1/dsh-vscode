@@ -37,11 +37,11 @@ const shell = html.replace(/<meta http-equiv="Content-Security-Policy"[^>]*>/, '
   .replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, '').replace(/<link\b[^>]*>/g, '')
 const profile = await mkdtemp(join(tmpdir(), 'dsh-scroll-browser-'))
 const child = spawn(browser, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
-  '--disable-background-networking', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'],
+  '--disable-background-networking', '--remote-debugging-port=0', ...(process.env.DSH_TEST_BROWSER_NO_SANDBOX === '1' ? ['--no-sandbox'] : []), `--user-data-dir=${profile}`, 'about:blank'],
 { stdio: ['ignore', 'ignore', 'pipe'] })
 const exited = once(child, 'exit')
 let socket
-const timeout = setTimeout(() => { console.error('Browser scroll test timed out'); socket?.terminate(); child.kill(); process.exitCode = 1 }, 60_000)
+const timeout = setTimeout(() => { console.error('Browser scroll test timed out'); socket?.terminate(); child.kill(); process.exitCode = 1 }, 90_000)
 try {
   const endpoint = await new Promise((resolve, reject) => {
     let output = ''
@@ -85,6 +85,7 @@ try {
   await page('Page.setDocumentContent', { frameId: frameTree.frame.id, html: shell })
   await evaluate(`window.sent = []; window.acquireVsCodeApi = () => ({postMessage: message => sent.push(message)});
     document.documentElement.style.cssText = '--vscode-foreground:#cccccc;--vscode-sideBar-background:#181818;--vscode-editor-background:#202020;--vscode-font-family:Arial;--vscode-editor-font-family:monospace;--vscode-descriptionForeground:#999;--vscode-widget-border:#454545;--vscode-focusBorder:#4d6bfe;--vscode-button-secondaryBackground:#333;--vscode-button-secondaryForeground:#fff;--vscode-button-secondaryHoverBackground:#454545;--vscode-widget-shadow:#0006;--vscode-textLink-foreground:#65aaff';`)
+  await evaluate(`document.documentElement.style.setProperty('--vscode-menu-background', '#252526'); document.documentElement.style.setProperty('--vscode-toolbar-hoverBackground', '#ffffff12');`)
   await evaluate(markdown); await evaluate(scrollBundle); await evaluate(inline)
   await evaluate(`window.tick = (ms = 90) => new Promise(resolve => setTimeout(resolve, ms));
     window.ensure = (value, message) => { if (!value) throw new Error(message); };
@@ -94,6 +95,56 @@ try {
     showState(baseline);`)
   await evaluate('tick()')
   assert.equal(await evaluate('gap() <= 2 && conversationScroller.following'), true)
+
+  for (const width of [180, 260, 300, 410]) {
+    await page('Emulation.setDeviceMetricsOverride', { width, height: 720, deviceScaleFactor: 1, mobile: false })
+    await evaluate(`(async () => {
+      showState({...baseline,sessionId:'usage-layout'}); await tick();
+      const composerHeight = document.querySelector('.composer').getBoundingClientRect().height;
+      const usage = {available:true,percent:19,usedTokens:199790,contextWindow:1048576,
+        breakdown:{systemTokens:16,toolsTokens:397,messageTokens:148918},
+        sessionStats:{turns:9999,steps:99999,llmMs:1000,toolMs:1000,ttftMs:13000,ttftSteps:1,decodeMs:1000,decodeTokens:188},
+        tokenUsage:{uncachedInputTokens:100000,cacheReadTokens:98000000,cacheWriteTokens:200000,outputTokens:1000000}};
+      showState({...state,usage}); await tick();
+      ensure(!document.getElementById('usageStats'), 'metrics strip still exists');
+      ensure(document.querySelector('.composer').getBoundingClientRect().height === composerHeight, 'usage adds composer rows');
+      ensure(elements.usagePanel.classList.contains('hidden'), 'usage opened without interaction');
+      elements.usageTrigger.click(); await tick();
+      const panel = elements.usagePanel, details = panel.querySelector('.usage-details'), summary = details.querySelector('summary');
+      ensure(!details.open, 'advanced statistics should start collapsed');
+      ensure(panel.textContent.includes('Input tokens98M') && panel.textContent.includes('Output tokens1M'), 'cumulative counts missing');
+      ensure(!panel.textContent.includes('Reference cost'), 'reference cost still displayed');
+      details.open = true; await tick();
+      summary.focus(); panel.scrollTop = 30;
+      const scrollTop = panel.scrollTop;
+      showState({...state,usage:{...usage,tokenUsage:{...usage.tokenUsage,outputTokens:1200000}}}); await tick();
+      ensure(panel.querySelector('.usage-details') === details && details.open, 'streaming replaced or collapsed details');
+      ensure(document.activeElement === summary, 'streaming lost detail focus');
+      ensure(panel.scrollTop === scrollTop, 'streaming reset usage scroll');
+      const bounds = panel.getBoundingClientRect();
+      ensure(bounds.left >= 0 && bounds.right <= innerWidth && bounds.top >= 0 && bounds.bottom <= innerHeight, 'usage escaped viewport');
+      ensure(panel.scrollWidth <= panel.clientWidth + 1, 'usage overflowed horizontally');
+      elements.usageTrigger.click(); await tick();
+      showState({...baseline,sessionId:'usage-next'}); await tick();
+      elements.usageTrigger.click(); await tick();
+      ensure(!details.open && details.classList.contains('hidden'), 'new session retained advanced statistics');
+      ensure(panel.querySelector('.usage-session .usage-rows').textContent === '', 'new session retained token counts');
+      elements.usageTrigger.click(); showState(baseline); await tick();
+    })()`)
+  }
+  console.log('PASS: compact composer and on-demand session usage at 180, 260, 300, and 410px')
+  await page('Emulation.setDeviceMetricsOverride', { width: 410, height: 720, deviceScaleFactor: 1, mobile: false })
+  if (process.env.DSH_USAGE_SCREENSHOT) {
+    await evaluate(`(async () => {
+      showState({...baseline,usage:{available:true,percent:19,usedTokens:199790,contextWindow:1048576,
+        sessionStats:{decodeMs:1000,decodeTokens:188,ttftMs:748,ttftSteps:1},
+        tokenUsage:{uncachedInputTokens:10000,cacheReadTokens:118000,cacheWriteTokens:0,outputTokens:3000}}});
+      elements.usageTrigger.click(); await tick();
+    })()`)
+    const { data } = await page('Page.captureScreenshot', { format: 'png' })
+    await writeFile(process.env.DSH_USAGE_SCREENSHOT, Buffer.from(data, 'base64'))
+    await evaluate('elements.usageTrigger.click(); showState(baseline); tick()')
+  }
 
   // The actual production controller, with two renders bracketing its rAF write.
   await evaluate(`(async () => {
@@ -129,12 +180,244 @@ try {
   console.log('PASS: native keyboard navigation pauses following')
 
   await evaluate(`(async () => {
+    const first = {id:'t1',role:'tool',text:'First',streaming:true,callView:{title:'first command'},deferredBody:true};
+    const second = {id:'t2',role:'tool',text:'Second',streaming:true,callView:{title:'latest command'},resultView:{title:'result preview'},deferredBody:true};
+    const separator = {id:'separator',role:'assistant',text:'Between groups'};
+    showState({...baseline,sessionId:'grouping',messages:[...baseline.messages,first,second,separator,{id:'t3',role:'tool',text:'Third',failed:true}]}); await tick();
+    const groups = [...document.querySelectorAll('details.tool-group')];
+    ensure(groups.length===2 && groups.every(group=>!group.open), 'contiguous chronology or default group state');
+    ensure(groups[0].querySelector(':scope > summary .tool-title').textContent==='latest command', 'latest call title');
+    ensure(groups[1].querySelector(':scope > summary .tool-title').textContent==='Called 1 tool', 'failed group summary');
+    ensure(groups[1].querySelector(':scope > summary .tool-icon').getAttribute('aria-label')==='One or more tools failed', 'failed group status');
+    groups[1].querySelector(':scope > summary').click(); await tick();
+    ensure(!groups[1].querySelector('details.tool').open, 'failed call opened automatically');
+    groups[1].querySelector(':scope > summary').click(); await tick();
+    ensure(!sent.some(message=>message.type==='load-tool-output'), 'closed groups requested output');
+    showState({...state,messages:[...baseline.messages,first,{...second,streaming:false},separator,{id:'t3',role:'tool',text:'Third',failed:true}]}); await tick();
+    ensure(groups[0].querySelector(':scope > summary .tool-title').textContent==='latest command', 'parallel completion changed latest call');
+    showState({...state,messages:[...baseline.messages,{...first,streaming:false},{...second,streaming:false},separator,{id:'t3',role:'tool',text:'Third',failed:true}]}); await tick();
+    ensure(!groups[0].open && groups[0].querySelector(':scope > summary .tool-title').textContent==='Called 2 tools', 'completed group did not stay closed');
+    groups[0].querySelector(':scope > summary').click(); await tick();
+    ensure(!conversationScroller.following && groups[0].open, 'group expansion must pause following');
+    const calls = [...groups[0].querySelectorAll('details.tool')];
+    ensure(calls.length===2 && calls.every(call=>!call.open), 'individual calls opened automatically');
+    ensure(!sent.some(message=>message.type==='load-tool-output'), 'group expansion requested output');
+    calls[0].querySelector(':scope > summary').click(); await tick();
+    ensure(sent.filter(message=>message.type==='load-tool-output').length===1 && sent.find(message=>message.type==='load-tool-output').messageId==='t1', 'individual expansion did not request its output');
+    calls[0].querySelector(':scope > summary').click();
+    groups[0].querySelector(':scope > summary').click();
+    showState({...state,messages:state.messages.map(message=>message.id==='t1'?{...message,detail:'updated'}:message)}); await tick();
+    ensure(!groups[0].open && !groups[0].querySelector('details.tool').open, 'explicit collapse lost on update');
+    groups[0].querySelector(':scope > summary').click(); await tick();
+    ensure(!groups[0].querySelector('details.tool').open, 'individual collapse did not persist');
+    showState({...state,hasMoreHistory:true}); await tick();
+    groups[0].querySelector(':scope > summary').scrollIntoView(); await tick();
+    document.querySelector('.history-button').click();
+    const summary = groups[0].querySelector(':scope > summary'); const before = summary.getBoundingClientRect().top;
+    showState({...state,hasMoreHistory:false,loadingHistory:false,messages:[...baseline.messages,{id:'older-tool',role:'tool',text:'Older'},...state.messages.slice(1)]}); await tick();
+    ensure(document.querySelector('details.tool-group')===groups[0] && groups[0].open, 'history prepend replaced group or lost expansion');
+    ensure(Math.abs(summary.getBoundingClientRect().top-before)<2, 'group history anchor drifted');
+    showState({...baseline,sessionId:'group-reset',messages:[{...first,streaming:false}]}); await tick();
+    ensure(!document.querySelector('details.tool-group').open && !document.querySelector('details.tool').open, 'session switch retained expansion');
+  })()`)
+  console.log('PASS: tool grouping, parallel status, disclosure, deferred output, history, and session reset')
+
+  await evaluate(`(async () => {
+    const tool = {id:'race-tool',role:'tool',text:'Deferred',deferredBody:true};
+    const requests = () => sent.filter(message=>message.type==='load-tool-output' && message.messageId==='race-tool').length;
+    sent.length = 0;
+    render({...baseline,sessionId:'race',messages:[tool]});
+    let current = document.querySelector('details.tool');
+    current.open = true;
+    render({...state,messages:[{...tool,detail:'first replacement'}]});
+    current = document.querySelector('details.tool');
+    ensure(current.open, 'replacement lost open state before toggle');
+    render({...state,messages:[{...tool,detail:'second replacement'}]});
+    ensure(document.querySelector('details.tool').open, 'repeated replacement lost open state');
+    await tick();
+    ensure(requests()===1, 'open replacements requested output more than once');
+    current = document.querySelector('details.tool'); current.open = false;
+    render({...state,messages:[{...tool,detail:'collapsed replacement'}]});
+    ensure(!document.querySelector('details.tool').open, 'replacement lost collapsed state before toggle');
+    await tick();
+    ensure(requests()===1, 'collapsed replacement requested output');
+    render({...state,messages:[]});
+    render({...state,messages:[tool]});
+    ensure(!document.querySelector('details.tool').open, 'reintroduced tool did not default closed');
+    sent.length = 0;
+    current = document.querySelector('details.tool'); current.open = true; current.open = false;
+    render({...state,messages:[{...tool,detail:'rapid collapse'}]});
+    ensure(!document.querySelector('details.tool').open, 'rapid collapse lost on replacement');
+    await tick();
+    ensure(requests()===0, 'rapid collapse requested output');
+    document.querySelector('details.tool').open = true;
+    render({...state,messages:[]});
+    await tick();
+    ensure(requests()===0, 'removed tool requested output from stale toggle');
+    render({...state,messages:[tool]});
+    document.querySelector('details.tool').open = true;
+    render({...baseline,sessionId:'race-next',messages:[]});
+    await tick();
+    ensure(requests()===0, 'previous session tool requested output from stale toggle');
+  })()`)
+  console.log('PASS: tool disclosure replacement and stale toggle races')
+
+  await evaluate(`(async () => {
+    const reasoning = {text:'Initial <img src=x onerror=alert(1)>\\n',active:true,tokens:5,estimated:true};
+    const reply = {id:'thinking',role:'assistant',text:'',streaming:true,reasoning};
+    showState({...baseline,sessionId:'reasoning',messages:[...baseline.messages,reply]}); await tick();
+    const details = document.querySelector('[data-scroll-id="thinking"] .reasoning');
+    const viewport = details.querySelector('.reasoning-viewport');
+    ensure(details.open && viewport.clientHeight > 0 && viewport.clientHeight < 96, 'short reasoning viewport did not shrink to its content');
+    ensure(!viewport.querySelector('img'), 'reasoning was rendered as HTML');
+    ensure(document.querySelector('[data-scroll-id="thinking"] .message-body').hidden, 'reasoning-only message has an empty answer');
+    conversationScroller.pause(); elements.scroll.scrollTop = 100; await tick(); const reading = elements.scroll.scrollTop;
+    const delta = ('reasoning line\\n').repeat(3134);
+    window.dispatchEvent(new MessageEvent('message',{data:{type:'state-update',update:{messages:{appends:[{id:'thinking',text:'',streaming:true,reasoning:{text:delta,active:true,tokens:500,estimated:true}}]}}}})); await tick();
+    ensure(state.messages.at(-1).reasoning.text.length > 47000, 'reasoning delta not accumulated');
+    ensure(viewport.clientHeight === 144 && viewport.lastChild.length === 20000 && !viewport.querySelector('.reasoning-omitted').hidden, 'live reasoning height or tail not bounded');
+    ensure(viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 2, 'live reasoning did not scroll to newest');
+    ensure(Math.abs(elements.scroll.scrollTop-reading)<2 && !conversationScroller.following, 'reasoning update stole conversation scroll');
+    window.dispatchEvent(new MessageEvent('message',{data:{type:'state-update',update:{messages:{appends:[{id:'thinking',text:'',streaming:true,reasoning:{text:'',active:false,durationMs:3200,tokens:501,estimated:true}}]}}}})); await tick();
+    ensure(!details.open && details.querySelector('summary').textContent === 'Thought for 3.2s · about 501 tokens', 'reasoning completion did not collapse or update statistics');
+    ensure(state.messages.at(-1).streaming, 'answer should still be streaming');
+    details.querySelector('summary').click(); await tick();
+    ensure(details.open && viewport.lastChild.data === state.messages.at(-1).reasoning.text, 'completed expansion lost full reasoning');
+    window.dispatchEvent(new MessageEvent('message',{data:{type:'state-update',update:{messages:{appends:[{id:'thinking',text:'Answer',streaming:true}]}}}})); await tick();
+    ensure(details.open && !document.querySelector('[data-scroll-id="thinking"] .message-body').hidden, 'answer append lost expansion or stayed hidden');
+    showState({...state,messages:state.messages.map(m => m.id === 'thinking' ? {...m,text:'Updated answer'} : m)}); await tick();
+    ensure(document.querySelector('[data-scroll-id="thinking"] .reasoning') === details && details.open, 'redraw lost reasoning expansion');
+    showState({...baseline,sessionId:'reasoning-history',messages:[{...reply,streaming:false,reasoning:{text:'History',active:false,tokens:3,estimated:false}}]}); await tick();
+    ensure(!document.querySelector('.reasoning').open && document.querySelector('.reasoning summary').textContent === 'Thinking time unknown · 3 tokens', 'history did not start collapsed or unknown duration mislabeled');
+    showState({...baseline,sessionId:'reasoning',messages:[{...reply,streaming:false,reasoning:{text:'History',active:false,tokens:3,estimated:false}}]}); await tick();
+    ensure(!document.querySelector('.reasoning').open, 'session switch retained reasoning expansion');
+    ensure(!sent.some(message => message.type==='webview-error'), JSON.stringify(sent.filter(message => message.type==='webview-error')));
+  })()`)
+  console.log('PASS: reasoning stream, bounded viewport, completion, disclosure, and session reset')
+
+  await evaluate(`(async () => {
+    const message = text => ({id:'batch',role:'assistant',text,streaming:true,reasoning:{text,active:true,tokens:1,estimated:true}});
+    const append = text => window.dispatchEvent(new MessageEvent('message',{data:{type:'state-update',update:{messages:{appends:[{id:'batch',text,streaming:true,reasoning:{text,active:true,tokens:1,estimated:true}}]}}}}));
+    const update = messages => window.dispatchEvent(new MessageEvent('message',{data:{type:'state-update',update:{messages}}}));
+    for (const replacement of ['reset', 'state', 'upsert']) {
+      showState({...baseline,sessionId:'batch-'+replacement,messages:[message('A')]}); await tick();
+      append('B');
+      if (replacement === 'state') showState({...state,messages:[message('AB')]});
+      else update(replacement === 'reset' ? {reset:[message('AB')]} : {upserts:[message('AB')]});
+      append('C'); await tick();
+      const item = document.querySelector('[data-scroll-id="batch"]');
+      ensure(state.messages[0].text === 'ABC' && state.messages[0].reasoning.text === 'ABC', replacement + ' state lost a delta');
+      ensure(item.querySelector('.message-body').textContent === 'ABC', replacement + ' answer DOM lost a delta');
+      ensure(item.querySelector('.reasoning-viewport').lastChild.data === 'ABC', replacement + ' reasoning DOM lost a delta');
+    }
+  })()`)
+  console.log('PASS: batched reset, full-state and upsert preserve answer and reasoning deltas')
+
+  await evaluate(`(async () => {
+    const reason = (text, active, durationMs, tokens) => ({text,active,...(durationMs === undefined ? {} : {durationMs}),tokens,estimated:true});
+    const first = {id:'step1',role:'assistant',turn:7,text:'First answer',streaming:false,reasoning:reason('First thought',false,1200,10)};
+    const tool = {id:'turn-tool',role:'tool',turn:7,text:'Read',failed:true,deferredBody:true};
+    const notice = {id:'notice',role:'notice',text:'A notice'};
+    const second = {id:'step2',role:'assistant',turn:7,text:'',streaming:true,reasoning:reason('start\\n'.repeat(300),true,undefined,20)};
+    showState({...baseline,sessionId:'turn-activity',running:true,messages:[...baseline.messages,first]}); await tick();
+    const activity = document.querySelector('.turn-activity'); const details = activity.querySelector(':scope > details');
+    const preview = activity.querySelector('.turn-activity-preview');
+    showState({...state,messages:[...state.messages,tool,notice,second]}); await tick();
+    ensure(document.querySelector('.turn-activity-preview')===preview, 'next step replaced the live viewport');
+    ensure(document.querySelectorAll('.turn-activity').length===1 && !details.open && !preview.hidden && preview.clientHeight===144, 'turn activity did not start with one live viewport');
+    ensure(!document.querySelector('[data-scroll-id="step2"]') && !document.querySelector('.turn-activity-log .tool'), 'reasoning-only header or eager tool log rendered');
+    ensure(document.querySelector('[data-scroll-id="step1"] .message-body').textContent.trim()==='First answer' && document.querySelector('[data-scroll-id="notice"]'), 'answer or notice missing outside activity');
+    conversationScroller.pause(); elements.scroll.scrollTop=100; await tick(); const reading=elements.scroll.scrollTop;
+    const update = messages => window.dispatchEvent(new MessageEvent('message',{data:{type:'state-update',update:{messages}}}));
+    update({appends:[{id:'step2',text:'',streaming:true,reasoning:reason('next\\n'.repeat(5000),true,undefined,22)}]}); await tick();
+    ensure(activity.querySelector('.turn-activity-preview')===preview && preview.lastChild.length===20000 && preview.scrollHeight-preview.scrollTop-preview.clientHeight<2, 'live preview was replaced, unbounded, or did not follow');
+    ensure(Math.abs(elements.scroll.scrollTop-reading)<2, 'live preview changed conversation scroll');
+    const durable = {...state.messages.at(-1),id:'step2-durable'};
+    showState({...state,messages:[...state.messages.slice(0,-1),durable]}); await tick();
+    ensure(activity.querySelector('.turn-activity-preview')===preview, 'live-to-durable id replacement replaced viewport');
+    sent.length=0; details.querySelector('summary').click(); await tick();
+    ensure(details.open && preview.hidden && activity.querySelectorAll('.reasoning').length===2 && activity.querySelectorAll('.tool').length===1, 'expanded activity missing details or duplicated preview');
+    ensure(!sent.some(m=>m.type==='load-tool-output'), 'closed tool loaded deferred output');
+    const toolNode = activity.querySelector('.tool'); toolNode.querySelector('summary').click(); await tick();
+    ensure(sent.some(m=>m.type==='load-tool-output' && m.messageId==='turn-tool'), 'open tool did not load deferred output');
+    details.querySelector('summary').click(); await tick();
+    update({appends:[{id:'step2-durable',text:'',streaming:true,reasoning:reason('missed B',true,undefined,22)}]}); await tick();
+    details.querySelector('summary').click();
+    update({appends:[{id:'step2-durable',text:'',streaming:true,reasoning:reason('pending C',true,undefined,22)}]}); await tick();
+    const stepViews = activity.querySelectorAll('.reasoning-viewport');
+    ensure(stepViews[1].lastChild.data === state.messages.at(-1).reasoning.text.slice(-20000), 'reopened log lost a closed-period reasoning delta');
+    update({appends:[{id:'step2-durable',text:'Answer',streaming:true,reasoning:reason('',false,2300,22)}]}); await tick();
+    ensure(details.open && preview.hidden, 'reasoning completion collapsed an ongoing turn');
+    const last = state.messages.at(-1); update({upserts:[{...last,turnEnded:true}]}); await tick();
+    ensure(!details.open && preview.hidden && details.querySelector('.tool-title').textContent==='Thought for 3.5s · about 32 tokens · 1 tool', 'turn completion summary or collapse incorrect');
+    ensure(details.querySelector('.tool-icon').getAttribute('aria-label')==='One or more tools failed', 'failed tool status lost');
+    details.querySelector('summary').click(); await tick();
+    ensure(details.open && activity.querySelector('.tool')===toolNode && toolNode.open, 'reopening activity lost tool state');
+    update({appends:[{id:'step2-durable',text:' more',streaming:true}]}); await tick();
+    ensure(details.open && preview.hidden, 'answer update reopened a settled turn or lost expansion');
+    showState({...state,running:true}); await tick();
+    ensure(details.open && preview.hidden, 'running state reactivated a settled turn');
+    const older = {id:'older-turn',role:'assistant',turn:6,text:'Older',reasoning:reason('Unknown',false,undefined,4)};
+    showState({...state,messages:[older,...state.messages]}); await tick();
+    ensure(document.querySelectorAll('.turn-activity').length===2 && document.querySelector('[data-scroll-id="turn-activity-7"]').closest('.turn-activity')===activity && details.open, 'history prepend replaced activity or expansion');
+    ensure(document.querySelector('[data-scroll-id="turn-activity-6"] .tool-title').textContent==='Thinking time unknown · about 4 tokens · 0 tools', 'unknown duration summary incorrect');
+    showState({...baseline,sessionId:'activity-reset',running:false,messages:[{id:'only-tool',role:'tool',turn:7,text:'Only'}]}); await tick();
+    ensure(document.querySelector('.turn-activity')!==activity && !document.querySelector('.turn-activity details').open && document.querySelector('.turn-activity .tool-title').textContent==='Thought for 0s · 0 tokens · 1 tool', 'session reset or tool-only summary incorrect');
+    showState({...baseline,sessionId:'activity-lifecycle',running:false,messages:[second]}); await tick();
+    const lifecycle = document.querySelector('.turn-activity');
+    ensure(!lifecycle.querySelector('.turn-activity-preview').hidden, 'stale initial runtime state prematurely settled live turn');
+    showState({...state,running:true}); await tick();
+    showState({...state,running:false}); await tick();
+    ensure(lifecycle.querySelector('.turn-activity-preview').hidden, 'runtime stop did not settle stale streaming message');
+    showState({...state,running:true}); await tick();
+    ensure(lifecycle.querySelector('.turn-activity-preview').hidden, 'runtime restart reactivated settled turn');
+  })()`)
+  console.log('PASS: turn activity grouping, live preview, deferred tools, completion, history, and session reset')
+
+  await evaluate(`(async () => {
+    const text = 'thought'.repeat(3572) + 'xx';
+    for (const end of ['runtime', 'marker']) {
+      const message = {id:'stale-active',role:'assistant',turn:4,text:'',streaming:true,reasoning:{text,active:true,tokens:10,estimated:true}};
+      showState({...baseline,sessionId:'stale-'+end,running:true,messages:[message]}); await tick();
+      const activity = document.querySelector('.turn-activity'); const details = activity.querySelector(':scope > details');
+      details.querySelector('summary').click(); await tick();
+      ensure(activity.querySelector('.reasoning').open && activity.querySelector('.reasoning-viewport').lastChild.length===20000, 'active log not bounded');
+      if (end === 'runtime') showState({...state,running:false});
+      else showState({...state,messages:[{...message,turnEnded:true}]});
+      await tick();
+      ensure(!details.open, end + ' did not collapse activity');
+      details.querySelector('summary').click(); await tick();
+      const reasoning = activity.querySelector('.reasoning');
+      ensure(!reasoning.open && reasoning.querySelector('summary').textContent.startsWith('Thinking time unknown'), end + ' retained active reasoning display');
+      reasoning.querySelector('summary').click(); await tick();
+      ensure(reasoning.querySelector('.reasoning-viewport').lastChild.data===text && state.messages[0].reasoning.active===true, end + ' lost full text or mutated transport state');
+    }
+  })()`)
+  console.log('PASS: settled turns restore full stale-active reasoning')
+
+  await evaluate(`(async () => {
+    const part = {id:'partial-end',role:'assistant',turn:3,text:'Last answer',turnEnded:true,reasoning:{text:'Later',active:false,durationMs:2000,tokens:20,estimated:true}};
+    const earlier = {id:'partial-start',role:'assistant',turn:3,turnStarted:true,text:'Earlier answer',reasoning:{text:'Earlier',active:false,durationMs:1000,tokens:10,estimated:true}};
+    showState({...baseline,sessionId:'partial-turn',running:false,hasMoreHistory:true,messages:[part]}); await tick();
+    const group = document.querySelector('.turn-activity'); const details = group.querySelector(':scope > details');
+    ensure(details.querySelector('.tool-title').textContent==='Thought for 2s · about 20 tokens · 0 tools (loaded portion only)', 'partial turn totals not qualified');
+    details.querySelector('summary').click(); await tick();
+    showState({...state,messages:[earlier,{...part,turnStarted:true}]}); await tick();
+    ensure(document.querySelectorAll('.turn-activity').length===1 && document.querySelector('.turn-activity')===group && details.open, 'history prepend replaced activity or lost expansion');
+    ensure(details.querySelector('.tool-title').textContent==='Thought for 3s · about 30 tokens · 0 tools', 'full turn totals stayed qualified or incorrect');
+    showState({...state,sessionId:'partial-no-more',hasMoreHistory:false,messages:[part]}); await tick();
+    ensure(!document.querySelector('.turn-activity .tool-title').textContent.includes('loaded portion only'), 'fully loaded history incorrectly qualified');
+  })()`)
+  console.log('PASS: paginated turn totals are qualified until the turn start is loaded')
+
+  await evaluate(`(async () => {
     showState({...baseline,sessionId:'tools',messages:[...baseline.messages,{id:'tool',role:'tool',text:'Read file',rawResult:'output\\n'.repeat(30)}]}); await tick();
+    document.querySelector('details.tool-group > summary').click(); await tick();
     const tool = document.querySelector('details.tool'); tool.querySelector('summary').click(); await tick();
     ensure(!conversationScroller.following && tool.open, 'manual expansion must preserve reading');
     conversationScroller.resume(); await tick();
     showState({...state,messages:[...state.messages,{id:'auto-tool',role:'tool',text:'Running',streaming:true,rawResult:'running\\n'.repeat(20)}]}); await tick();
-    ensure(conversationScroller.following && gap() <= 2, 'automatic expansion lost follow');
+    ensure(conversationScroller.following && gap() <= 2, 'passive tool update lost follow');
     const canvas = document.createElement('canvas'); canvas.width=100; canvas.height=240;
     const image = new Image(); const loaded = new Promise(resolve => { image.onload=resolve; });
     elements.messages.append(image); image.src=canvas.toDataURL(); await loaded; await tick();
@@ -166,10 +449,217 @@ try {
   await page('Emulation.setDeviceMetricsOverride', { width: 300, height: 550, deviceScaleFactor: 1, mobile: false })
   await evaluate('tick()')
   assert.equal(await evaluate('conversationScroller.following && gap() <= 2'), true)
+  await evaluate(`(async () => {
+    showState({...baseline,sessionId:'narrow',messages:[...baseline.messages,{id:'long-tool',role:'tool',streaming:true,callView:{title:'long-command-'.repeat(80)}}]}); await tick();
+    const title=document.querySelector('.tool-group > summary .tool-title');
+    const summary=title.closest('summary'); const style=getComputedStyle(title);
+    ensure(title.scrollWidth>title.clientWidth && style.textOverflow==='ellipsis' && title.getBoundingClientRect().right<=summary.getBoundingClientRect().right, 'long tool title did not ellipsize within narrow sidebar');
+  })()`)
   await evaluate('conversationScroller.pause(); elements.scroll.scrollTop -= 180;')
   await evaluate('tick()')
   assert.equal(await evaluate(`(() => { const b=document.getElementById('jumpLatest').getBoundingClientRect(), s=elements.scroll.getBoundingClientRect(); return b.width>0 && b.left>=s.left && b.right<=s.right && b.bottom<=s.bottom; })()`), true)
   console.log('PASS: narrow sidebar resize and visible, in-bounds button')
+  await evaluate(`window.layoutSnapshot = () => {
+    const names = ['#app', '#app > header', '.conversation', '.composer', '#prompt', '#send'];
+    const rects = Object.fromEntries(names.map(name => {
+      const r = document.querySelector(name).getBoundingClientRect();
+      return [name, {left:r.left, right:r.right, top:r.top, bottom:r.bottom}];
+    }));
+    return {rects, scroll: [document.documentElement, document.body, document.querySelector('#app'),
+      document.querySelector('#app > header'), document.querySelector('.conversation'), document.querySelector('.composer')].map(el => el.scrollLeft)};
+  };
+  window.checkHistoryBounds = () => {
+    const snapshot = layoutSnapshot(); const {rects} = snapshot;
+    for (const [name, rect] of Object.entries(rects)) ensure(rect.left >= 0 && rect.right <= innerWidth, name + ' outside viewport: ' + JSON.stringify(rect));
+    ensure(rects['#send'].left >= rects['.composer'].left + 6 && rects['#send'].right <= rects['.composer'].right - 6, 'send outside composer padding');
+    ensure(document.querySelector('#app').scrollWidth === document.querySelector('#app').clientWidth, 'app has horizontal overflow');
+    ensure(!elements.policyTrigger.classList.contains('hidden') && !elements.usageControl.classList.contains('hidden') && !elements.cancel.classList.contains('hidden'), 'busy controls not visible');
+    return snapshot;
+  };`)
+  const clickAt = async selector => {
+    const point = await evaluate(`(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return {x:r.left+r.width/2,y:r.top+r.height/2}; })()`)
+    await page('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, ...point })
+    await page('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, ...point })
+  }
+  for (const width of [260, 300, 410]) {
+    await page('Emulation.setDeviceMetricsOverride', { width, height: 550, deviceScaleFactor: 1, mobile: false })
+    for (const longTitle of [false, true]) {
+      await evaluate(`(async () => {
+        const title = ${longTitle} ? 'UnbrokenSessionTitle'.repeat(45) : 'Ordinary session';
+        showState({...baseline, sessionId:'layout', running:true,
+          sessions:Array.from({length:30}, (_, i) => ({id:i ? 'layout-' + i : 'layout', title:i ? title + i : title})),
+          models:[{provider:'test',model:'long',label:'LongModelLabel'.repeat(20),selected:true,reasoningEfforts:[{id:'high',label:'LongEffortLabel'.repeat(20),selected:true}]}],
+          permissions:[{id:'policy',label:'Policy',selected:true}], usage:{available:true,percent:25,usedTokens:25,contextWindow:100}});
+        await tick();
+      })()`)
+      const before = await evaluate('checkHistoryBounds()')
+      await clickAt('#sessionTrigger')
+      await evaluate(`(async () => { await tick();
+        ensure(document.activeElement === elements.sessionSearch, 'history search did not receive focus');
+        const menu = elements.sessionMenu.getBoundingClientRect();
+        ensure(menu.left >= 0 && menu.right <= innerWidth, 'history menu outside viewport');
+        ensure(elements.sessionList.scrollHeight > elements.sessionList.clientHeight, 'history list did not overflow internally');
+        elements.sessionList.scrollTop = 100; ensure(elements.sessionList.scrollTop > 0, 'history list did not scroll');
+      })()`)
+      assert.deepEqual(await evaluate('checkHistoryBounds()'), before, `layout changed on open at ${width}px`)
+      await page('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+      await page('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+      await evaluate(`(async () => { await tick(); ensure(document.activeElement === elements.sessionTrigger, 'history trigger focus not restored'); ensure(elements.sessionMenu.classList.contains('hidden'), 'history menu did not close'); })()`)
+      assert.deepEqual(await evaluate('checkHistoryBounds()'), before, `layout changed on close at ${width}px`)
+    }
+  }
+  await clickAt('#sessionTrigger')
+  await evaluate('tick()')
+  await page('Emulation.setDeviceMetricsOverride', { width: 260, height: 550, deviceScaleFactor: 1, mobile: false })
+  await evaluate(`(async () => { await tick(); checkHistoryBounds(); const r = elements.sessionMenu.getBoundingClientRect(); ensure(r.left >= 0 && r.right <= innerWidth, 'open history menu outside viewport after resize'); ensure(document.activeElement === elements.sessionSearch, 'resize lost search focus'); })()`)
+  console.log('PASS: responsive history focus, geometry, internal scrolling, busy composer and open-menu resize')
+  await evaluate(`(() => {
+    const menu = elements.sessionMenu.getBoundingClientRect();
+    const originalSize = document.body.style.fontSize;
+    for (const size of [13, 20, 24]) {
+      document.body.style.fontSize = size + 'px';
+      const search = elements.sessionSearch.getBoundingClientRect();
+      ensure(search.left >= menu.left + 6 && search.right <= menu.right - 6, 'search input escaped menu padding');
+      ensure(Math.abs((search.left - menu.left) - (menu.right - search.right)) < 1, 'search input margins differ');
+    }
+    document.body.style.fontSize = originalSize;
+    const color = getComputedStyle(elements.sessionSearch).borderRightColor;
+    ensure(color === 'rgb(77, 107, 254)', 'focused search border is not visible: ' + color);
+    elements.sessionTrigger.focus({preventScroll:true});
+    const idleColor = getComputedStyle(elements.sessionSearch).borderRightColor;
+    ensure(idleColor === 'rgb(69, 69, 69)', 'search border has no visible theme fallback: ' + idleColor);
+    elements.sessionSearch.focus({preventScroll:true});
+  })()`)
+  console.log('PASS: search input padding, responsive font sizes, visible border and focus border')
+
+
+  await page('Emulation.setDeviceMetricsOverride', { width: 640, height: 550, deviceScaleFactor: 1, mobile: false })
+  for (const width of [180, 220, 300]) {
+    await evaluate(`(async () => {
+      const app = document.querySelector('#app'); app.style.width = '${width}px'; await tick();
+      const parent = document.querySelector('.toolbar').getBoundingClientRect();
+      const menu = elements.sessionMenu.getBoundingClientRect();
+      const search = elements.sessionSearch.getBoundingClientRect();
+      ensure(menu.left >= parent.left && menu.right <= parent.right, 'history menu exceeds actual sidebar width: ' + JSON.stringify({width:${width},parentRight:parent.right,menuRight:menu.right}));
+      ensure(search.left >= menu.left + 6 && search.right <= menu.right - 6, 'search input exceeds sidebar popup');
+      ensure(document.activeElement === elements.sessionSearch, 'container resize lost search focus');
+    })()`)
+  }
+  await evaluate(`document.querySelector('#app').style.width = '';`)
+  console.log('PASS: history popup fits narrow sidebar container independently of viewport width')
+  await evaluate(`(async () => {
+    elements.sessionTrigger.click();
+    showState({...baseline, usage:{available:true,percent:25,usedTokens:2048,contextWindow:9999999999999,
+      breakdown:{systemTokens:12345,toolsTokens:54321,messageTokens:149000}}});
+    await tick();
+    window.usageLayout = () => {
+      const panel = elements.usagePanel.getBoundingClientRect();
+      const row = document.querySelector('.composer-row').getBoundingClientRect();
+      const app = document.querySelector('#app').getBoundingClientRect();
+      ensure(!elements.usagePanel.classList.contains('hidden'), 'usage popup unexpectedly closed');
+      ensure(panel.left >= row.left && panel.right <= row.right && panel.left >= app.left && panel.right <= app.right, 'usage popup escaped sidebar');
+      ensure(panel.top >= 0 && panel.bottom <= innerHeight, 'usage popup escaped viewport');
+      const hit = document.elementFromPoint(panel.left + panel.width / 2, panel.top + 8);
+      ensure(hit && elements.usagePanel.contains(hit), 'usage popup is clipped or obscured');
+      ensure(elements.usagePanel.textContent.includes('2,048 tokens') && elements.usagePanel.textContent.includes('9,999,999,999,999 tokens'), 'full context counts missing');
+      for (const item of elements.usagePanel.querySelectorAll('.usage-header, .usage-header span, .usage-breakdown-title, .usage-row, .usage-row dt, .usage-row dd')) {
+        if (!item.checkVisibility()) continue;
+        const rect = item.getBoundingClientRect();
+        ensure(rect.left >= panel.left && rect.right <= panel.right && rect.top >= panel.top && rect.bottom <= panel.bottom, 'usage content escaped popup: ' + item.textContent);
+        ensure(item.scrollWidth <= item.clientWidth + 1, 'usage content clipped: ' + item.textContent);
+      }
+      for (const item of elements.usagePanel.querySelectorAll('.usage-row')) {
+        if (!item.checkVisibility()) continue;
+        const [term, value] = [...item.children].map(child => child.getBoundingClientRect());
+        ensure(term.right <= value.left || value.right <= term.left || term.bottom <= value.top || value.bottom <= term.top, 'usage row overlaps');
+      }
+    };
+    const before = {scrollTop:elements.scroll.scrollTop, scrollHeight:elements.scroll.scrollHeight, bodyHeight:document.body.scrollHeight};
+    elements.usageTrigger.click(); await tick();
+    ensure(elements.usageTrigger.getAttribute('aria-expanded') === 'true', 'usage trigger not expanded');
+    ensure(JSON.stringify(before) === JSON.stringify({scrollTop:elements.scroll.scrollTop, scrollHeight:elements.scroll.scrollHeight, bodyHeight:document.body.scrollHeight}), 'opening usage popup moved the page');
+  })()`)
+  for (const width of [180, 220, 300, 410]) {
+    await evaluate(`(async () => { document.querySelector('#app').style.width = '${width}px'; await tick(); usageLayout(); })()`)
+  }
+  await evaluate(`(async () => {
+    document.querySelector('#app').style.width = ''; await tick();
+    document.body.click(); await tick();
+    ensure(elements.usagePanel.classList.contains('hidden') && elements.usageTrigger.getAttribute('aria-expanded') === 'false', 'outside click did not dismiss usage popup');
+    elements.usageTrigger.click(); await tick();
+  })()`)
+  await page('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+  await page('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+  await evaluate(`(async () => { await tick(); ensure(elements.usagePanel.classList.contains('hidden') && elements.usageTrigger.getAttribute('aria-expanded') === 'false', 'Escape did not dismiss usage popup'); })()`)
+  for (const width of [180, 220, 300, 410]) {
+    await page('Emulation.setDeviceMetricsOverride', { width, height: 550, deviceScaleFactor: 1, mobile: false })
+    await evaluate(`(async () => { elements.usageTrigger.click(); await tick(); usageLayout(); elements.usageTrigger.click(); })()`)
+  }
+  console.log('PASS: usage popup bounds, paint, resize, wrapping and dismissal')
+  await page('Emulation.setDeviceMetricsOverride', { width: 180, height: 370, deviceScaleFactor: 1, mobile: false })
+  await evaluate(`(async () => {
+    const usage = {available:true,percent:19,usedTokens:199790,contextWindow:1048576,
+      breakdown:{systemTokens:16,toolsTokens:397,messageTokens:148918},
+      sessionStats:{turns:2,steps:4,llmMs:2000,toolMs:300,ttftMs:900,ttftSteps:2,decodeMs:2000,decodeTokens:75},
+      tokenUsage:{uncachedInputTokens:100,cacheReadTokens:300,cacheWriteTokens:100,outputTokens:500}};
+    showState({...baseline,usage}); await tick();
+    elements.usageTrigger.click(); await tick();
+    elements.usagePanel.querySelector('.usage-details').open = true; await tick();
+    window.checkShortUsage = (requireScroll = true) => {
+      const panel = elements.usagePanel;
+      const bounds = panel.getBoundingClientRect();
+      ensure(bounds.top >= 0 && bounds.bottom <= innerHeight, 'short viewport clipped usage popup');
+      if (requireScroll) ensure(panel.scrollHeight > panel.clientHeight, 'short viewport popup should scroll');
+      const checkVisible = item => {
+        const r = item.getBoundingClientRect();
+        ensure(r.top >= bounds.top && r.bottom <= bounds.bottom, 'usage content not visible after scrolling');
+        const hit = document.elementFromPoint(r.left + Math.min(r.width / 2, 10), r.top + r.height / 2);
+        ensure(hit && (item === hit || item.contains(hit)), 'usage content not painted after scrolling');
+      };
+      panel.scrollTop = 0; checkVisible(panel.querySelector('.usage-header'));
+      panel.scrollTop = panel.scrollHeight; checkVisible([...panel.querySelectorAll('.usage-row dd')].at(-1));
+    };
+    checkShortUsage();
+    elements.usagePanel.scrollTop = 0; elements.usagePanel.focus();
+  })()`)
+  await page('Input.dispatchKeyEvent', { type: 'keyDown', key: 'PageDown', code: 'PageDown', windowsVirtualKeyCode: 34 })
+  await page('Input.dispatchKeyEvent', { type: 'keyUp', key: 'PageDown', code: 'PageDown', windowsVirtualKeyCode: 34 })
+  await evaluate(`(async () => { await tick(200); ensure(document.activeElement === elements.usagePanel && elements.usagePanel.scrollTop > 0, 'keyboard scrolling unavailable in usage popup'); })()`)
+  await page('Emulation.setDeviceMetricsOverride', { width: 180, height: 340, deviceScaleFactor: 1, mobile: false })
+  await evaluate(`(async () => { await tick(); checkShortUsage();
+    elements.prompt.value = 'A long prompt\\n'.repeat(12); elements.prompt.dispatchEvent(new Event('input', {bubbles:true}));
+    await tick(); checkShortUsage();
+    elements.prompt.value = ''; elements.prompt.dispatchEvent(new Event('input', {bubbles:true}));
+    await tick(); checkShortUsage();
+  })()`)
+  await page('Emulation.setDeviceMetricsOverride', { width: 180, height: 300, deviceScaleFactor: 1, mobile: false })
+  // Simulate a row near the top to exercise the fallback; the natural grid can overflow instead.
+  await evaluate(`(async () => { elements.prompt.value = 'A long prompt\\n'.repeat(12); elements.prompt.dispatchEvent(new Event('input', {bubbles:true}));
+    await tick(); checkShortUsage(false);
+    document.querySelector('.composer-row').style.transform = 'translateY(-230px)'; updateUsagePanelHeight();
+    ensure(elements.usagePanel.style.bottom === 'auto', 'usage fallback not activated'); checkShortUsage(false);
+  })()`)
+  await page('Emulation.setDeviceMetricsOverride', { width: 180, height: 240, deviceScaleFactor: 1, mobile: false })
+  await evaluate(`(async () => { await tick(); checkShortUsage(); })()`)
+  await page('Emulation.setDeviceMetricsOverride', { width: 180, height: 450, deviceScaleFactor: 1, mobile: false })
+  await evaluate(`(async () => { document.querySelector('.composer-row').style.transform = ''; elements.prompt.value = ''; elements.prompt.dispatchEvent(new Event('input', {bubbles:true}));
+    await tick(); ensure(elements.usagePanel.style.top === '' && elements.usagePanel.style.bottom === '', 'usage fallback did not reset'); checkShortUsage(false); elements.usageTrigger.click();
+  })()`)
+  console.log('PASS: short viewport usage popup scrolling and composer resize')
+  await page('Emulation.setDeviceMetricsOverride', { width: 180, height: 240, deviceScaleFactor: 1, mobile: false })
+  await evaluate(`(async () => {
+    showState({...baseline,usage:{available:false}}); await tick();
+    ensure(!elements.usageControl.classList.contains('hidden'), 'missing inspector trigger without usage estimates');
+    elements.usageTrigger.click(); await tick();
+    const panel=elements.usagePanel, box=panel.getBoundingClientRect(), action=panel.querySelector('.inspect-action');
+    ensure(box.top>=0 && box.bottom<=innerHeight && box.left>=0 && box.right<=innerWidth, 'no-estimate popup out of bounds');
+    ensure(panel.textContent.includes('Usage not available yet') && action && !action.disabled, 'no-estimate inspector action unavailable');
+    panel.scrollTop=panel.scrollHeight; action.click();
+    ensure(elements.inspector.open && sent.findLast(message=>message.type==='inspect-context'), 'no-estimate inspector did not open');
+    elements.inspector.close(); await tick();
+  })()`)
+  console.log('PASS: context inspector remains accessible without estimates in a short narrow viewport')
+  await page('Emulation.setDeviceMetricsOverride', { width: 300, height: 550, deviceScaleFactor: 1, mobile: false })
   if (process.env.DSH_SCROLL_SCREENSHOT) {
     const { data } = await page('Page.captureScreenshot', { format: 'png' })
     await writeFile(process.env.DSH_SCROLL_SCREENSHOT, Buffer.from(data, 'base64'))
@@ -448,6 +938,60 @@ try {
   })()`)
   console.log('PASS: paused animation frames, full-state flush, ACK before content, focus/draft preservation and resumed paint')
   await evaluate(`(async () => {
+    const turnTool={id:'turn-hidden',role:'tool',turn:7,text:'Read',detail:'Complete',deferredBody:true,deferredBodyRevision:1};
+    const legacyTool={id:'legacy-hidden',role:'tool',text:'Read',detail:'Complete',deferredBody:true,deferredBodyRevision:1};
+    const messages=[{id:'intro',role:'user',text:'Intro'},turnTool,{id:'answer',role:'assistant',turn:7,text:'Answer',turnEnded:true},legacyTool,{id:'legacy-other',role:'tool',text:'Write'}];
+    showState({...baseline,sessionId:'collapsed-navigation',running:false,messages}); await tick();
+    ensure(!document.querySelector('.turn-activity > details').open && !renderedMessages.has(turnTool.id), 'turn fixture was not lazy and closed');
+    ensure(!document.querySelector('.tool-group').open, 'legacy fixture was not closed');
+    const turnRequest=openNavigationFixture(turnTool.id), restore=holdRenderFrames();
+    try {
+      navigationAck(turnRequest); await tick();
+      const target=renderedMessages.get(turnTool.id).node;
+      ensure(!navigationPanel.open && target===document.activeElement && target.open && target.closest('.turn-activity > details').open, 'turn target was not visible and focused');
+      ensure(target.getBoundingClientRect().height>0 && !conversationScroller.following, 'turn reveal did not preserve paused scrolling');
+      ensure(sent.some(message=>message.type==='load-tool-output' && message.messageId===turnTool.id), 'turn deferred output was not initialized synchronously');
+    } finally { restore(); }
+    await tick();
+    const legacyRequest=openNavigationFixture(legacyTool.id);
+    navigationAck(legacyRequest); await tick();
+    const legacy=renderedMessages.get(legacyTool.id).node;
+    ensure(!navigationPanel.open && legacy===document.activeElement && legacy.open && legacy.closest('.tool-group').open, 'legacy target was not visible and focused');
+    ensure(legacy.getBoundingClientRect().height>0 && !conversationScroller.following, 'legacy reveal resumed following or hid target');
+    ensure(sent.some(message=>message.type==='load-tool-output' && message.messageId===legacyTool.id), 'legacy deferred output was not initialized');
+    showState({...state,messages:[...state.messages,{id:'reasoning-only',role:'assistant',turn:9,text:'Temporary answer',reasoning:{text:'Thinking',active:false,tokens:2}}]}); await tick();
+    showState({...state,messages:state.messages.map(message=>message.id==='reasoning-only' ? {...message,text:''} : message)}); await tick();
+    const reasoningRequest=openNavigationFixture('reasoning-only'); navigationAck(reasoningRequest); await tick();
+    ensure(!navigationPanel.open && document.activeElement.classList.contains('reasoning') && document.activeElement.isConnected, 'reasoning-only fallback remained detached');
+    const pending=openNavigationFixture('missing-turn');
+    navigationAck(pending); await tick();
+    showState({...state,sessionId:'switched-during-jump'}); await tick();
+    showState({...state,messages:[...state.messages,{id:'missing-turn',role:'tool',turn:8,text:'Late'}]}); await tick();
+    ensure(!navigationPanel.open && !navigationJump && !document.querySelector('[data-scroll-id="missing-turn"]'), 'cancelled jump leaked into another session');
+    ensure(!sent.some(message=>message.type==='webview-error'), JSON.stringify(sent.filter(message=>message.type==='webview-error')));
+    const runningTool={id:'changed-tool',role:'tool',turn:11,text:'Read',detail:'Running',streaming:true};
+    const answer={id:'turn-answer',role:'assistant',turn:11,text:'Answer'};
+    showState({...baseline,sessionId:'reconcile-navigation',running:true,messages:[runningTool,answer]}); await tick();
+    const activity=document.querySelector('.turn-activity > details'); activity.open=true; await tick();
+    const stale=renderedMessages.get(runningTool.id).node;
+    activity.open=false; await tick();
+    const finished={...runningTool,detail:'Complete',streaming:false,turnEnded:true,deferredBody:true,deferredBodyRevision:1};
+    showState({...state,running:false,messages:[finished,answer]}); await tick();
+    ensure(stale.isConnected && renderedMessages.get(runningTool.id).node===stale, 'fixture did not retain the stale connected node');
+    const changedRequest=openNavigationFixture(runningTool.id); navigationAck(changedRequest);
+    const current=renderedMessages.get(runningTool.id).node;
+    ensure(current!==stale && current.isConnected && current.open && activity.open, 'reveal did not reconcile the completed tool');
+    ensure(sent.some(message=>message.type==='load-tool-output' && message.messageId===runningTool.id), 'completed deferred output was not initialized');
+    await tick();
+    ensure(renderedMessages.get(runningTool.id).node===current && document.activeElement===current && current.classList.contains('navigation-target') && current.getBoundingClientRect().height>0, 'native toggle replaced the focused navigation target');
+    ensure(!conversationScroller.following, 'completed tool reveal resumed following');
+    activity.open=false; await tick();
+    const answerRequest=openNavigationFixture(answer.id); navigationAck(answerRequest); await tick();
+    ensure(!activity.open && document.activeElement===renderedMessages.get(answer.id).node, 'answer navigation unnecessarily opened activity');
+    showState({...baseline,sessionId:'paused-paint'}); await tick(); elements.prompt.value='Keep this draft';
+  })()`)
+  console.log('PASS: collapsed turn and legacy tool navigation, deferred output, paused frames and session cancellation')
+  await evaluate(`(async () => {
     // Explicit Jump to latest must work even when automatic layout work is
     // waiting for a paint. Keep subsequent streaming batched as before.
     conversationScroller.pause(); elements.scroll.scrollTop=100; await tick();
@@ -469,6 +1013,90 @@ try {
     ensure(gap()<=2 && conversationScroller.following, 'following did not recover after paints resumed');
   })()`)
   console.log('PASS: immediate Jump to latest with paused frames, focus/draft preservation and batched streaming')
+  await page('Emulation.setDeviceMetricsOverride', { width: 410, height: 720, deviceScaleFactor: 1, mobile: false })
+  for (const kind of ['tool', 'reasoning', 'collapsed']) {
+    const result = await evaluate(`(async () => {
+      const kind = '${kind}';
+      const message = n => kind === 'reasoning'
+        ? {id:'anchor-reasoning-'+n,role:'assistant',turn:8,turnEnded:true,text:'',reasoning:{text:'Thought '+n,active:false,durationMs:100,tokens:5}}
+        : {id:'anchor-tool-'+n,role:'tool',turn:8,turnEnded:true,text:'Tool '+n,detail:'Completed',rawResult:'Result '+n};
+      const loaded = Array.from({length:35},(_,i)=>message(i+30));
+      if (kind === 'collapsed') loaded.push({id:'anchor-answer',role:'assistant',turn:8,turnEnded:true,text:'Answer paragraph.\\n\\n'.repeat(100)});
+      showState({...baseline,sessionId:'history-'+kind,running:false,hasMoreHistory:true,messages:loaded}); await tick();
+      const group = document.querySelector('.turn-activity > details'); group.open=true; await tick();
+      if (kind === 'collapsed') { group.open=false; await tick(); }
+      conversationScroller.pause(); elements.scroll.scrollTop=0; await tick();
+      document.querySelector('.history-button').click();
+      showState({...state,loadingHistory:true}); await tick();
+      const target = kind === 'collapsed' ? group.querySelector('summary')
+        : document.querySelector('[data-scroll-id="' + (kind === 'tool' ? 'anchor-tool-45' : 'turn-reasoning-anchor-reasoning-45') + '"]');
+      // Move the reader after the request starts, before earlier records arrive.
+      elements.scroll.scrollTop += target.getBoundingClientRect().top-elements.scroll.getBoundingClientRect().top-12;
+      await tick();
+      const before=target.getBoundingClientRect().top-elements.scroll.getBoundingClientRect().top;
+      const earlier=Array.from({length:30},(_,i)=>({...message(i),...(kind==='collapsed'?{turn:7}:{})}));
+      showState({...state,loadingHistory:false,messages:[...earlier,...loaded]}); await tick();
+      const after=target.getBoundingClientRect().top-elements.scroll.getBoundingClientRect().top;
+      ensure(Math.abs(after-before)<2, kind+' history moved the visible record: '+JSON.stringify({before,after}));
+      ensure(group.open === (kind !== 'collapsed') && !conversationScroller.following, 'history changed disclosure or following');
+      return {before,after};
+    })()`)
+    console.log('PASS: history anchors preserve visible ' + kind + ' records', result)
+  }
+
+  for (const mode of ['preview', 'expanded', 'legacy']) {
+    const point = await evaluate(`(async () => {
+      const message={id:'reading-thought',role:'assistant',...('${mode}'==='legacy'?{}:{turn:9}),text:'',streaming:true,
+        reasoning:{text:'A reasoning line\\n'.repeat(400),active:true,tokens:100,estimated:true}};
+      showState({...baseline,sessionId:'reading-${mode}',running:true,messages:[message]}); await tick();
+      if ('${mode}'==='expanded') { document.querySelector('.turn-activity > details').open=true; await tick(); }
+      window.reasoningViewport=document.querySelector('${mode}'==='preview'?'.turn-activity-preview':'.reasoning .reasoning-viewport');
+      window.appendReasoning=text => window.dispatchEvent(new MessageEvent('message',{data:{type:'state-update',update:{messages:{appends:[
+        {id:state.messages.at(-1).id,text:'',streaming:true,reasoning:{text,active:true,tokens:104,estimated:true}}
+      ]}}}}));
+      ensure(reasoningScrollers.get(reasoningViewport).following && reasoningViewport.scrollHeight-reasoningViewport.scrollTop-reasoningViewport.clientHeight<=2, 'reasoning did not initially follow');
+      window.outerFollowing=conversationScroller.following;
+      const rect=reasoningViewport.getBoundingClientRect(); return {x:rect.left+rect.width/2,y:rect.top+rect.height/2};
+    })()`)
+    await page('Input.dispatchMouseEvent', { type: 'mouseWheel', x: point.x, y: point.y, deltaX: 0, deltaY: -96 })
+    await evaluate(`(async () => {
+      await tick();
+      ensure(!reasoningScrollers.get(reasoningViewport).following, 'native upward wheel did not pause ${mode}');
+      window.reasoningTop=reasoningViewport.scrollTop; window.reasoningSnapshot=reasoningViewport.lastChild.data;
+      appendReasoning('New live text\\n'.repeat(3000)); await tick();
+      ensure(reasoningViewport.scrollTop===reasoningTop && reasoningViewport.lastChild.data===reasoningSnapshot, 'streaming or truncation replaced the reading snapshot');
+      ensure(conversationScroller.following===outerFollowing, 'nested wheel changed conversation following');
+      if ('${mode}'==='preview') {
+        // A new step with the same length must not append its delta to the old step.
+        const next={...state.messages.at(-1),id:'next-thought',reasoning:{text:'B'.repeat(reasoningSnapshot.length),active:true,tokens:100,estimated:true}};
+        showState({...state,messages:[...state.messages,next]}); await tick();
+        appendReasoning('C'); await tick();
+        ensure(reasoningViewport.lastChild.data===reasoningSnapshot && reasoningViewport.scrollTop===reasoningTop, 'next step stole the paused preview');
+      }
+      reasoningViewport.focus({preventScroll:true});
+    })()`)
+    await page('Input.dispatchKeyEvent', { type: 'keyDown', key: 'End', code: 'End', windowsVirtualKeyCode: 35 })
+    await page('Input.dispatchKeyEvent', { type: 'keyUp', key: 'End', code: 'End', windowsVirtualKeyCode: 35 })
+    await evaluate(`(async () => {
+      await tick(350);
+      ensure(reasoningScrollers.get(reasoningViewport).following, 'End did not resume ${mode}: '+JSON.stringify({top:reasoningViewport.scrollTop,height:reasoningViewport.scrollHeight,client:reasoningViewport.clientHeight,focused:document.activeElement===reasoningViewport,connected:reasoningViewport.isConnected}));
+      ensure(reasoningViewport.lastChild.data===state.messages.at(-1).reasoning.text.slice(-20000), 'resume did not immediately show the latest reasoning');
+      ensure(reasoningViewport.scrollHeight-reasoningViewport.scrollTop-reasoningViewport.clientHeight<=2, 'resume did not reach the latest text');
+      appendReasoning('Still following\\n'); await tick();
+      ensure(reasoningViewport.scrollHeight-reasoningViewport.scrollTop-reasoningViewport.clientHeight<=2, 'following did not continue');
+      // Input between a render and its queued scroll write must cancel that write.
+      const latest=state.messages.at(-1);
+      render({...state,messages:[...state.messages.slice(0,-1),{...latest,reasoning:{...latest.reasoning,text:latest.reasoning.text+'Racing chunk\\n'}}]});
+      reasoningViewport.dispatchEvent(new WheelEvent('wheel',{deltaY:-60,bubbles:true}));
+      reasoningViewport.scrollTop=Math.max(0,reasoningViewport.scrollTop-60);
+      reasoningViewport.dispatchEvent(new Event('scroll'));
+      const top=reasoningViewport.scrollTop; await tick();
+      ensure(!reasoningScrollers.get(reasoningViewport).following && reasoningViewport.scrollTop===top, 'pending frame overrode upward intent');
+      render({...baseline,sessionId:'reading-cleanup',messages:[]}); await tick();
+      ensure(reasoningScrollers.size===0, 'removed reasoning observers were not disposed');
+    })()`)
+    console.log('PASS: ' + mode + ' reasoning respects native input, truncation, resume, pending frames and disposal')
+  }
 } finally {
   clearTimeout(timeout)
   socket?.terminate()

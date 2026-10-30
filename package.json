@@ -157,28 +157,6 @@
           "command": "deepseekHarness.sendProblem",
           "group": "navigation@100"
         }
-      ],
-      "view/title": [
-        {
-          "command": "deepseekHarness.openInEditor",
-          "when": "view == deepseekHarness.chat",
-          "group": "navigation@1"
-        },
-        {
-          "command": "deepseekHarness.restart",
-          "when": "view == deepseekHarness.chat",
-          "group": "navigation@2"
-        },
-        {
-          "command": "deepseekHarness.managePlugins",
-          "when": "view == deepseekHarness.chat",
-          "group": "navigation@3"
-        },
-        {
-          "command": "deepseekHarness.configureApiKey",
-          "when": "view == deepseekHarness.chat",
-          "group": "navigation@4"
-        }
       ]
     },
     "configuration": {

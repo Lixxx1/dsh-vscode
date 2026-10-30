@@ -5,7 +5,7 @@ import { createConversationScroller } from '../src/conversation-scroll.mjs'
 const cleanup: Array<() => void> = []
 afterEach(() => { cleanup.splice(0).forEach(dispose => dispose()); vi.restoreAllMocks(); document.body.replaceChildren() })
 
-function harness() {
+function harness(nested = false, onResume?: () => void) {
   document.body.innerHTML = '<main tabindex="0"><div></div></main><button>Jump to latest</button>'
   const scroll = document.querySelector('main')!
   const content = scroll.firstElementChild as HTMLElement
@@ -28,7 +28,7 @@ function harness() {
     disconnect = disconnect
   })
   cleanup.push(() => vi.unstubAllGlobals())
-  const controller = createConversationScroller(scroll, content, jump)
+  const controller = createConversationScroller(scroll, content, nested ? undefined : jump, onResume)
   cleanup.push(() => controller.dispose())
   const flush = () => { const pending = [...frames.values()]; frames.clear(); pending.forEach(callback => callback(0)) }
   const fireScroll = () => scroll.dispatchEvent(new Event('scroll'))
@@ -40,6 +40,44 @@ function harness() {
 }
 
 describe('conversation scroll intent', () => {
+  it('supports independent nested following and refreshes paused content once on resume', () => {
+    const resumed = vi.fn()
+    const h = harness(true, resumed)
+    h.controller.changed(); h.wheel(-10); h.scroll.scrollTop = 500; h.fireScroll(); h.flush()
+    expect(h.controller.following).toBe(false)
+    expect(h.scroll.scrollTop).toBe(500)
+    h.setHeight(1200); h.controller.changed(); h.flush()
+    expect(h.scroll.scrollTop).toBe(500)
+    expect(resumed).not.toHaveBeenCalled()
+    resumed.mockImplementation(() => h.setHeight(1500))
+    h.scroll.scrollTop = 900; h.fireScroll(); h.flush()
+    expect(resumed).toHaveBeenCalledOnce()
+    expect(h.controller.following).toBe(true)
+    expect(h.scroll.scrollTop).toBe(1200)
+    h.fireScroll(); h.resize(); h.flush()
+    expect(resumed).toHaveBeenCalledOnce()
+  })
+
+  it.each(['wheel', 'key', 'touch'])('resumes a paused frozen tail on downward %s input without a scroll event', input => {
+    const resumed = vi.fn()
+    const h = harness(true, resumed)
+    h.controller.pause()
+    resumed.mockImplementation(() => h.setHeight(1500))
+    if (input === 'wheel') h.wheel(10)
+    else if (input === 'key') h.scroll.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }))
+    else {
+      for (const [type, clientY] of [['touchstart', 100], ['touchmove', 80]] as const) {
+        const event = new Event(type)
+        Object.defineProperty(event, 'touches', { value: [{ clientY }] })
+        h.scroll.dispatchEvent(event)
+      }
+    }
+    h.flush()
+    expect(resumed).toHaveBeenCalledOnce()
+    expect(h.controller.following).toBe(true)
+    expect(h.scroll.scrollTop).toBe(1200)
+  })
+
   it('keeps following when output grows between a programmatic scroll and its event (#30)', () => {
     const h = harness()
     h.setHeight(1060); h.controller.changed(); h.flush()
@@ -217,6 +255,29 @@ describe('conversation scroll intent', () => {
     h.scroll.scrollTop = 450; h.fireScroll()
     rowTop += 200; h.setHeight(1100); restore()
     expect(h.scroll.scrollTop).toBe(650)
+  })
+
+  it('skips hidden disclosure records even if the browser retains their layout boxes', () => {
+    const h = harness()
+    const hidden = document.createElement('article'); hidden.dataset.scrollId = 'hidden'
+    const visible = document.createElement('article'); visible.dataset.scrollId = 'visible'
+    h.content.append(hidden, visible)
+    let rowTop = 590
+    vi.spyOn(hidden, 'getBoundingClientRect').mockImplementation(() => ({ top: -50, bottom: 200 }) as DOMRect)
+    hidden.checkVisibility = () => false
+    vi.spyOn(visible, 'getBoundingClientRect').mockImplementation(() => ({ top: rowTop - h.scroll.scrollTop, bottom: rowTop + 100 - h.scroll.scrollTop }) as DOMRect)
+    const restore = h.controller.preserveHistory()
+    rowTop += 200; h.setHeight(1100); restore()
+    expect(h.scroll.scrollTop).toBe(800)
+  })
+
+  it('does not anchor offscreen records below the viewport', () => {
+    const h = harness()
+    const below = document.createElement('article'); below.dataset.scrollId = 'below'; h.content.append(below)
+    vi.spyOn(below, 'getBoundingClientRect').mockImplementation(() => ({ top: 500, bottom: 600 }) as DOMRect)
+    const restore = h.controller.preserveHistory()
+    h.setHeight(1100); restore()
+    expect(h.scroll.scrollTop).toBe(800)
   })
 
   it.each(['reset', 'resume'] as const)('cancels stale history restoration on %s', action => {

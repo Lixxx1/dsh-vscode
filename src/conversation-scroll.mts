@@ -1,5 +1,5 @@
 /** Conversation scrolling: following is user intent, not a distance measurement. */
-export function createConversationScroller(scroll: HTMLElement, content: HTMLElement, jump: HTMLButtonElement) {
+export function createConversationScroller(scroll: HTMLElement, content: HTMLElement, jump?: HTMLButtonElement, onResume?: () => void) {
   const view = scroll.ownerDocument.defaultView!
   const lifetime = new view.AbortController()
   const options = { signal: lifetime.signal, passive: true }
@@ -17,7 +17,7 @@ export function createConversationScroller(scroll: HTMLElement, content: HTMLEle
   function maximum() { return Math.max(0, scroll.scrollHeight - scroll.clientHeight) }
   function atBottom() { return maximum() - scroll.scrollTop <= 2 }
   function updateButton() {
-    jump.hidden = disposed || scroll.clientHeight === 0 || atBottom()
+    if (jump) jump.hidden = disposed || scroll.clientHeight === 0 || atBottom()
   }
   function cancelFrame() {
     if (frame !== undefined) view.cancelAnimationFrame(frame)
@@ -49,16 +49,27 @@ export function createConversationScroller(scroll: HTMLElement, content: HTMLEle
   }
   function resume() {
     if (disposed) return
+    const wasFollowing = following
     intentVersion++
     historyGeneration++
     history = undefined
     following = true
+    if (!wasFollowing) onResume?.()
     changed()
   }
+  function visibleRect(element: HTMLElement) {
+    const rect = element.getBoundingClientRect()
+    // Closed disclosures can retain layout boxes for their hidden descendants.
+    if (rect.bottom <= rect.top || (element.checkVisibility && !element.checkVisibility())) return undefined
+    return rect
+  }
   function anchor() {
-    const top = scroll.getBoundingClientRect().top
+    const { top, bottom } = scroll.getBoundingClientRect()
     const item = [...content.querySelectorAll<HTMLElement>('[data-scroll-id]')]
-      .find(element => element.getBoundingClientRect().bottom > top)
+      .find(element => {
+        const rect = visibleRect(element)
+        return rect && rect.bottom > top && rect.top < bottom
+      })
     return {
       id: item?.dataset.scrollId,
       offset: item ? item.getBoundingClientRect().top - top : 0,
@@ -103,10 +114,15 @@ export function createConversationScroller(scroll: HTMLElement, content: HTMLEle
   function upwardGesture(target: EventTarget | null, direction: number) {
     if (direction < 0 && maximum() > 0 && reachesConversation(target, direction)) pause()
   }
+  function downwardGesture(target: EventTarget | null, direction: number) {
+    // A paused nested view may already be at its frozen tail, so downward input
+    // can express resume intent without producing another scroll event.
+    if (direction > 0 && !following && !history && !dragging && atBottom() && reachesConversation(target, direction)) resume()
+  }
 
   scroll.addEventListener('scroll', onScroll, options)
   scroll.addEventListener('wheel', event => {
-    if (!event.ctrlKey) upwardGesture(event.target, event.deltaY)
+    if (!event.ctrlKey) { upwardGesture(event.target, event.deltaY); downwardGesture(event.target, event.deltaY) }
   }, options)
   scroll.addEventListener('keydown', event => {
     const target = event.target
@@ -115,11 +131,14 @@ export function createConversationScroller(scroll: HTMLElement, content: HTMLEle
     const up = ['ArrowUp', 'PageUp', 'Home'].includes(event.key)
       || (event.key === ' ' && event.shiftKey && !target.closest('button, summary, a'))
     if (up) upwardGesture(target, -1)
+    const down = ['ArrowDown', 'PageDown', 'End'].includes(event.key)
+      || (event.key === ' ' && !event.shiftKey && !target.closest('button, summary, a'))
+    if (down) downwardGesture(target, 1)
   }, options)
   scroll.addEventListener('touchstart', event => { touchY = event.touches[0]?.clientY }, options)
   scroll.addEventListener('touchmove', event => {
     const next = event.touches[0]?.clientY
-    if (next !== undefined && touchY !== undefined) upwardGesture(event.target, touchY - next)
+    if (next !== undefined && touchY !== undefined) { upwardGesture(event.target, touchY - next); downwardGesture(event.target, touchY - next) }
     touchY = next
   }, options)
   scroll.addEventListener('touchend', () => { touchY = undefined }, options)
@@ -139,7 +158,7 @@ export function createConversationScroller(scroll: HTMLElement, content: HTMLEle
   }
   view.addEventListener('pointerup', finishDrag, options)
   view.addEventListener('pointercancel', finishDrag, options)
-  jump.addEventListener('click', () => {
+  jump?.addEventListener('click', () => {
     // Move keyboard focus off the button before it disappears.
     scroll.focus({ preventScroll: true })
     resume()
@@ -189,7 +208,7 @@ export function createConversationScroller(scroll: HTMLElement, content: HTMLEle
         const current = history
         history = undefined
         const item = current.id === undefined ? undefined
-          : [...content.querySelectorAll<HTMLElement>('[data-scroll-id]')].find(element => element.dataset.scrollId === current.id)
+          : [...content.querySelectorAll<HTMLElement>('[data-scroll-id]')].find(element => element.dataset.scrollId === current.id && visibleRect(element))
         writeTop(item
           ? scroll.scrollTop + item.getBoundingClientRect().top - scroll.getBoundingClientRect().top - current.offset
           : current.top + scroll.scrollHeight - current.height)

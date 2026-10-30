@@ -1,3 +1,5 @@
+// @vitest-environment jsdom
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import type * as vscode from 'vscode'
 import { chatHtml as createChatHtml } from '../src/webview.js'
@@ -10,6 +12,27 @@ function chatHtml(webview: vscode.Webview, mark: vscode.Uri): string {
   })
 }
 
+function usageFixture() {
+  const html = chatHtml({ cspSource: 'vscode-webview:' } as vscode.Webview, { toString: () => 'mark' } as vscode.Uri)
+  const dom = new DOMParser().parseFromString(html, 'text/html')
+  const elements = {
+    usageControl: dom.getElementById('usageControl')!,
+    usagePanel: dom.getElementById('usagePanel')!, usageTrigger: dom.getElementById('usageTrigger')!,
+    usageFill: dom.getElementById('usageFill')!,
+  }
+  const nodeStart = html.indexOf('function node(')
+  const nodeEnd = html.indexOf('function relativeSessionTime(', nodeStart)
+  const start = html.indexOf('function formatTokens(')
+  const end = html.indexOf('function sameSelection(', start)
+  expect(nodeStart).toBeGreaterThan(0)
+  expect(nodeEnd).toBeGreaterThan(nodeStart)
+  expect(start).toBeGreaterThan(0)
+  expect(end).toBeGreaterThan(start)
+  const functions = new Function('elements', 'document', 'openContextInspector',
+    `let usageOpen = false; ${html.slice(nodeStart, nodeEnd)} ${html.slice(start, end)}; return { formatTokens, renderUsage, usageStats, open: () => { usageOpen = true; } };`)(elements, dom, () => {})
+  return { elements, ...functions }
+}
+
 describe('chat webview', () => {
   it('formats context token totals without stripping whole-number zeroes in the emitted script', () => {
     const html = chatHtml({ cspSource: 'vscode-webview:' } as vscode.Webview, { toString: () => 'mark' } as vscode.Uri)
@@ -17,6 +40,156 @@ describe('chat webview', () => {
     const format = new Function(`${source}; return formatTokens;`)()
     expect([1000, 10000, 24000, 100000, 1000000, 10000000].map(format)).toEqual(['1K', '10K', '24K', '100K', '1M', '10M'])
   })
+  it('places the four extension actions in an accessible webview row and sends their fixed messages', () => {
+    const html = chatHtml({ cspSource: 'vscode-webview:' } as vscode.Webview, { toString: () => 'mark' } as vscode.Uri)
+    const dom = new DOMParser().parseFromString(html, 'text/html')
+    const app = dom.getElementById('app')!
+    expect([...app.children].map(child => child.tagName)).toEqual(['HEADER', 'DIV', 'FOOTER'])
+    const header = app.firstElementChild!
+    expect(header.children[0].classList.contains('toolbar')).toBe(true)
+    const actions = header.querySelector('[role="group"][aria-label="DeepSeek actions"]')!
+    expect(actions).toBe(header.children[1])
+    const expected = [
+      ['openInEditor', 'Open in Editor', 'open-in-editor'],
+      ['restart', 'Restart Runtime', 'restart'],
+      ['managePlugins', 'Manage Plugins', 'manage-plugins'],
+      ['configureApiKey', 'Configure API Key', 'configure-api-key'],
+    ]
+    expect(actions.children).toHaveLength(expected.length)
+    const sent: unknown[] = []
+    const start = html.indexOf("    document.getElementById('openInEditor').addEventListener")
+    const end = html.indexOf("    elements.sessionTrigger.addEventListener", start)
+    expect(start).toBeGreaterThan(0)
+    expect(end).toBeGreaterThan(start)
+    new Function('document', 'vscode', html.slice(start, end))(dom, { postMessage: (message: unknown) => sent.push(message) })
+    expected.forEach(([id, label]) => {
+      const button = dom.getElementById(id) as HTMLButtonElement
+      expect(button.parentElement).toBe(actions)
+      expect(button.type).toBe('button')
+      expect(button.disabled).toBe(false)
+      expect(button.classList.contains('icon-button')).toBe(true)
+      expect(button.title).toBe(label)
+      expect(button.getAttribute('aria-label')).toBe(label)
+      expect(button.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true')
+      button.click()
+    })
+    expect(sent).toEqual(expected.map(([, , type]) => ({ type })))
+    expect(html).toContain('grid-template-rows: auto minmax(0, 1fr) auto;')
+  })
+
+  it('retains extension commands without native view title contributions', () => {
+    const manifest = JSON.parse(readFileSync('package.json', 'utf8'))
+    expect(manifest.contributes.menus['view/title']).toBeUndefined()
+    const commands = manifest.contributes.commands.map((command: { command: string }) => command.command)
+    for (const command of ['openInEditor', 'restart', 'managePlugins', 'configureApiKey']) {
+      expect(commands).toContain(`deepseekHarness.${command}`)
+    }
+    const extension = readFileSync('src/extension.ts', 'utf8')
+    expect(extension).toContain("case 'open-in-editor': await vscode.commands.executeCommand('deepseekHarness.openInEditor'); return")
+    expect(extension).toContain("case 'manage-plugins': await vscode.commands.executeCommand('deepseekHarness.managePlugins'); return")
+  })
+
+  it('keeps cumulative usage in the context popup, with performance details collapsed', () => {
+    const { elements, renderUsage, open } = usageFixture()
+    const sessionStats = { turns: 2, steps: 4, llmMs: 2000, toolMs: 300, ttftMs: 900, ttftSteps: 2, decodeMs: 2000, decodeTokens: 75 }
+    const tokenUsage = { uncachedInputTokens: 100, cacheReadTokens: 300, cacheWriteTokens: 100, outputTokens: 500 }
+    const current = { phase: 'ready', sessionId: 'a', usage: { available: true, percent: 2, usedTokens: 2000, contextWindow: 100000, sessionStats, tokenUsage } }
+    renderUsage(current)
+    expect(elements.usagePanel.classList.contains('hidden')).toBe(true)
+    expect(elements.usagePanel.ownerDocument.getElementById('usageStats')).toBeNull()
+    expect(elements.usageControl.closest('.composer-row')).not.toBeNull()
+    expect(elements.usageTrigger.title).toBe('Context 2% used')
+    open()
+    renderUsage(current)
+    expect(elements.usagePanel.querySelector('.usage-session')?.textContent).toBe('Session usageCumulative across requests, not context size.Input tokens500Output tokens500Cache hit rate60%')
+    const details = elements.usagePanel.querySelector<HTMLDetailsElement>('.usage-details')!
+    expect(details.open).toBe(false)
+    expect(details.textContent).toContain('Decode speed (TPS)37.5 tok/s')
+    expect(details.textContent).toContain('Time to first token (avg)450ms')
+    expect(elements.usagePanel.textContent).not.toMatch(/Reference cost|2 turns|4 steps|Input miss|Cache read/)
+    details.open = true
+    renderUsage({ ...current, usage: { ...current.usage, tokenUsage: { ...tokenUsage, outputTokens: 700 } } })
+    expect(elements.usagePanel.querySelector('.usage-details')).toBe(details)
+    expect(details.open).toBe(true)
+    expect(elements.usagePanel.querySelector('.usage-session')?.textContent).toContain('Output tokens700')
+    renderUsage({ phase: 'ready', sessionId: 'b' })
+    expect(details.open).toBe(false)
+    expect(details.classList.contains('hidden')).toBe(true)
+    expect(elements.usagePanel.querySelector('.usage-session')?.classList.contains('hidden')).toBe(true)
+    expect(elements.usagePanel.querySelector('.usage-session .usage-rows')?.textContent).toBe('')
+    expect(elements.usagePanel.querySelector('.usage-performance')?.textContent).toBe('')
+  })
+
+  it('distinguishes missing session metrics from valid zero values', () => {
+    const { usageStats } = usageFixture()
+    expect(usageStats({})).toEqual({ rows: [], details: [] })
+    expect(usageStats({ tokenUsage: { uncachedInputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0 } })).toEqual({
+      rows: [['Input tokens', '0'], ['Output tokens', '0'], ['Cache hit rate', '—']], details: [],
+    })
+    expect(usageStats({ tokenUsage: { uncachedInputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 500 } }).rows).toEqual([
+      ['Input tokens', '100'], ['Output tokens', '500'], ['Cache hit rate', '0%'],
+    ])
+    for (const invalid of [undefined, -1, NaN, Infinity, -Infinity]) {
+      const result = usageStats({
+        tokenUsage: { uncachedInputTokens: 100, cacheReadTokens: 300, cacheWriteTokens: invalid, outputTokens: invalid },
+        sessionStats: { decodeMs: 1000, decodeTokens: invalid, ttftMs: invalid, ttftSteps: 1 },
+      })
+      expect(result).toEqual({
+        rows: [['Input tokens', '—'], ['Output tokens', '—'], ['Cache hit rate', '—']],
+        details: [['Decode speed (TPS)', '—'], ['Time to first token (avg)', '—']],
+      })
+    }
+    expect(usageStats({ sessionStats: { decodeMs: 1000, decodeTokens: 0, ttftMs: 0, ttftSteps: 1 } }).details).toEqual([
+      ['Decode speed (TPS)', '0.0 tok/s'], ['Time to first token (avg)', '0ms'],
+    ])
+    expect(usageStats({ sessionStats: { decodeMs: 0, decodeTokens: 100, ttftMs: 0, ttftSteps: 0 } }).details).toEqual([
+      ['Decode speed (TPS)', '—'], ['Time to first token (avg)', '—'],
+    ])
+    expect(usageStats({ tokenUsage: { uncachedInputTokens: Number.MAX_VALUE, cacheReadTokens: Number.MAX_VALUE, cacheWriteTokens: 0, outputTokens: 1 } }).rows[0]).toEqual(['Input tokens', '—'])
+  })
+
+  it('keeps usage accessible without context estimates and never substitutes session totals for context', () => {
+    const { elements, renderUsage, open } = usageFixture()
+    const usage = { available: false, percent: 95, tokenUsage: { uncachedInputTokens: 100000, cacheReadTokens: 30000, cacheWriteTokens: 0, outputTokens: 1000 } }
+    open()
+    renderUsage({ phase: 'error', sessionId: 'a', usage })
+    expect(elements.usageControl.classList.contains('hidden')).toBe(false)
+    expect(elements.usageTrigger.title).toBe('Context and session usage')
+    expect(elements.usageTrigger.classList.contains('danger')).toBe(false)
+    expect(elements.usagePanel.querySelector('.usage-context')?.classList.contains('hidden')).toBe(true)
+    expect(elements.usagePanel.querySelector('.usage-session')?.textContent).toContain('Input tokens130K')
+    expect(elements.usagePanel.querySelector<HTMLButtonElement>('.inspect-action')?.disabled).toBe(true)
+    renderUsage({ phase: 'ready', sessionId: 'a', usage })
+    expect(elements.usagePanel.querySelector<HTMLButtonElement>('.inspect-action')?.disabled).toBe(false)
+    renderUsage({})
+    expect(elements.usageControl.classList.contains('hidden')).toBe(true)
+    expect(elements.usagePanel.classList.contains('hidden')).toBe(true)
+  })
+
+  it('formats token counts in the generated script and renders explicit context figures', () => {
+    const { elements, formatTokens, renderUsage, open } = usageFixture()
+    for (const [value, expected] of [[1000, '1K'], [1500, '1.5K'], [10000, '10K'], [20000, '20K'], [100000, '100K'], [199790, '200K'], [200000, '200K'], [1000000, '1M'], [1500000, '1.5M'], [100000000, '100M']]) {
+      expect(formatTokens(value)).toBe(expected)
+    }
+    open()
+    renderUsage({ usage: { available: true, percent: 19, usedTokens: 199790, contextWindow: 1048576, breakdown: { systemTokens: 16, toolsTokens: 397, messageTokens: 148918 } } })
+    expect(elements.usagePanel.textContent).toContain('Context19% used')
+    expect(elements.usagePanel.textContent).toContain('Estimated usage199,790 tokens')
+    expect(elements.usagePanel.textContent).toContain('Context limit1,048,576 tokens')
+    expect(elements.usagePanel.textContent).toContain('Content composition (independent estimate)')
+    expect(elements.usagePanel.textContent).toContain('Messages~149K')
+    const segments = elements.usagePanel.querySelectorAll<HTMLElement>('.usage-segment')
+    expect(segments).toHaveLength(1)
+    expect(segments[0].style.width).toBe('19%')
+    expect(elements.usageTrigger.getAttribute('aria-expanded')).toBe('true')
+    renderUsage({ usage: { available: true, percent: 0, usedTokens: 0, contextWindow: 1000000 } })
+    expect(elements.usagePanel.textContent).toContain('Estimated usage0 tokens')
+    expect(elements.usagePanel.textContent).toContain('Context limit1,000,000 tokens')
+    renderUsage({ usage: { available: false } })
+    expect(elements.usagePanel.classList.contains('hidden')).toBe(true)
+    expect(elements.usageTrigger.getAttribute('aria-expanded')).toBe('false')
+  })
+
   it('keeps model selection enabled when the current model is unroutable, but blocks sending', () => {
     const html = chatHtml({ cspSource: 'vscode-webview:' } as vscode.Webview, { toString: () => 'mark' } as vscode.Uri)
     const source = html.slice(html.indexOf('const sessionReady ='), html.indexOf('elements.cancel.classList.toggle'))
@@ -211,6 +384,29 @@ describe('chat webview', () => {
     expect(script).not.toContain('rendered.node.replaceWith')
     expect(script).toContain("pendingMessageAppends.set(append.id")
     expect(script).toContain("target.textContent += continuation.textContent")
+  })
+
+  it('accumulates reasoning-only and metadata-only appends independently of answer text', () => {
+    const webview = { cspSource: 'vscode-webview:' } as vscode.Webview
+    const mark = { toString: () => 'vscode-resource:/deepseek.svg' } as vscode.Uri
+    const script = /<script nonce="[^"]+">([\s\S]*?)<\/script>/.exec(chatHtml(webview, mark))?.[1] ?? ''
+    const start = script.indexOf('function invalidateMessageAppends(')
+    const end = script.indexOf('\n    function applyStateUpdate(', start + 1)
+    const answerAppends = new Map()
+    const reasoningAppends = new Map()
+    const apply = new Function('pendingMessageAppends', 'pendingReasoningAppends', 'array', 'string', `${script.slice(start, end)}; return applyMessagesPatch;`)(
+      answerAppends, reasoningAppends, (value: unknown) => Array.isArray(value) ? value : [], (value: unknown) => typeof value === 'string' ? value : '',
+    )
+    const initial = [{ id: 'a', role: 'assistant', text: '', streaming: true, reasoning: { text: 'first', active: true, tokens: 1, estimated: true } }]
+    const next = apply(initial, { appends: [{ id: 'a', text: '', streaming: true, reasoning: { text: ' next', active: true, tokens: 2, estimated: true } },
+      { id: 'a', text: '', streaming: true, reasoning: { text: '', active: false, durationMs: 1500, tokens: 2, estimated: true } }] })
+    expect(next[0]).toEqual({ ...initial[0], reasoning: { text: 'first next', active: false, durationMs: 1500, tokens: 2, estimated: true } })
+    expect(reasoningAppends.get('a')).toBe(' next')
+    expect(answerAppends.get('a')).toBe('')
+    const reset = apply(next, { reset: [{ ...next[0], text: 'reset', reasoning: { ...next[0].reasoning, text: 'reset' } }] })
+    apply(reset, { appends: [{ id: 'a', text: ' tail', streaming: true, reasoning: { text: ' tail', active: true, tokens: 3, estimated: true } }] })
+    expect(answerAppends.get('a')).toBeNull()
+    expect(reasoningAppends.get('a')).toBeNull()
   })
 
   it('does not restore the raw exit marker when a terminal result has an empty output body', () => {

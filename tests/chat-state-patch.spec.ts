@@ -7,6 +7,54 @@ function message(id: string, text: string, extra: Partial<ConversationMessage> =
 }
 
 describe('diffConversationMessages', () => {
+  it('upserts when turn metadata changes without changing the streaming body', () => {
+    const projector = new ConversationProjector()
+    projector.apply({ type: 'assistant/chunk', seq: 1, time: 1, data: { turn: 2, step: 0, chunk: { type: 'text-delta', text: 'answer' } } })
+    const previous = projector.messages()
+    projector.apply({ type: 'turn/end', seq: 2, time: 2, data: { turn: 2 } })
+    const next = projector.messages()
+    expect(next[0]).toMatchObject({ turn: 2, turnEnded: true })
+    expect(diffConversationMessages(previous, next)).toEqual({ upserts: next })
+    const changedTurn = [{ ...previous[0]!, turn: 3 }]
+    expect(diffConversationMessages(previous, changedTurn)).toEqual({ upserts: changedTurn })
+    projector.apply({ type: 'turn/start', seq: 3, time: 3, data: { turn: 2 } })
+    const started = projector.messages()
+    expect(started[0]).toMatchObject({ turn: 2, turnStarted: true, turnEnded: true })
+    expect(diffConversationMessages(next, started)).toEqual({ upserts: started })
+  })
+
+  it('retains turn metadata when assistant and tool bodies are deferred', () => {
+    const metadata = { turn: 4, turnStarted: true, turnEnded: true }
+    expect(messageForWebview(message('a', 'x'.repeat(50_000), metadata))).toMatchObject(metadata)
+    expect(messageForWebview(message('t', 'Read', { role: 'tool', rawResult: 'result', ...metadata }))).toMatchObject(metadata)
+  })
+  it('sends reasoning deltas and metadata-only transitions without repeating prior text', () => {
+    const projector = new ConversationProjector()
+    projector.applyStream({ kind: 'start', attemptId: 'a', turn: 1, step: 1 })
+    projector.applyStream({ kind: 'chunk', attemptId: 'a', time: 10, chunk: { type: 'reasoning-delta', index: 0, text: 'think' } })
+    const previous = projector.messages()
+    projector.applyStream({ kind: 'chunk', attemptId: 'a', time: 20, chunk: { type: 'reasoning-delta', index: 0, text: ' more' } })
+    const next = projector.messages()
+    expect(diffConversationMessages(previous, next)).toEqual({ appends: [{ id: 'assistant-live:a', text: '', streaming: true, reasoning: { text: ' more', active: true, durationMs: 10, tokens: 3, estimated: true } }] })
+    projector.applyStream({ kind: 'chunk', attemptId: 'a', time: 30, chunk: { type: 'block-end', index: 0, block: { type: 'reasoning' } } })
+    expect(diffConversationMessages(next, projector.messages())).toEqual({ appends: [{ id: 'assistant-live:a', text: '', streaming: true, reasoning: { text: '', active: false, durationMs: 20, tokens: 3, estimated: true } }] })
+  })
+
+  it('upserts authoritative reasoning that replaces a same-length legacy stream', () => {
+    const projector = new ConversationProjector()
+    projector.apply({ type: 'assistant/chunk', seq: 1, time: 10, data: { turn: 1, step: 1, chunk: { type: 'reasoning-delta', index: 0, text: 'A' } } })
+    projector.apply({ type: 'assistant/chunk', seq: 2, time: 20, data: { turn: 1, step: 1, chunk: { type: 'text-delta', index: 1, text: 'answer' } } })
+    const previous = projector.messages()
+    projector.apply({ type: 'assistant/message', seq: 3, time: 30, data: { turn: 1, step: 1, message: { content: [{ type: 'reasoning', text: 'B' }, { type: 'text', text: 'answer' }] } } })
+    const next = projector.messages()
+    expect(next[0]?.reasoning?.text).toBe('B')
+    expect(diffConversationMessages(previous, next)).toEqual({ upserts: next })
+  })
+
+  it('retains reasoning when a long settled answer is deferred', () => {
+    const reasoning = { text: 'the full reasoning', active: false, tokens: 5, estimated: true }
+    expect(messageForWebview(message('assistant:1', 'x'.repeat(50_000), { reasoning }))).toMatchObject({ text: '', deferredBody: true, reasoning })
+  })
   it('uses projector deltas across batched chunks', () => {
     const projector = new ConversationProjector()
     const chunk = (seq: number, text: string): DshEvent => ({

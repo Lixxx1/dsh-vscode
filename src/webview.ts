@@ -28,15 +28,18 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     body { color: var(--vscode-foreground); background: var(--vscode-sideBar-background); font: 13px/1.5 var(--vscode-font-family); }
     button, select, textarea, input { font: inherit; color: inherit; }
     button { cursor: pointer; }
-    #app { width: 100%; height: 100%; min-width: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; }
-    .toolbar { min-width: 0; min-height: 38px; padding: 4px 8px 4px 12px; display: flex; align-items: center; gap: 6px; border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, transparent); }
-    .session-control { min-width: 0; flex: 1; position: relative; }
+    #app { width: 100%; height: 100%; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; }
+    #app > header { min-width: 0; }
+    .toolbar { position: relative; min-width: 0; min-height: 38px; padding: 4px 8px 4px 12px; display: flex; align-items: center; gap: 6px; border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, transparent); }
+    .toolbar-actions { min-width: 0; padding: 4px 8px 4px 12px; display: flex; align-items: center; gap: 6px; border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, transparent); }
+    .session-control { min-width: 0; flex: 1; }
     .session-trigger { width: 100%; min-width: 0; height: 28px; padding: 0 6px; display: flex; align-items: center; gap: 5px; border: 0; border-radius: 6px; background: transparent; font-weight: 600; text-align: left; }
     .session-trigger:hover, .session-trigger[aria-expanded="true"] { background: var(--vscode-toolbar-hoverBackground); }
     .session-trigger-title { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
     .session-trigger svg { width: 13px; height: 13px; flex: 0 0 auto; color: var(--vscode-descriptionForeground); }
-    .session-menu { position: absolute; z-index: 30; top: calc(100% + 5px); left: -40px; width: calc(100vw - 16px); max-width: 360px; max-height: min(430px, 72vh); padding: 6px; display: grid; grid-template-rows: auto minmax(0, 1fr); border: 1px solid var(--vscode-widget-border); border-radius: 9px; background: var(--vscode-menu-background, var(--vscode-editor-background)); box-shadow: 0 7px 24px var(--vscode-widget-shadow); }
-    .session-search { width: 100%; height: 29px; padding: 0 8px; border: 1px solid var(--vscode-input-border, transparent); border-radius: 5px; outline: 0; color: var(--vscode-input-foreground); background: var(--vscode-input-background); }
+    .session-menu { position: absolute; z-index: 30; top: calc(100% + 5px); left: 8px; right: 8px; width: auto; max-width: 360px; max-height: min(430px, 72vh); padding: 6px; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); border: 1px solid var(--vscode-widget-border); border-radius: 9px; background: var(--vscode-menu-background, var(--vscode-editor-background)); box-shadow: 0 7px 24px var(--vscode-widget-shadow); }
+    .session-search { width: 100%; min-width: 0; height: 29px; padding: 0 8px; border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, #8886)); border-radius: 5px; outline: 0; color: var(--vscode-input-foreground); background: var(--vscode-input-background); }
+    .session-search:focus { border-color: var(--vscode-focusBorder, #4d6bfe); }
     .session-list { min-height: 0; margin-top: 5px; overflow: auto; }
     .session-empty { padding: 18px 8px; color: var(--vscode-descriptionForeground); text-align: center; font-size: 11px; }
     .session-row { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 26px; align-items: center; border-radius: 6px; }
@@ -97,6 +100,17 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .assistant .avatar { border-radius: 0; background-color: #4d6bfe; }
     .message-body { width: 100%; min-width: 0; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; font-size: 13px; line-height: 1.65; }
     .assistant .message-body { padding-left: 29px; }
+    .reasoning { margin: 0 0 9px 29px; color: var(--vscode-descriptionForeground); font-size: 12px; }
+    .reasoning summary { cursor: pointer; user-select: none; }
+    .reasoning-viewport { max-height: min(20vh, 180px); overflow-y: auto; overscroll-behavior: contain; white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 6px; padding: 7px 9px; border-left: 2px solid var(--vscode-widget-border, #8886); }
+    .reasoning-omitted { font-style: italic; }
+    .turn-activity { min-width: 0; margin: 7px 0 10px; }
+    .turn-activity > details > summary { min-height: 35px; padding: 7px 9px; display: flex; align-items: center; gap: 7px; cursor: pointer; list-style: none; border: 1px solid var(--vscode-widget-border); border-radius: 8px; }
+    .turn-activity > details > summary::-webkit-details-marker { display: none; }
+    .turn-activity > details > summary .tool-title { white-space: normal; overflow-wrap: anywhere; }
+    .turn-activity-log { padding-left: 16px; }
+    .turn-activity-log .reasoning { margin-left: 0; }
+    .turn-activity-preview { margin-left: 16px; color: var(--vscode-descriptionForeground); font-size: 12px; }
     .message.user { display: flex; flex-direction: column; align-items: flex-end; padding-top: 6px; }
     .user .message-head { display: none; }
     .user .message-body { width: fit-content; max-width: 82%; margin-left: auto; padding: 8px 12px; white-space: pre-wrap; border-radius: 16px; background: color-mix(in srgb, var(--vscode-foreground) 8%, var(--vscode-editor-background)); }
@@ -135,8 +149,11 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .code-link { padding: 1px 4px; border-radius: 4px; color: var(--vscode-textPreformat-foreground); background: var(--vscode-textCodeBlock-background); }
     .tool { margin: 7px 0 10px; border: 1px solid var(--vscode-widget-border); border-radius: 8px; overflow: hidden; background: color-mix(in srgb, var(--vscode-editor-background) 72%, transparent); }
     .tool.failed { border-color: var(--vscode-errorForeground); }
-    .tool summary { min-height: 35px; padding: 7px 9px; display: flex; align-items: center; gap: 7px; cursor: pointer; list-style: none; }
-    .tool summary::-webkit-details-marker { display: none; }
+    .tool > summary, .tool-group > summary { min-height: 35px; padding: 7px 9px; display: flex; align-items: center; gap: 7px; cursor: pointer; list-style: none; }
+    .tool > summary::-webkit-details-marker, .tool-group > summary::-webkit-details-marker { display: none; }
+    .tool-group { min-width: 0; margin: 7px 0 10px; }
+    .tool-group > summary { border: 1px solid var(--vscode-widget-border); border-radius: 8px; overflow: hidden; }
+    .tool-group-items { padding-left: 16px; }
     .tool-icon { width: 18px; color: var(--vscode-descriptionForeground); text-align: center; font-family: var(--vscode-editor-font-family); }
     .tool-title { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 600; }
     .tool-detail { color: var(--vscode-descriptionForeground); font-size: 11px; }
@@ -194,7 +211,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .option input { margin: 3px 0 0; }
     .option-description { display: block; color: var(--vscode-descriptionForeground); font-size: 11px; }
     .custom-answer { width: 100%; margin-top: 7px; padding: 6px 8px; border: 1px solid var(--vscode-input-border, var(--vscode-widget-border)); outline: 0; border-radius: 4px; background: var(--vscode-input-background); }
-    .composer-wrap { width: 100%; min-width: 0; padding: 0 10px 10px; overflow: hidden; background: linear-gradient(transparent, var(--vscode-sideBar-background) 18px); }
+    .composer-wrap { width: 100%; min-width: 0; padding: 0 10px 10px; overflow: visible; background: linear-gradient(transparent, var(--vscode-sideBar-background) 18px); }
     .queue-dock { width: 100%; min-width: 0; max-width: 760px; margin: 0 auto 6px; padding: 7px 8px; border: 1px solid var(--vscode-widget-border); border-radius: 9px; background: var(--vscode-editor-background); }
     .queue-head { min-width: 0; display: flex; align-items: center; gap: 6px; margin-bottom: 4px; color: var(--vscode-descriptionForeground); font-size: 11px; }
     .queue-title { min-width: 0; flex: 1; font-weight: 600; }
@@ -236,9 +253,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .plan-chip-close:hover { background: var(--vscode-toolbar-hoverBackground); }
     textarea { width: 100%; min-height: 72px; max-height: 220px; resize: none; display: block; padding: 11px 12px 4px; border: 0; outline: 0; background: transparent; color: var(--vscode-input-foreground); }
     textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
-    .composer-row { width: 100%; min-width: 0; min-height: 39px; padding: 4px 6px 6px; display: grid; grid-template-columns: 28px 28px minmax(28px, .5fr) minmax(0, 1.2fr) minmax(46px, .55fr) auto; align-items: center; gap: 5px; }
+    .composer-row { position: relative; width: 100%; min-width: 0; min-height: 39px; padding: 4px 6px 6px; display: grid; grid-template-columns: 28px 28px minmax(28px, .5fr) minmax(0, 1.2fr) minmax(46px, .55fr) auto; align-items: center; gap: 5px; }
     .run-actions { display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
-    .usage-control { position: relative; flex: 0 0 auto; }
+    .usage-control { flex: 0 0 auto; }
     .usage-trigger { color: var(--vscode-descriptionForeground); }
     .usage-trigger:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
     .usage-track, .usage-fill { fill: none; stroke-width: 2; }
@@ -246,21 +263,25 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .usage-fill { stroke: var(--vscode-descriptionForeground); stroke-linecap: round; }
     .usage-trigger.warning .usage-fill { stroke: var(--vscode-editorWarning-foreground); }
     .usage-trigger.danger .usage-fill { stroke: var(--vscode-errorForeground); }
-    .usage-panel { position: absolute; z-index: 30; right: -36px; bottom: calc(100% + 8px); width: min(264px, calc(100vw - 34px)); padding: 12px; border: 1px solid var(--vscode-widget-border); border-radius: 10px; color: var(--vscode-descriptionForeground); background: var(--vscode-menu-background); box-shadow: 0 7px 22px var(--vscode-widget-shadow); font-size: 11px; line-height: 18px; }
-    .usage-header { display: flex; align-items: baseline; gap: 5px; }
-    .usage-percent, .usage-figures { color: var(--vscode-foreground); font-weight: 600; }
-    .usage-figures { margin-left: auto; font-variant-numeric: tabular-nums; }
+    .usage-panel { position: absolute; z-index: 30; right: 6px; bottom: calc(100% + 8px); width: min(264px, calc(100% - 12px)); padding: 12px; overflow-y: auto; border: 1px solid var(--vscode-widget-border); border-radius: 10px; color: var(--vscode-descriptionForeground); background: var(--vscode-menu-background); box-shadow: 0 7px 22px var(--vscode-widget-shadow); font-size: 11px; line-height: 18px; }
+    .usage-panel:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+    .usage-header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 5px; }
+    .usage-percent { color: var(--vscode-foreground); font-weight: 600; }
+    .usage-breakdown-title { margin-top: 8px; }
     .usage-bar { height: 4px; margin: 10px 0 8px; display: flex; gap: 1px; overflow: hidden; border-radius: 999px; background: var(--vscode-toolbar-hoverBackground); }
-    .usage-segment { min-width: 2px; height: 100%; border-radius: 1px; }
-    .usage-system { background: var(--vscode-descriptionForeground); }
-    .usage-tools { background: #a78bfa; }
+    .usage-segment { height: 100%; border-radius: 1px; }
     .usage-messages { background: #4d6bfe; }
     .usage-rows { margin: 0; }
-    .usage-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 2px 0; }
-    .usage-row dt, .usage-row dd { margin: 0; }
+    .usage-row { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0 10px; padding: 2px 0; }
+    .usage-row dt, .usage-row dd { min-width: 0; max-width: 100%; margin: 0; overflow-wrap: anywhere; }
     .usage-row dd { color: var(--vscode-foreground); font-variant-numeric: tabular-nums; }
-    .usage-swatch { width: 7px; height: 7px; margin-right: 6px; display: inline-block; border-radius: 2px; }
-    .usage-stats { min-width: 0; padding: 0 12px 8px; overflow: hidden; color: var(--vscode-descriptionForeground); font-size: 10px; line-height: 14px; text-overflow: ellipsis; white-space: nowrap; }
+    .usage-section { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--vscode-widget-border); }
+    .usage-section-title { margin: 0 0 2px; color: var(--vscode-foreground); font-size: inherit; font-weight: 600; }
+    .usage-caption { margin: 0 0 6px; overflow-wrap: anywhere; }
+    .usage-details > summary { cursor: pointer; padding: 2px 0; }
+    .usage-details > summary:hover { color: var(--vscode-foreground); }
+    .usage-details > summary:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
+    .usage-details[open] > summary { margin-bottom: 6px; }
     .inspect-action { display: block; width: 100%; margin-top: 10px; padding: 7px 0 0; border: 0; border-top: 1px solid var(--vscode-widget-border); color: var(--vscode-textLink-foreground); background: transparent; text-align: left; }
     .inspector { width: min(620px, calc(100vw - 24px)); max-width: none; max-height: calc(100vh - 24px); padding: 0; border: 1px solid var(--vscode-widget-border); border-radius: 10px; color: var(--vscode-foreground); background: var(--vscode-sideBar-background); box-shadow: 0 12px 36px var(--vscode-widget-shadow); }
     .inspector[open] { display: flex; flex-direction: column; }
@@ -314,12 +335,13 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .cancel:hover { background: var(--vscode-toolbar-hoverBackground); }
     .send:disabled, textarea:disabled, button:disabled { opacity: .55; cursor: default; }
     .hidden { display: none !important; }
-    @media (max-width: 330px) { .conversation { padding-inline: 10px; } .composer-row { grid-template-columns: 28px 28px 20px minmax(0, 1fr) minmax(40px, .5fr) auto; } .project span { display: none; } }
+    @media (max-width: 330px) { .conversation { padding-inline: 10px; } .composer-row { grid-template-columns: 28px 28px 20px minmax(0, 1fr) minmax(40px, .5fr); } .run-actions { grid-column: 1 / -1; } .project span { display: none; } }
   </style>
 </head>
 <body>
   <div id="app">
-    <header class="toolbar">
+    <header>
+    <div class="toolbar">
       <button id="githubStar" class="icon-button github-star" title="Star dsh-vscode on GitHub" aria-label="Star dsh-vscode on GitHub"><svg viewBox="0 0 24 24"><path d="m12 3 2.8 5.7 6.3.9-4.6 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2-4.6-4.4 6.3-.9z"/></svg></button>
       <div id="sessionControl" class="session-control">
         <button id="sessionTrigger" class="session-trigger" aria-label="Project conversations" aria-haspopup="dialog" aria-expanded="false"><span id="sessionTriggerTitle" class="session-trigger-title">New conversation</span><span id="sessionAttentionCount" class="session-attention-count hidden"></span><svg viewBox="0 0 24 24"><path d="m7 9.5 5 5 5-5"/></svg></button>
@@ -333,6 +355,13 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       </div>
       <button id="newSession" class="icon-button" title="New conversation" aria-label="New conversation"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
       <button id="navigationTrigger" class="icon-button" title="Find in conversation (Cmd/Ctrl+F)" aria-label="Find in conversation" aria-haspopup="dialog" aria-expanded="false"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg></button>
+    </div>
+    <div class="toolbar-actions" role="group" aria-label="DeepSeek actions">
+      <button id="openInEditor" class="icon-button" type="button" title="Open in Editor" aria-label="Open in Editor"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M13 4v16M7 9h2M7 13h2"/></svg></button>
+      <button id="restart" class="icon-button" type="button" title="Restart Runtime" aria-label="Restart Runtime"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M20 12a8 8 0 1 0-2.3 5.7"/></svg></button>
+      <button id="managePlugins" class="icon-button" type="button" title="Manage Plugins" aria-label="Manage Plugins"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3v5M16 3v5M5 8h14v3a7 7 0 0 1-7 7 7 7 0 0 1-7-7zM12 18v3"/></svg></button>
+      <button id="configureApiKey" class="icon-button" type="button" title="Configure API Key" aria-label="Configure API Key"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="m11 12 8-8 2 2-2 2 2 2-3 3-2-2-2 2"/></svg></button>
+    </div>
     </header>
     <div class="conversation-pane">
       <main id="scroll" class="scroll" tabindex="0" aria-label="Conversation"><div id="conversation" class="conversation"><div id="conversationStatus" class="conversation-slot"></div><div id="conversationHistory" class="conversation-slot"></div><div id="messages" class="messages"></div><div id="conversationTail" class="conversation-slot"></div></div></main>
@@ -357,13 +386,12 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
           <div class="run-actions">
             <div id="usageControl" class="usage-control hidden">
               <button id="usageTrigger" class="icon-button usage-trigger" title="Context usage" aria-label="Context usage" aria-haspopup="dialog" aria-expanded="false"><svg viewBox="0 0 14 14"><circle class="usage-track" cx="7" cy="7" r="5.5"/><circle id="usageFill" class="usage-fill" cx="7" cy="7" r="5.5" transform="rotate(-90 7 7)"/></svg></button>
-              <div id="usagePanel" class="usage-panel hidden" role="dialog" aria-label="Context usage details"></div>
+              <div id="usagePanel" class="usage-panel hidden" role="dialog" aria-label="Context and session usage" tabindex="0"></div>
             </div>
             <button id="cancel" class="icon-button cancel hidden" title="Stop" aria-label="Stop"><svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1"/></svg></button>
             <button id="send" class="icon-button send" title="Send (Enter)" aria-label="Send"><svg viewBox="0 0 24 24"><path d="M12 19V5M6.5 10.5 12 5l5.5 5.5"/></svg></button>
           </div>
         </div>
-        <div id="usageStats" class="usage-stats hidden"></div>
       </div>
     </footer>
   </div>
@@ -431,7 +459,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       models: document.getElementById('models'), efforts: document.getElementById('efforts'),
       policyTrigger: document.getElementById('policyTrigger'), policyMenu: document.getElementById('policyMenu'),
       send: document.getElementById('send'), cancel: document.getElementById('cancel'),
-      usageControl: document.getElementById('usageControl'), usageTrigger: document.getElementById('usageTrigger'), usageFill: document.getElementById('usageFill'), usagePanel: document.getElementById('usagePanel'), usageStats: document.getElementById('usageStats'),
+      usageControl: document.getElementById('usageControl'), usageTrigger: document.getElementById('usageTrigger'), usageFill: document.getElementById('usageFill'), usagePanel: document.getElementById('usagePanel'),
       inspector: document.getElementById('contextInspector'), inspectorRefresh: document.getElementById('inspectorRefresh'), inspectorClose: document.getElementById('inspectorClose'), inspectorStatus: document.getElementById('inspectorStatus'), inspectorWarnings: document.getElementById('inspectorWarnings'), inspectorFilters: document.getElementById('inspectorFilters'), inspectorSearch: document.getElementById('inspectorSearch'), inspectorSort: document.getElementById('inspectorSort'), inspectorGroups: document.getElementById('inspectorGroups'),
       attach: document.getElementById('attach'), attachments: document.getElementById('attachments'),
       queueDock: document.getElementById('queueDock'),
@@ -486,18 +514,26 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     const pendingAttachmentRequests = new Map();
     let attachmentRequestId = 0;
     const renderedMessages = new Map();
-    const expandedToolIds = new Set();
     const initializeToolContent = new WeakMap();
+    let renderedToolGroups = [];
+    const renderedTurnActivities = new Map();
+    let toolGroupId = 0;
     const loadingToolRequests = new Map();
     const toolOutputErrors = new Map();
     const toolOutputPages = new Map();
     const deferredOutputViews = new Map();
     const pendingMessageAppends = new Map();
+    const pendingReasoningAppends = new Map();
     let toolOutputRequestId = 0;
     const toolOutputChunkSize = 20000;
 
     const conversationScroller = dshConversationScroll.createConversationScroller(elements.scroll, elements.conversation, document.getElementById('jumpLatest'));
-    window.addEventListener('pagehide', () => conversationScroller.dispose(), { once: true });
+    const reasoningScrollers = new Map();
+    window.addEventListener('pagehide', () => {
+      conversationScroller.dispose();
+      for (const scroller of reasoningScrollers.values()) scroller.dispose();
+      reasoningScrollers.clear();
+    }, { once: true });
 
     function node(tag, className, text) {
       const value = document.createElement(tag);
@@ -520,7 +556,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       sessionMenuOpen = false; sessionActionId = undefined;
       elements.sessionSearch.value = '';
       elements.sessionMenu.classList.add('hidden'); elements.sessionTrigger.setAttribute('aria-expanded', 'false');
-      if (focusTrigger) elements.sessionTrigger.focus();
+      if (focusTrigger) elements.sessionTrigger.focus({ preventScroll: true });
     }
     function renderSessionCenter(current) {
       const sessions = array(current.sessions);
@@ -862,12 +898,12 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       };
       deferredOutputViews.set(message.id, controller); controller.renderControls();
     }
-    function renderTool(message) {
+    function renderTool(message, toolOpen) {
       const callView = record(message.callView);
       const resultView = record(message.resultView);
       const item = document.createElement('details');
       item.className = 'tool' + (message.failed ? ' failed' : '');
-      item.open = message.streaming === true || message.failed === true || expandedToolIds.has(message.id);
+      item.open = toolOpen;
       const summary = document.createElement('summary');
       summary.append(node('span', 'tool-icon', message.streaming ? '●' : (message.failed ? '!' : '✓')));
       summary.append(node('span', 'tool-title', toolTitle(message, callView, resultView)));
@@ -885,8 +921,8 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       initializeToolContent.set(item, initializeContent);
       if (item.open) initializeContent();
       item.addEventListener('toggle', () => {
-        if (item.open) { expandedToolIds.add(message.id); initializeContent(); }
-        else expandedToolIds.delete(message.id);
+        if (!item.isConnected || renderedMessages.get(message.id)?.node !== item) return;
+        if (item.open) initializeContent();
       });
       return item;
     }
@@ -934,8 +970,68 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       const body = view && view.plainText === true ? node('div', 'streaming-plain', page.text) : renderMarkdown(page.text);
       body.classList.add('assistant-page'); appendImages(body, page.images); return body;
     }
-    function renderMessage(message) {
-      if (message.role === 'tool') return { message, node: renderTool(message) };
+    function pruneReasoningScrollers() {
+      for (const [viewport, scroller] of reasoningScrollers) {
+        if (!viewport.isConnected) { scroller.dispose(); reasoningScrollers.delete(viewport); }
+      }
+    }
+    function createReasoningStream(viewport, text, omitted) {
+      let value = '', active = false, paintedValue, paintedActive, pendingDelta;
+      const paint = () => {
+        // Keep the reader's snapshot while paused, including when the live tail
+        // is truncated or advances to a different reasoning step. The latest
+        // state is painted immediately when the reader returns to the bottom.
+        if (active && !scroller.following) return;
+        if (active && paintedActive && typeof pendingDelta === 'string' && paintedValue !== undefined && value.length === paintedValue.length + pendingDelta.length) {
+          text.appendData(pendingDelta);
+          if (text.length > 20000) text.deleteData(0, text.length - 20000);
+        } else if (paintedValue !== value || paintedActive !== active) {
+          text.data = active ? value.slice(-20000) : value;
+        }
+        omitted.hidden = !active || value.length <= 20000;
+        paintedValue = value; paintedActive = active; pendingDelta = undefined;
+        scroller.changed();
+      };
+      let scroller = dshConversationScroll.createConversationScroller(viewport, viewport, undefined, paint);
+      reasoningScrollers.set(viewport, scroller);
+      return {
+        update(nextValue, nextActive, delta) {
+          if (!reasoningScrollers.has(viewport)) {
+            const following = scroller.following;
+            scroller = dshConversationScroll.createConversationScroller(viewport, viewport, undefined, paint);
+            if (!following) scroller.pause();
+            reasoningScrollers.set(viewport, scroller);
+          }
+          const wasActive = active;
+          pendingDelta = paintedValue === value ? delta : undefined;
+          value = nextValue; active = nextActive;
+          if (active && !wasActive) scroller.resume();
+          else if (!active && (wasActive || paintedValue === undefined)) scroller.pause();
+          paint();
+        },
+      };
+    }
+    function updateReasoning(view, reasoning, delta) {
+      const active = reasoning.active === true;
+      const text = string(reasoning.text);
+      if (view.active !== active) view.details.open = active;
+      const duration = Number.isFinite(reasoning.durationMs) ? 'Thought for ' + (Math.max(0, reasoning.durationMs) / 1000).toFixed(1).replace(/[.]0$/, '') + 's' : 'Thinking time unknown';
+      view.summary.textContent = active ? 'Thinking' : duration + ' · ' + (reasoning.estimated ? 'about ' : '') + String(reasoning.tokens || 0) + ' tokens';
+      view.stream.update(text, active, delta);
+      view.active = active;
+    }
+    function createReasoning(reasoning) {
+      const details = document.createElement('details'); details.className = 'reasoning';
+      const summary = document.createElement('summary');
+      summary.addEventListener('click', () => { if (!details.open) conversationScroller.pause(); });
+      const viewport = node('div', 'reasoning-viewport'); viewport.tabIndex = 0;
+      const omitted = node('div', 'reasoning-omitted', 'Earlier reasoning omitted from live view');
+      const text = document.createTextNode(''); viewport.append(omitted, text); details.append(summary, viewport);
+      const view = { details, summary, viewport, omitted, text, active: undefined, stream: createReasoningStream(viewport, text, omitted) };
+      updateReasoning(view, reasoning); return view;
+    }
+    function renderMessage(message, toolOpen = false, reasoningView, suppressReasoning = false) {
+      if (message.role === 'tool') return { message, node: renderTool(message, toolOpen) };
       if (message.role === 'command') return { message, node: renderCommand(message) };
       if (message.role === 'notice') return { message, node: node('div', 'status' + (message.failed ? ' error' : ''), message.text) };
       const item = node('article', 'message ' + message.role);
@@ -947,48 +1043,199 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         ? message.deferredBody === true ? node('div', 'markdown') : (markdown ? markdown.root : renderMarkdown(message.text))
         : node('div', '', message.text);
       body.classList.add('message-body');
-      if (message.streaming) body.classList.add('streaming');
+      if (message.streaming && message.text) body.classList.add('streaming');
       if (message.deferredBody === true) attachDeferredOutput(message, body, renderAssistantPage, false, 'Show full response' + (message.bodyLength ? ' · ' + String(message.bodyLength) + ' characters' : ''));
       else appendImages(body, message.images);
-      item.append(head, body); return { message, node: item, ...(markdown ? { markdown } : {}) };
+      item.append(head);
+      if (!suppressReasoning && message.role === 'assistant' && message.reasoning) {
+        reasoningView = reasoningView || createReasoning(message.reasoning);
+        item.append(reasoningView.details);
+      }
+      body.hidden = message.role === 'assistant' && !message.text && message.deferredBody !== true && !(message.images && message.images.length);
+      item.append(body); return { message, node: item, ...(markdown ? { markdown } : {}), ...(reasoningView && message.reasoning && !suppressReasoning ? { reasoningView } : {}) };
     }
-    function messageNode(message) {
+    function messageNode(message, suppressReasoning = false) {
       const rendered = renderedMessages.get(message.id);
       if (rendered && rendered.message === message) return rendered.node;
       if (rendered && rendered.message.deferredBodyRevision !== message.deferredBodyRevision) resetDeferredOutput(message.id);
+      let reasoningView = rendered && rendered.reasoningView;
+      if (!suppressReasoning && message.role === 'assistant' && message.reasoning && reasoningView) updateReasoning(reasoningView, message.reasoning, pendingReasoningAppends.get(message.id));
+      if (!suppressReasoning) pendingReasoningAppends.delete(message.id);
       const appended = pendingMessageAppends.get(message.id);
-      if (rendered && rendered.markdown && appended !== undefined && message.role === 'assistant' && message.images === rendered.message.images) {
+      if (rendered && rendered.markdown && typeof appended === 'string' && message.role === 'assistant' && message.images === rendered.message.images) {
         pendingMessageAppends.delete(message.id); appendMarkdownStream(rendered.markdown, appended, message.streaming === true);
         rendered.message = message;
-        rendered.markdown.root.classList.toggle('streaming', message.streaming === true);
+        rendered.markdown.root.classList.toggle('streaming', message.streaming === true && Boolean(message.text));
+        rendered.markdown.root.hidden = !message.text && message.deferredBody !== true && !(message.images && message.images.length);
+        if (!suppressReasoning && message.reasoning && !reasoningView) { reasoningView = createReasoning(message.reasoning); rendered.node.insertBefore(reasoningView.details, rendered.markdown.root); rendered.reasoningView = reasoningView; }
+        else if ((suppressReasoning || !message.reasoning) && reasoningView) { reasoningView.details.remove(); delete rendered.reasoningView; }
         return rendered.node;
       }
       if (rendered) deferredOutputViews.delete(message.id);
       pendingMessageAppends.delete(message.id);
-      const next = renderMessage(message);
+      const next = renderMessage(message, rendered && rendered.message.role === 'tool' && rendered.node.open, reasoningView, suppressReasoning);
       // reconcileMessages owns node placement. Replacing a connected node here
       // invalidates its cursor before insertBefore can finish reconciling the list.
       renderedMessages.set(message.id, next);
       return next.node;
     }
-    function reconcileMessages(messages, current) {
-      if (!messages.length) {
-        renderedMessages.clear(); elements.messages.replaceChildren(renderEmpty(current)); return;
+    function createToolGroup() {
+      const item = document.createElement('details'); item.className = 'tool-group';
+      const summary = document.createElement('summary');
+      summary.dataset.scrollId = 'tool-group-' + ++toolGroupId;
+      summary.addEventListener('click', () => { if (!item.open) conversationScroller.pause(); });
+      const items = node('div', 'tool-group-items'); item.append(summary, items);
+      return { node: item, summary, items, ids: new Set() };
+    }
+    function reconcileToolGroup(group, messages) {
+      const latest = messages[messages.length - 1];
+      const active = messages.some(message => message.streaming === true);
+      const title = active ? string(record(latest.callView)?.title) || toolTitle(latest, record(latest.callView), record(latest.resultView)) : 'Called ' + messages.length + (messages.length === 1 ? ' tool' : ' tools');
+      const failed = messages.some(message => message.failed === true);
+      const icon = node('span', 'tool-icon', active ? '●' : (failed ? '!' : '✓'));
+      icon.setAttribute('aria-label', active ? 'Tools running' : (failed ? 'One or more tools failed' : 'Tools completed'));
+      group.summary.replaceChildren(icon, node('span', 'tool-title', title));
+      let cursor = group.items.firstChild;
+      for (const message of messages) {
+        const desired = messageNode(message); desired.dataset.scrollId = message.id;
+        if (desired === cursor) cursor = cursor.nextSibling;
+        else group.items.insertBefore(desired, cursor);
       }
+      while (cursor) { const next = cursor.nextSibling; cursor.remove(); cursor = next; }
+      group.ids = new Set(messages.map(message => message.id));
+    }
+    function reconcileActivityLog(group) {
+      if (!group.details.open) return;
+      const ids = new Set(); let cursor = group.log.firstChild;
+      for (const message of group.messages) {
+        let desired;
+        if (message.role === 'assistant' && message.reasoning) {
+          ids.add(message.id);
+          const reasoning = group.settled && message.reasoning.active ? { ...message.reasoning, active: false } : message.reasoning;
+          let view = group.reasoningViews.get(message.id);
+          if (!view) { view = createReasoning(reasoning); group.reasoningViews.set(message.id, view); }
+          else updateReasoning(view, reasoning, pendingReasoningAppends.get(message.id));
+          desired = view.details; desired.dataset.scrollId = 'turn-reasoning-' + message.id;
+        } else if (message.role === 'tool') {
+          desired = messageNode(message); desired.dataset.scrollId = message.id;
+        }
+        if (!desired) continue;
+        if (desired === cursor) cursor = cursor.nextSibling;
+        else group.log.insertBefore(desired, cursor);
+      }
+      while (cursor) { const next = cursor.nextSibling; cursor.remove(); cursor = next; }
+      for (const id of group.reasoningViews.keys()) if (!ids.has(id)) group.reasoningViews.delete(id);
+    }
+    function createTurnActivity(turn) {
+      const root = node('div', 'turn-activity');
+      const details = document.createElement('details'); const summary = document.createElement('summary');
+      // Anchor the visible header, not a wrapper spanning every record in the turn.
+      summary.dataset.scrollId = 'turn-activity-' + turn;
+      const log = node('div', 'turn-activity-log'); details.append(summary, log);
+      const preview = node('div', 'turn-activity-preview reasoning-viewport'); preview.tabIndex = 0;
+      preview.dataset.scrollId = 'turn-preview-' + turn;
+      const omitted = node('div', 'reasoning-omitted', 'Earlier reasoning omitted from live view');
+      const text = document.createTextNode(''); preview.append(omitted, text); root.append(details, preview);
+      const group = { root, details, summary, log, preview, omitted, text, stream: createReasoningStream(preview, text, omitted), messages: [], reasoningViews: new Map(), settled: false, seenRunning: false, sourceId: undefined };
+      summary.addEventListener('click', () => { if (!details.open) conversationScroller.pause(); });
+      details.addEventListener('toggle', () => {
+        preview.hidden = group.settled || details.open || !group.sourceId;
+        if (details.open && root.isConnected) { reconcileActivityLog(group); pruneReasoningScrollers(); }
+      });
+      return group;
+    }
+    function reconcileTurnActivity(group, messages, current, newerTurn) {
+      group.messages = messages;
+      if (current.running === true) group.seenRunning = true;
+      const ended = messages.some(message => message.turnEnded === true);
+      const live = messages.some(message => message.streaming === true || (message.reasoning && message.reasoning.active === true));
+      const settled = group.settled || ended || newerTurn || (current.running !== true && (group.seenRunning || !live));
+      if (!group.settled && settled) group.details.open = false;
+      group.settled = settled;
+      const reasoning = messages.filter(message => message.role === 'assistant' && message.reasoning);
+      const tools = messages.filter(message => message.role === 'tool');
+      const unknown = reasoning.some(message => !Number.isFinite(message.reasoning.durationMs));
+      const duration = reasoning.reduce((total, message) => total + Math.max(0, Number(message.reasoning.durationMs) || 0), 0);
+      const tokens = reasoning.reduce((total, message) => total + (Number(message.reasoning.tokens) || 0), 0);
+      const estimated = reasoning.some(message => message.reasoning.estimated === true);
+      const partial = current.hasMoreHistory === true && !messages.some(message => message.turnStarted === true);
+      const toolCount = new Set(tools.map(message => message.id)).size;
+      const title = (unknown ? 'Thinking time unknown' : 'Thought for ' + (duration / 1000).toFixed(1).replace(/[.]0$/, '') + 's') + ' · ' + (estimated ? 'about ' : '') + tokens + ' tokens · ' + toolCount + (toolCount === 1 ? ' tool' : ' tools') + (partial ? ' (loaded portion only)' : '');
+      const failed = tools.some(message => message.failed === true);
+      const icon = node('span', 'tool-icon', failed ? '!' : (!settled ? '●' : '✓'));
+      icon.setAttribute('aria-label', failed ? 'One or more tools failed' : (!settled ? 'Turn running' : 'Turn completed'));
+      group.summary.replaceChildren(icon, node('span', 'tool-title', title));
+      const latest = reasoning[reasoning.length - 1];
+      if (latest) {
+        const value = string(latest.reasoning.text); const delta = pendingReasoningAppends.get(latest.id);
+        group.stream.update(value, !settled, group.sourceId === latest.id ? delta : undefined);
+        group.sourceId = latest.id;
+      } else { group.sourceId = undefined; group.stream.update('', false); }
+      group.preview.hidden = settled || group.details.open || !latest;
+      reconcileActivityLog(group);
+    }
+    function reconcileMessages(messages, current) {
       const ids = new Set(messages.map(message => message.id));
       for (const [id, rendered] of renderedMessages) {
         if (!ids.has(id)) {
-          rendered.node.remove(); renderedMessages.delete(id); expandedToolIds.delete(id); resetDeferredOutput(id); pendingMessageAppends.delete(id);
+          rendered.node.remove(); renderedMessages.delete(id); resetDeferredOutput(id); pendingMessageAppends.delete(id); pendingReasoningAppends.delete(id);
         }
       }
+      if (!messages.length) {
+        renderedToolGroups = []; renderedTurnActivities.clear(); elements.messages.replaceChildren(renderEmpty(current)); return;
+      }
+      const turns = new Map(); let newestTurn = -Infinity;
+      for (let index = 0; index < messages.length; index++) {
+        const message = messages[index];
+        if (!Number.isFinite(message.turn) || (message.role !== 'assistant' && message.role !== 'tool')) continue;
+        let turn = turns.get(message.turn);
+        if (!turn) { turn = { messages: [], first: undefined }; turns.set(message.turn, turn); }
+        turn.messages.push(message); newestTurn = Math.max(newestTurn, message.turn);
+        if (turn.first === undefined && (message.role === 'tool' || message.reasoning)) turn.first = index;
+      }
+      for (const [turn, group] of renderedTurnActivities) if (!turns.has(turn) || turns.get(turn).first === undefined) { group.root.remove(); renderedTurnActivities.delete(turn); }
+      const availableGroups = new Set(renderedToolGroups); const groupsByMember = new Map(); const nextGroups = [];
+      for (const group of renderedToolGroups) for (const id of group.ids) groupsByMember.set(id, group);
       let cursor = elements.messages.firstChild;
-      for (const message of messages) {
-        const desired = messageNode(message);
-        desired.dataset.scrollId = message.id;
+      const place = desired => {
         if (desired === cursor) cursor = cursor.nextSibling;
         else elements.messages.insertBefore(desired, cursor);
+      };
+      for (let index = 0; index < messages.length;) {
+        const message = messages[index]; let desired;
+        const turn = Number.isFinite(message.turn) && (message.role === 'assistant' || message.role === 'tool') ? turns.get(message.turn) : undefined;
+        if (turn) {
+          if (turn.first === index) {
+            let group = renderedTurnActivities.get(message.turn);
+            if (!group) { group = createTurnActivity(message.turn); renderedTurnActivities.set(message.turn, group); }
+            reconcileTurnActivity(group, turn.messages, current, message.turn < newestTurn); place(group.root);
+          }
+          index++;
+          if (message.role === 'assistant' && (message.text || message.deferredBody === true || (message.images && message.images.length))) {
+            desired = messageNode(message, true); desired.dataset.scrollId = message.id; place(desired);
+          }
+          continue;
+        }
+        if (message.role === 'tool') {
+          const run = [];
+          while (index < messages.length && messages[index].role === 'tool' && !Number.isFinite(messages[index].turn)) run.push(messages[index++]);
+          let group; let overlap = 0; const counts = new Map();
+          for (const member of run) {
+            const candidate = groupsByMember.get(member.id);
+            if (!candidate || !availableGroups.has(candidate)) continue;
+            const count = (counts.get(candidate) || 0) + 1; counts.set(candidate, count);
+            if (count > overlap) { group = candidate; overlap = count; }
+          }
+          if (!group) group = createToolGroup();
+          availableGroups.delete(group); nextGroups.push(group); reconcileToolGroup(group, run); desired = group.node;
+        } else {
+          index++; desired = messageNode(message); desired.dataset.scrollId = message.id;
+        }
+        place(desired);
       }
       while (cursor) { const next = cursor.nextSibling; cursor.remove(); cursor = next; }
+      for (const turn of turns.values()) for (const message of turn.messages) { pendingReasoningAppends.delete(message.id); if (message.role === 'assistant' && !message.text && message.deferredBody !== true && !(message.images && message.images.length)) pendingMessageAppends.delete(message.id); }
+      renderedToolGroups = nextGroups;
     }
     function renderStatus(current) {
       const setup = current.setup;
@@ -1185,105 +1432,116 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (value < 60000) return (value / 1000).toFixed(value < 10000 ? 1 : 0) + 's';
       return (value / 60000).toFixed(1) + 'm';
     }
-    function usageStatsLine(usage) {
-      const groups = [];
+    function usageStats(usage) {
+      const rows = []; const details = [];
       const stats = usage && usage.sessionStats;
-      if (stats && stats.steps > 0) {
-        groups.push(stats.turns + (stats.turns === 1 ? ' turn' : ' turns') + ' · ' + stats.steps + (stats.steps === 1 ? ' step' : ' steps'));
-        const durations = [];
-        if (stats.llmMs > 0) durations.push('LLM ' + formatDuration(stats.llmMs));
-        if (stats.toolMs > 0) durations.push('tools ' + formatDuration(stats.toolMs));
-        if (durations.length) groups.push(durations.join(' · '));
-        const speeds = [];
-        if (stats.ttftSteps > 0) speeds.push('TTFT avg ' + formatDuration(stats.ttftMs / stats.ttftSteps));
-        if (stats.decodeMs > 0) speeds.push((stats.decodeTokens / (stats.decodeMs / 1000)).toFixed(1) + ' tok/s');
-        if (speeds.length) groups.push(speeds.join(' · '));
-      }
       const tokens = usage && usage.tokenUsage;
+      const valid = value => Number.isFinite(value) && value >= 0;
       if (tokens) {
-        const input = tokens.uncachedInputTokens + tokens.cacheReadTokens + tokens.cacheWriteTokens;
-        if (input > 0 || tokens.outputTokens > 0) {
-          if (input > 0) groups.push('cache ' + Math.round(tokens.cacheReadTokens / input * 100) + '%');
-          groups.push('in ' + formatTokens(input) + ' · out ' + formatTokens(tokens.outputTokens));
-        }
+        const inputs = [tokens.uncachedInputTokens, tokens.cacheReadTokens, tokens.cacheWriteTokens];
+        const input = inputs.every(valid) ? inputs.reduce((sum, value) => sum + value, 0) : undefined;
+        rows.push(['Input tokens', valid(input) ? formatTokens(input) : '—']);
+        rows.push(['Output tokens', valid(tokens.outputTokens) ? formatTokens(tokens.outputTokens) : '—']);
+        rows.push(['Cache hit rate', valid(input) && input > 0 ? Math.round(tokens.cacheReadTokens / input * 100) + '%' : '—']);
       }
-      return groups.join('  |  ');
+      if (stats) {
+        const tps = valid(stats.decodeMs) && stats.decodeMs > 0 && valid(stats.decodeTokens) ? stats.decodeTokens / (stats.decodeMs / 1000) : undefined;
+        const ttft = valid(stats.ttftSteps) && stats.ttftSteps > 0 && valid(stats.ttftMs) ? stats.ttftMs / stats.ttftSteps : undefined;
+        details.push(['Decode speed (TPS)', valid(tps) ? tps.toFixed(1) + ' tok/s' : '—']);
+        details.push(['Time to first token (avg)', valid(ttft) ? formatDuration(ttft) : '—']);
+      }
+      return { rows, details };
     }
-    function usageStatsSummary(usage) {
-      const groups = [];
-      const stats = usage && usage.sessionStats;
-      if (stats && stats.steps > 0) {
-        groups.push(stats.turns + (stats.turns === 1 ? ' turn' : ' turns'));
-        groups.push(stats.steps + (stats.steps === 1 ? ' step' : ' steps'));
+    function updateUsageRows(container, rows) {
+      rows.forEach(([label, value], index) => {
+        let row = container.children[index];
+        if (!row) { row = node('div', 'usage-row'); row.append(node('dt', ''), node('dd', '')); container.append(row); }
+        if (row.firstElementChild.textContent !== label) row.firstElementChild.textContent = label;
+        if (row.lastElementChild.textContent !== value) row.lastElementChild.textContent = value;
+      });
+      while (container.children.length > rows.length) container.lastElementChild.remove();
+    }
+    function createUsagePanel() {
+      const header = node('div', 'usage-header'); header.append(node('span', '', 'Context'), node('span', 'usage-percent'));
+      const context = node('div', 'usage-context');
+      const bar = node('div', 'usage-bar'); bar.append(node('span', 'usage-segment usage-messages'));
+      context.append(node('dl', 'usage-rows'), bar);
+      const session = node('section', 'usage-section usage-session');
+      session.append(node('h3', 'usage-section-title', 'Session usage'), node('p', 'usage-caption', 'Cumulative across requests, not context size.'), node('dl', 'usage-rows'));
+      const details = node('details', 'usage-section usage-details');
+      const summary = node('summary', '', 'Detailed statistics');
+      const performance = node('dl', 'usage-rows usage-performance'); performance.title = 'Aggregate session decode speed and average time to first token.';
+      const composition = node('section', 'usage-composition');
+      composition.append(node('div', 'usage-breakdown-title', 'Content composition (independent estimate)'), node('dl', 'usage-rows'));
+      details.append(summary, performance, composition);
+      const inspect = node('button', 'inspect-action', 'Inspect context…');
+      inspect.type = 'button'; inspect.addEventListener('click', openContextInspector);
+      elements.usagePanel.append(header, context, session, details, inspect);
+    }
+    function updateUsagePanelHeight() {
+      if (!usageOpen) return;
+      const app = document.getElementById('app');
+      const row = document.querySelector('.composer-row');
+      const appRect = app.getBoundingClientRect();
+      const rowRect = row.getBoundingClientRect();
+      const top = Math.max(0, appRect.top);
+      const available = rowRect.top - top - 16;
+      if (available < 64) {
+        elements.usagePanel.style.top = (top + 8 - rowRect.top) + 'px';
+        elements.usagePanel.style.bottom = 'auto';
+        elements.usagePanel.style.maxHeight = Math.max(0, Math.min(innerHeight, appRect.bottom) - top - 16) + 'px';
+      } else {
+        elements.usagePanel.style.top = '';
+        elements.usagePanel.style.bottom = '';
+        elements.usagePanel.style.maxHeight = available + 'px';
       }
-      const tokens = usage && usage.tokenUsage;
-      if (tokens) {
-        const total = tokens.uncachedInputTokens + tokens.cacheReadTokens + tokens.cacheWriteTokens + tokens.outputTokens;
-        if (total > 0) groups.push(formatTokens(total) + ' tokens');
-      }
-      return groups.join(' · ');
     }
     function renderUsage(current) {
       const usage = current.usage || { available: false, percent: 0, usedTokens: 0, contextWindow: 0 };
-      const stats = usageStatsSummary(usage);
-      elements.usageStats.textContent = stats;
-      elements.usageStats.title = usageStatsLine(usage);
-      elements.usageStats.classList.toggle('hidden', stats === '');
+      const stats = usageStats(usage);
       const ready = current.phase === 'ready' && Boolean(current.sessionId);
-      elements.usageControl.classList.toggle('hidden', !ready && usage.available !== true);
-      if (!ready && usage.available !== true) {
+      const visible = ready || usage.available === true || stats.rows.length > 0 || stats.details.length > 0;
+      elements.usageControl.classList.toggle('hidden', !visible);
+      if (!visible) {
         usageOpen = false;
         elements.usagePanel.classList.add('hidden');
         elements.usageTrigger.setAttribute('aria-expanded', 'false');
         return;
       }
-      const percent = Math.max(0, Math.min(100, Number(usage.percent) || 0));
+      const percent = usage.available ? Math.max(0, Math.min(100, Number(usage.percent) || 0)) : 0;
       const circumference = 2 * Math.PI * 5.5;
       elements.usageFill.setAttribute('stroke-dasharray', (circumference * percent / 100) + ' ' + circumference);
       elements.usageTrigger.classList.toggle('warning', percent >= 75 && percent < 90);
       elements.usageTrigger.classList.toggle('danger', percent >= 90);
-      elements.usageTrigger.title = usage.available ? 'Context ' + percent + '% used' : 'Inspect context';
+      elements.usageTrigger.title = usage.available ? 'Context ' + percent + '% used' : 'Context and session usage';
       elements.usageTrigger.setAttribute('aria-label', elements.usageTrigger.title);
       elements.usageTrigger.setAttribute('aria-expanded', String(usageOpen));
-      elements.usagePanel.replaceChildren();
       if (usageOpen) {
-        const header = node('div', 'usage-header');
-        header.append(node('span', '', 'Context'));
-        if (usage.available) header.append(node('span', 'usage-percent', percent + '% used'), node('span', 'usage-figures', '~' + formatTokens(usage.usedTokens) + ' / ' + formatTokens(usage.contextWindow)));
-        else header.append(node('span', '', 'Usage not available yet'));
-        const bar = node('div', 'usage-bar');
+        // Keep interactive nodes stable while usage streams in: preserve expansion, focus and scroll.
+        if (!elements.usagePanel.firstElementChild) createUsagePanel();
+        const panel = elements.usagePanel;
+        const details = panel.querySelector('.usage-details');
+        const sessionId = current.sessionId || '';
+        if (panel.dataset.sessionId !== sessionId) {
+          details.open = false; panel.scrollTop = 0; panel.dataset.sessionId = sessionId;
+        }
+        panel.querySelector('.usage-percent').textContent = usage.available ? percent + '% used' : 'Usage not available yet';
+        panel.querySelector('.usage-context').classList.toggle('hidden', !usage.available);
+        updateUsageRows(panel.querySelector('.usage-context .usage-rows'), [['Estimated usage', usage.usedTokens], ['Context limit', usage.contextWindow]]
+          .map(([label, value]) => [label, Number.isFinite(value) && value >= 0 ? value.toLocaleString('en-US') + ' tokens' : '—']));
+        panel.querySelector('.usage-segment').style.width = percent + '%';
+        panel.querySelector('.usage-session').classList.toggle('hidden', stats.rows.length === 0);
+        updateUsageRows(panel.querySelector('.usage-session .usage-rows'), stats.rows);
+        updateUsageRows(panel.querySelector('.usage-performance'), stats.details);
         const breakdown = usage.breakdown;
-        const parts = breakdown ? [
-          { key: 'systemTokens', label: 'System prompt', className: 'usage-system' },
-          { key: 'toolsTokens', label: 'Tools', className: 'usage-tools' },
-          { key: 'messageTokens', label: 'Messages', className: 'usage-messages' },
-        ] : [];
-        const total = parts.reduce((sum, part) => sum + Number(breakdown[part.key] || 0), 0);
-        if (total > 0) {
-          for (const part of parts) {
-            const width = percent * Number(breakdown[part.key] || 0) / total;
-            if (width <= 0) continue;
-            const segment = node('span', 'usage-segment ' + part.className); segment.style.width = width + '%'; bar.append(segment);
-          }
-        } else {
-          const segment = node('span', 'usage-segment usage-messages'); segment.style.width = percent + '%'; bar.append(segment);
-        }
-        elements.usagePanel.append(header);
-        if (usage.available) elements.usagePanel.append(bar);
-        if (breakdown) {
-          const rows = node('dl', 'usage-rows');
-          for (const part of parts) {
-            const row = node('div', 'usage-row');
-            const term = node('dt', ''); term.append(node('span', 'usage-swatch ' + part.className), document.createTextNode(part.label));
-            row.append(term, node('dd', '', '~' + formatTokens(breakdown[part.key]))); rows.append(row);
-          }
-          elements.usagePanel.append(rows);
-        }
-        const inspect = node('button', 'inspect-action', 'Inspect context…');
-        inspect.type = 'button'; inspect.disabled = !ready; inspect.addEventListener('click', openContextInspector);
-        elements.usagePanel.append(inspect);
+        const parts = usage.available && breakdown ? [['System prompt', breakdown.systemTokens], ['Tools', breakdown.toolsTokens], ['Messages', breakdown.messageTokens]] : [];
+        panel.querySelector('.usage-composition').classList.toggle('hidden', parts.length === 0);
+        updateUsageRows(panel.querySelector('.usage-composition .usage-rows'), parts.map(([label, value]) => [label, Number.isFinite(value) && value >= 0 ? '~' + formatTokens(value) : '—']));
+        details.classList.toggle('hidden', stats.details.length === 0 && parts.length === 0);
+        panel.querySelector('.inspect-action').disabled = !ready;
       }
       elements.usagePanel.classList.toggle('hidden', !usageOpen);
+      updateUsagePanelHeight();
     }
     function renderInspectionGroups() {
       elements.inspectorGroups.replaceChildren();
@@ -1732,9 +1990,31 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       // making a completed host request wait for a paint (and falsely time out).
       flushRender(); finishNavigationJump();
     }
+    function revealMessageTarget(messageId) {
+      const message = array(state.messages).find(candidate => candidate.id === messageId);
+      if (!message) return;
+      const activity = Number.isFinite(message.turn) && renderedTurnActivities.get(message.turn);
+      let target = renderedMessages.get(messageId)?.node;
+      if (activity && (message.role === 'tool' || !target || !target.isConnected)) {
+        activity.details.open = true;
+        activity.preview.hidden = true;
+        reconcileActivityLog(activity);
+        target = renderedMessages.get(messageId)?.node;
+        if (!target || !target.isConnected) target = activity.reasoningViews.get(messageId)?.details;
+      }
+      if (!target || !target.isConnected) return;
+      for (let ancestor = target.parentElement; ancestor && ancestor !== elements.messages; ancestor = ancestor.parentElement) {
+        if (ancestor.tagName === 'DETAILS') ancestor.open = true;
+      }
+      if (target.tagName === 'DETAILS') {
+        target.open = true;
+        initializeToolContent.get(target)?.();
+      }
+      return target;
+    }
     function finishNavigationJump() {
       if (!navigationPanel.open || !navigationJump || !navigationJump.ready || !state || state.phase !== 'ready' || state.sessionId !== navigationJump.sessionId) return;
-      const target = renderedMessages.get(navigationJump.match.id)?.node;
+      const target = revealMessageTarget(navigationJump.match.id);
       if (!target || !target.isConnected) return; // The host state may arrive after its acknowledgement.
       const match = navigationJump.match;
       for (const previous of elements.messages.querySelectorAll('.navigation-target')) previous.classList.remove('navigation-target');
@@ -1743,12 +2023,6 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (navigationResult && navigationResult.query) {
         const excerpt = node('div', 'navigation-excerpt'); excerpt.append(node('small', '', 'Search match'), matchSnippet(match));
         target.insertBefore(excerpt, target.tagName === 'DETAILS' ? target.children[1] || null : target.firstChild);
-      }
-      if (target.tagName === 'DETAILS') {
-        expandedToolIds.add(match.id); target.open = true;
-        // Build the first output page before measuring the jump. The native
-        // toggle event is asynchronous and could otherwise clip a short card.
-        initializeToolContent.get(target)?.();
       }
       clearTimeout(navigationTimeout); navigationDidJump = true; navigationJump = undefined; navigationRestore = undefined;
       navigationPanel.close(); target.focus({ preventScroll: true }); conversationScroller.reveal(target);
@@ -1760,9 +2034,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
         elements.prompt.value = sessionDrafts.get(current.sessionId) || ''; resizePrompt();
         draftImages = draftImagesBySession.get(current.sessionId) || []; renderAttachments();
         historyAnchor = undefined; conversationScroller.reset();
-        renderedHistoryKey = ''; renderedTail = {}; expandedToolIds.clear();
+        renderedHistoryKey = ''; renderedTail = {}; renderedToolGroups = []; renderedTurnActivities.clear();
         for (const request of loadingToolRequests.values()) clearTimeout(request.timer);
-        loadingToolRequests.clear(); toolOutputErrors.clear(); toolOutputPages.clear(); deferredOutputViews.clear(); pendingMessageAppends.clear();
+        loadingToolRequests.clear(); toolOutputErrors.clear(); toolOutputPages.clear(); deferredOutputViews.clear(); pendingMessageAppends.clear(); pendingReasoningAppends.clear();
       }
       const statusKey = current.phase + '::' + current.statusText + '::' + current.setup;
       if (statusKey !== renderedStatusKey) {
@@ -1818,6 +2092,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (renderedChrome.usage !== current.usage || renderedChrome.phase !== current.phase || renderedChrome.sessionId !== current.sessionId) renderUsage(current);
       if (renderedChrome.jobs !== current.jobs || renderedChrome.subagentCount !== current.subagentCount || renderedChrome.phase !== current.phase) renderJobs();
       renderConversation(current);
+      pruneReasoningScrollers();
       finishNavigationJump();
       const sessionReady = current.phase === 'ready' && Boolean(current.sessionId);
       const enabled = sessionReady && current.routable !== false;
@@ -1852,12 +2127,19 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (renderFrame !== undefined) return;
       renderFrame = requestAnimationFrame(flushRender);
     }
+    function invalidateMessageAppends(messages) {
+      pendingMessageAppends.clear(); pendingReasoningAppends.clear();
+      for (const message of array(messages)) {
+        pendingMessageAppends.set(message.id, null); pendingReasoningAppends.set(message.id, null);
+      }
+    }
     function applyMessagesPatch(current, patch) {
-      if (Array.isArray(patch && patch.reset)) { pendingMessageAppends.clear(); return patch.reset; }
+      if (Array.isArray(patch && patch.reset)) { invalidateMessageAppends(patch.reset); return patch.reset; }
       const messages = Array.isArray(current) ? [...current] : [];
       const indexes = new Map(messages.map((message, index) => [message.id, index]));
       for (const message of array(patch && patch.upserts)) {
-        pendingMessageAppends.delete(message.id);
+        pendingMessageAppends.set(message.id, null);
+        pendingReasoningAppends.set(message.id, null);
         const index = indexes.get(message.id);
         if (index === undefined) { indexes.set(message.id, messages.length); messages.push(message); }
         else messages[index] = message;
@@ -1865,8 +2147,14 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       for (const append of array(patch && patch.appends)) {
         const index = indexes.get(append.id); const message = index === undefined ? undefined : messages[index];
         if (!message || message.role !== 'assistant') continue;
-        pendingMessageAppends.set(append.id, string(pendingMessageAppends.get(append.id)) + string(append.text));
-        messages[index] = { ...message, text: message.text + string(append.text), streaming: append.streaming === true };
+        if (pendingMessageAppends.get(append.id) !== null) pendingMessageAppends.set(append.id, string(pendingMessageAppends.get(append.id)) + string(append.text));
+        let reasoning = message.reasoning;
+        if (append.reasoning) {
+          const delta = string(append.reasoning.text);
+          if (pendingReasoningAppends.get(append.id) !== null) pendingReasoningAppends.set(append.id, string(pendingReasoningAppends.get(append.id)) + delta);
+          reasoning = { ...append.reasoning, text: string(reasoning && reasoning.text) + delta };
+        }
+        messages[index] = { ...message, text: message.text + string(append.text), streaming: append.streaming === true, ...(reasoning ? { reasoning } : {}) };
       }
       return messages;
     }
@@ -1961,6 +2249,9 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); send(state && state.running && (event.metaKey || event.ctrlKey) ? 'steer' : 'queue'); }
     });
     elements.send.addEventListener('click', () => send('queue')); elements.cancel.addEventListener('click', () => vscode.postMessage({ type: 'cancel' })); elements.attach.addEventListener('click', () => vscode.postMessage({ type: 'attach' }));
+    const usageResizeObserver = new ResizeObserver(updateUsagePanelHeight);
+    usageResizeObserver.observe(document.getElementById('app'));
+    usageResizeObserver.observe(document.querySelector('.composer-wrap'));
     elements.usageTrigger.addEventListener('click', event => {
       event.stopPropagation(); usageOpen = !usageOpen; policyMenuOpen = false; elements.policyMenu.classList.add('hidden'); elements.policyTrigger.setAttribute('aria-expanded', 'false'); if (state) renderUsage(state);
     });
@@ -2026,11 +2317,15 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (!navigationDidJump && !navigationTrigger.disabled) navigationTrigger.focus(); navigationDidJump = false;
     });
     elements.githubStar.addEventListener('click', () => vscode.postMessage({ type: 'open-link', href: 'https://github.com/Lixxx1/dsh-vscode' }));
+    document.getElementById('openInEditor').addEventListener('click', () => vscode.postMessage({ type: 'open-in-editor' }));
+    document.getElementById('restart').addEventListener('click', () => vscode.postMessage({ type: 'restart' }));
+    document.getElementById('managePlugins').addEventListener('click', () => vscode.postMessage({ type: 'manage-plugins' }));
+    document.getElementById('configureApiKey').addEventListener('click', () => vscode.postMessage({ type: 'configure-api-key' }));
     elements.sessionTrigger.addEventListener('click', event => {
       event.stopPropagation();
       if (sessionMenuOpen) { closeSessionMenu(false); return; }
       sessionMenuOpen = true; sessionActionId = undefined; elements.sessionMenu.classList.remove('hidden'); elements.sessionTrigger.setAttribute('aria-expanded', 'true');
-      renderSessionCenter(state || { sessions: [] }); requestAnimationFrame(() => elements.sessionSearch.focus());
+      renderSessionCenter(state || { sessions: [] }); requestAnimationFrame(() => elements.sessionSearch.focus({ preventScroll: true }));
     });
     elements.sessionSearch.addEventListener('input', () => { sessionActionId = undefined; if (state) renderSessionCenter(state); });
     elements.sessionMenu.addEventListener('click', event => event.stopPropagation());
@@ -2066,7 +2361,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (event.data.type === 'conversation-revealed') receiveNavigationReveal(event.data);
       if (event.data.type === 'task-inspection') receiveTasks(event.data);
       if (event.data.type === 'context-inspection') receiveInspection(event.data);
-      if (event.data.type === 'state') { pendingMessageAppends.clear(); scheduleRender(event.data.state); }
+      if (event.data.type === 'state') { invalidateMessageAppends(event.data.state && event.data.state.messages); scheduleRender(event.data.state); }
       if (event.data.type === 'state-update') applyStateUpdate(event.data.update);
       if (event.data.type === 'tool-output' && state && event.data.sessionId === state.sessionId && typeof event.data.messageId === 'string') {
         const request = loadingToolRequests.get(event.data.messageId);

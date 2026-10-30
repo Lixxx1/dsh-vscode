@@ -1,4 +1,4 @@
-import { assistantStreamAppend, type ConversationImage, type ConversationMessage } from './conversation.js'
+import { assistantStreamAppend, reasoningStreamAppend, type ConversationImage, type ConversationMessage, type ConversationReasoning } from './conversation.js'
 
 export const WEBVIEW_INLINE_CHAR_LIMIT = 20_000
 
@@ -12,6 +12,7 @@ export interface ConversationMessageAppend {
   id: string
   text: string
   streaming: boolean
+  reasoning?: ConversationReasoning
 }
 
 function compactToolView(value: unknown): unknown {
@@ -49,9 +50,13 @@ export function messageForWebview(message: ConversationMessage): ConversationMes
     id: message.id,
     role: message.role,
     text: hasLargeAssistantBody ? '' : message.text,
+    ...(message.turn === undefined ? {} : { turn: message.turn }),
+    ...(message.turnStarted === undefined ? {} : { turnStarted: message.turnStarted }),
+    ...(message.turnEnded === undefined ? {} : { turnEnded: message.turnEnded }),
     ...(message.streaming === undefined ? {} : { streaming: message.streaming }),
     ...(message.detail === undefined ? {} : { detail: message.detail }),
     ...(message.failed === undefined ? {} : { failed: message.failed }),
+    ...(message.reasoning === undefined ? {} : { reasoning: message.reasoning }),
     ...(callView === undefined ? {} : { callView }),
     ...(resultView === undefined ? {} : { resultView }),
     deferredBody: true,
@@ -93,6 +98,9 @@ function sameMessage(left: ConversationMessage, right: ConversationMessage): boo
   return left.id === right.id
     && left.role === right.role
     && left.text === right.text
+    && left.turn === right.turn
+    && left.turnStarted === right.turnStarted
+    && left.turnEnded === right.turnEnded
     && left.detail === right.detail
     && left.streaming === right.streaming
     && left.failed === right.failed
@@ -103,7 +111,13 @@ function sameMessage(left: ConversationMessage, right: ConversationMessage): boo
     && left.deferredBody === right.deferredBody
     && left.deferredBodyRevision === right.deferredBodyRevision
     && left.bodyLength === right.bodyLength
+    && sameReasoning(left.reasoning, right.reasoning)
     && sameImages(left.images, right.images)
+}
+
+function sameReasoning(left: ConversationReasoning | undefined, right: ConversationReasoning | undefined): boolean {
+  return left === right || (left !== undefined && right !== undefined && left.text === right.text
+    && left.active === right.active && left.durationMs === right.durationMs && left.tokens === right.tokens && left.estimated === right.estimated)
 }
 
 function appendedAssistantText(left: ConversationMessage, right: ConversationMessage): string | undefined {
@@ -111,6 +125,9 @@ function appendedAssistantText(left: ConversationMessage, right: ConversationMes
     && left.role === 'assistant'
     && right.role === 'assistant'
     && left.streaming === true
+    && left.turn === right.turn
+    && left.turnStarted === right.turnStarted
+    && left.turnEnded === right.turnEnded
     && left.detail === right.detail
     && left.failed === right.failed
     && left.callView === right.callView
@@ -122,7 +139,15 @@ function appendedAssistantText(left: ConversationMessage, right: ConversationMes
   if (!compatible) return undefined
   const projected = assistantStreamAppend(left, right)
   if (projected !== undefined) return projected
-  return right.text.startsWith(left.text) ? right.text.slice(left.text.length) : undefined
+  return right.text === left.text ? '' : right.text.startsWith(left.text) ? right.text.slice(left.text.length) : undefined
+}
+
+function appendedReasoning(left: ConversationMessage, right: ConversationMessage): ConversationReasoning | undefined | null {
+  if (right.reasoning === undefined) return left.reasoning === undefined ? undefined : null
+  const previous = left.reasoning?.text ?? ''
+  const next = right.reasoning.text
+  const delta = reasoningStreamAppend(left, right) ?? (next === previous ? '' : next.startsWith(previous) ? next.slice(previous.length) : undefined)
+  return delta === undefined ? null : { ...right.reasoning, text: delta }
 }
 
 /**
@@ -151,11 +176,13 @@ export function diffConversationMessages(
     }
     if (sameMessage(current, message)) continue
     const appendedText = appendedAssistantText(current, message)
-    if (appendedText !== undefined) {
+    const reasoning = appendedReasoning(current, message)
+    if (appendedText !== undefined && reasoning !== null) {
       appends.push({
         id: message.id,
         text: appendedText,
         streaming: message.streaming === true,
+        ...(reasoning === undefined ? {} : { reasoning }),
       })
     } else {
       upserts.push(message)
