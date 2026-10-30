@@ -40,7 +40,7 @@ describe('DSH 0.1.5 assistant presentation stream', () => {
     expect(h.durable).toEqual([])
     h.stream.frame(end(2), 6)
     expect(h.durable).toEqual([message('Hello world')])
-    expect(h.projector.messages()).toEqual([{ id: 'assistant:1:1', role: 'assistant', text: 'Hello world' }])
+    expect(h.projector.messages()).toEqual([{ id: 'assistant:1:1', role: 'assistant', text: 'Hello world', turn: 1 }])
   })
 
   it('restores a compact live prefix and continues from the exact revision and chunk index', () => {
@@ -77,7 +77,7 @@ describe('DSH 0.1.5 assistant presentation stream', () => {
     expect(h.live).toEqual([])
     h.stream.frame(end(), 6)
     expect(h.durable).toEqual([])
-    expect(h.projector.messages()).toEqual([{ id: 'assistant:1:1', role: 'assistant', text: 'Complete' }])
+    expect(h.projector.messages()).toEqual([{ id: 'assistant:1:1', role: 'assistant', text: 'Complete', turn: 1 }])
   })
 
   it.each(['abandoned', 'failed'])('discards an %s attempt before retrying the same step', outcome => {
@@ -98,7 +98,7 @@ describe('DSH 0.1.5 assistant presentation stream', () => {
     const settled = message('Delivered prefix')
     h.stream.durable({ event: { ...settled.event, data: { ...(settled.event.data as object), interrupted: true } } })
     h.stream.frame(end(), 6)
-    expect(h.projector.messages()).toEqual([{ id: 'assistant:1:1', role: 'assistant', text: 'Delivered prefix' }])
+    expect(h.projector.messages()).toEqual([{ id: 'assistant:1:1', role: 'assistant', text: 'Delivered prefix', turn: 1 }])
   })
 
   it('does not hide unrelated durable messages behind an active attempt', () => {
@@ -138,6 +138,60 @@ describe('DSH 0.1.5 assistant presentation stream', () => {
     expect(h.projector.messages()).toMatchObject([{ text: 'Visible', images: [{ attachmentId: 'img' }] }])
     h.stream.frame(chunk(' text', 4, 'a', 6), 5)
     expect(h.projector.messages()).toMatchObject([{ text: 'Visible text', images: [{ attachmentId: 'img' }] }])
+  })
+
+  it('tracks reconnect and settled multi-segment timing without counting intervening tool time', () => {
+    const h = harness()
+    const records = [
+      { type: 'reasoning-chunks', time0: 10, index: 0, texts: ['Think', ' more'], dt: [10] },
+      { type: 'chunk', time: 30, chunk: { type: 'block-end', index: 0, block: { type: 'reasoning', text: 'Think more' } } },
+      { type: 'chunk', time: 100, chunk: { type: 'usage', usage: { outputTokens: 999 } } },
+      { type: 'reasoning-chunks', time0: 200, index: 1, texts: ['Again'], dt: [] },
+      { type: 'text-chunks', time0: 220, index: 2, texts: ['Answer'], dt: [] },
+    ]
+    h.stream.open({ revision: 7, activeAttempt: { ...start(), nextIndex: 6, stream: records } }, 5)
+    expect(h.live.filter(update => update.kind === 'chunk').map(update => update.time)).toEqual([10, 20, 30, 100, 200, 220])
+    expect(h.projector.messages()[0]?.reasoning).toEqual({ text: 'Think moreAgain', active: false, durationMs: 40, tokens: 4, estimated: true })
+    const entry = message('Answer')
+    entry.event.data = { turn: 1, step: 1, message: { content: [{ type: 'reasoning', text: 'Think more' }, { type: 'reasoning', text: 'Again' }, { type: 'text', text: 'Answer' }] }, stream: records }
+    h.stream.durable(entry)
+    h.stream.frame({ ...end(6), revision: 8 }, 6)
+    expect(h.projector.messages()[0]?.reasoning).toEqual({ text: 'Think more\nAgain', active: false, durationMs: 40, tokens: 4, estimated: true })
+    const replay = new ConversationProjector(); replay.reset([entry])
+    expect(replay.messages()).toEqual(h.projector.messages())
+  })
+
+  it('keeps reasoning active across metadata and discards abandoned reasoning on retry', () => {
+    const h = harness(); h.stream.frame(start(), 5)
+    h.stream.frame({ ...chunk('', 0), chunk: { type: 'reasoning-delta', index: 0, text: 'secret' } }, 5)
+    h.stream.frame({ ...chunk('', 1), chunk: { type: 'usage', usage: { outputTokens: 999 } } }, 5)
+    expect(h.projector.messages()[0]?.reasoning).toMatchObject({ text: 'secret', active: true, tokens: 2, estimated: true })
+    h.stream.frame(end(2, 'abandoned'), 5)
+    expect(h.projector.messages()).toEqual([])
+    h.stream.frame(start('retry', 5), 5)
+    h.stream.frame(chunk('New', 0, 'retry', 6), 5)
+    expect(h.projector.messages()[0]).not.toHaveProperty('reasoning')
+  })
+
+  it('starts and stops reasoning on block-start records using blockType', () => {
+    const h = harness(); h.stream.frame(start(), 5)
+    h.stream.frame({ ...chunk('', 0), chunk: { type: 'block-start', index: 0, blockType: 'reasoning' } }, 5)
+    expect(h.projector.messages()[0]?.reasoning).toEqual({ text: '', active: true, durationMs: 0, tokens: 0, estimated: true })
+    h.stream.frame({ ...chunk('', 1), chunk: { type: 'block-start', index: 1, blockType: 'tool-call' } }, 5)
+    expect(h.projector.messages()[0]?.reasoning).toEqual({ text: '', active: false, durationMs: 1, tokens: 0, estimated: true })
+  })
+
+  it('retains legacy reasoning, images and unknown timing when history has no stream', () => {
+    const h = harness()
+    const emit = (seq: number, c: object) => h.projector.apply({ type: 'assistant/chunk', seq, time: seq * 10, data: { turn: 1, step: 1, chunk: c } })
+    emit(1, { type: 'reasoning-delta', index: 0, text: 'why' })
+    emit(2, { type: 'block-end', index: 0, block: { type: 'reasoning', text: 'why' } })
+    emit(3, { type: 'block-end', index: 1, block: { type: 'image', attachment: { attachmentId: 'i', mediaType: 'image/png', width: 1, height: 1 } } })
+    emit(4, { type: 'text-delta', index: 2, text: 'yes' })
+    expect(h.projector.messages()[0]).toMatchObject({ text: 'yes', images: [{ attachmentId: 'i' }], reasoning: { text: 'why', active: false, durationMs: 10 } })
+    const history = new ConversationProjector()
+    history.apply({ type: 'assistant/message', seq: 5, time: 50, data: { turn: 1, step: 1, message: { content: [{ type: 'reasoning', text: 'why' }] }, usage: { outputTokens: 999 } } })
+    expect(history.messages()).toEqual([{ id: 'assistant:1:1', role: 'assistant', text: '', turn: 1, reasoning: { text: 'why', active: false, tokens: 1, estimated: true } }])
   })
 
   it.each([

@@ -10,7 +10,7 @@ export interface AssistantAttempt {
 /** Presentation only: never assign a durable sequence to a live model chunk. */
 export type AssistantStreamUpdate =
   | ({ kind: 'start' } & AssistantAttempt)
-  | { kind: 'chunk'; attemptId: string; chunk: Record<string, unknown> }
+  | { kind: 'chunk'; attemptId: string; chunk: Record<string, unknown>; time?: number }
   | { kind: 'end'; attemptId: string }
 
 interface ActiveAttempt extends AssistantAttempt { startedAfterSeq: number; nextIndex: number }
@@ -22,13 +22,13 @@ function integer(value: unknown, minimum = 0): value is number {
 function invalid(): never { throw new Error('Invalid DSH assistant stream. Reconnect the runtime.') }
 
 /** Expand only the compact reconnect prefix; durable V3 history stays untouched. */
-function expandPrefix(value: unknown): Record<string, unknown>[] {
+export function expandAssistantStream(value: unknown): { chunk: Record<string, unknown>; time: number }[] {
   if (!Array.isArray(value)) return invalid()
-  return value.flatMap((run): Record<string, unknown>[] => {
+  return value.flatMap((run): { chunk: Record<string, unknown>; time: number }[] => {
     if (!wireRecord(run)) return invalid()
     if (run.type === 'chunk') {
       if (!integer(run.time, Number.MIN_SAFE_INTEGER) || !wireRecord(run.chunk) || typeof run.chunk.type !== 'string') return invalid()
-      return [run.chunk]
+      return [{ chunk: run.chunk, time: run.time }]
     }
     const kind = run.type === 'text-chunks' ? 'text-delta' : run.type === 'reasoning-chunks' ? 'reasoning-delta'
       : run.type === 'tool-call-chunks' ? 'tool-call-delta' : undefined
@@ -42,9 +42,10 @@ function expandPrefix(value: unknown): Record<string, unknown>[] {
     return members.map((text: string, index) => {
       if (index > 0) time += gaps[index - 1] as number
       if (!Number.isSafeInteger(time)) return invalid()
-      return kind === 'tool-call-delta'
+      const chunk = kind === 'tool-call-delta'
         ? { type: kind, index: run.index, id: run.id, argumentsDelta: text, ...(run.name === undefined ? {} : { name: run.name }) }
         : { type: kind, index: run.index, text }
+      return { chunk, time }
     })
   })
 }
@@ -69,7 +70,7 @@ export class DshAssistantStream {
     if (baseline.activeAttempt === undefined) return
     const opening = baseline.activeAttempt
     if (!wireRecord(opening) || !integer(opening.nextIndex)) return invalid()
-    const chunks = expandPrefix(opening.stream)
+    const chunks = expandAssistantStream(opening.stream)
     if (chunks.length !== opening.nextIndex) return invalid()
     // An opening cut can already contain the settlement while its process-local
     // end marker is still in flight. Do not render or later publish it twice.
@@ -77,7 +78,7 @@ export class DshAssistantStream {
     this.start(opening, cursor, this.openingSettlement === undefined)
     const active = this.active!
     if (this.openingSettlement === undefined) {
-      for (const chunk of chunks) this.live({ kind: 'chunk', attemptId: active.attemptId, chunk })
+      for (const { chunk, time } of chunks) this.live({ kind: 'chunk', attemptId: active.attemptId, chunk, time })
     }
     active.nextIndex = opening.nextIndex
   }
@@ -112,7 +113,7 @@ export class DshAssistantStream {
     if (value.type === 'chunk') {
       if (this.pending !== undefined || this.openingSettlement !== undefined) return invalid()
       active.nextIndex++
-      this.live({ kind: 'chunk', attemptId: active.attemptId, chunk: value.chunk as Record<string, unknown> })
+      this.live({ kind: 'chunk', attemptId: active.attemptId, chunk: value.chunk as Record<string, unknown>, time: value.time as number })
       return
     }
     const outcome = value.outcome

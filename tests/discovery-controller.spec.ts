@@ -957,7 +957,7 @@ describe('sidebar discovery notifications', () => {
       type: 'assistant/message', seq: 1, time: 10, surfaceOp: 'append',
       data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: 'Final text' }] }, stream: [] },
     } }, 'mux')
-    expect(h.controller.state.messages).toEqual([{ id: 'assistant:1:1', role: 'assistant', text: 'Final text' }])
+    expect(h.controller.state.messages).toEqual([{ id: 'assistant:1:1', role: 'assistant', text: 'Final text', turn: 1 }])
     expect((h.controller as any).historyEntries).toHaveLength(1)
   })
 

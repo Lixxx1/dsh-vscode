@@ -7,6 +7,10 @@ import { jobsSnapshotOf } from './jobs.js'
 
 interface Projection { seq: number; value: unknown }
 interface PendingQuestion { sessionId: string; event: string; request: Record<string, unknown> }
+const HISTORY_PAGE_OPTIONS = {
+  maxMessages: 500,
+  turnWindow: { minMessages: 50, minTurns: 2 },
+} as const
 interface Follow {
   sessionId: string
   cursor: number
@@ -148,7 +152,7 @@ export class DshSessionFeed {
         if (this.follow === state) this.closeFollow(new Error('DSH session snapshot timed out.'))
       }, 30_000)
       state.reject = error => { clearTimeout(timer); reject(error) }
-      state.cancel = this.streams.open('session/follow', { request: { address: { kind: 'session', sessionId }, maxMessages: 100, assistantStream: true } }, raw => {
+      state.cancel = this.streams.open('session/follow', { request: { address: { kind: 'session', sessionId }, ...HISTORY_PAGE_OPTIONS, assistantStream: true } }, raw => {
         if (this.follow !== state) return
         if (!wireRecord(raw)) throw new Error('Invalid session frame.')
         if (!opened) {
@@ -192,7 +196,7 @@ export class DshSessionFeed {
     const state = this.follow
     if (state?.sessionId !== sessionId || state.cursor < 0) throw new Error('Open the session before loading older history.')
     const result = await this.connection.call<{ records: unknown; hasMore: boolean }>('session/page', {
-      request: { address: { kind: 'session', sessionId }, throughSeq: state.cursor, beforeSeq, maxMessages: 100 },
+      request: { address: { kind: 'session', sessionId }, throughSeq: state.cursor, beforeSeq, ...HISTORY_PAGE_OPTIONS },
     }, 30_000, signal)
     if (this.follow !== state) throw new Error('The conversation changed while loading history.')
     if (typeof result.hasMore !== 'boolean') throw new Error('Invalid history page.')

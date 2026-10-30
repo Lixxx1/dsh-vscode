@@ -1862,7 +1862,9 @@ class DshSurface implements vscode.Disposable {
             this.pendingPrompt = undefined
           }
           return
+        case 'open-in-editor': await vscode.commands.executeCommand('deepseekHarness.openInEditor'); return
         case 'restart': await this.controller.restart(); return
+        case 'manage-plugins': await vscode.commands.executeCommand('deepseekHarness.managePlugins'); return
         case 'reconnect': await this.controller.reconnect(); return
         case 'connect-existing-runtime':
           await vscode.commands.executeCommand('deepseekHarness.connectExistingRuntime')

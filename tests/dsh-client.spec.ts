@@ -337,10 +337,15 @@ describe('DSH Remote chat transport', () => {
     ])
   })
 
-  it('buffers post-snapshot events until activation, and pins pagination to the opening cursor', async () => {
+  it('buffers post-snapshot events until activation, and pins turn-aware pagination to the opening cursor', async () => {
     const h = harness()
     await h.client.startStreams()
     const opening = await h.client.openSession('s')
+    const follow = h.outgoing.find(frame => frame.endpoint === 'session/follow')
+    expect(follow?.payload.args.request).toMatchObject({
+      maxMessages: 500,
+      turnWindow: { minMessages: 50, minTurns: 2 },
+    })
     h.push('session/follow', event(6, ' world'))
     expect(h.frames.filter(f => f.payload.type === 'session/event')).toHaveLength(0)
     opening.activate()
@@ -351,7 +356,18 @@ describe('DSH Remote chat transport', () => {
     for (const frame of h.frames.filter(f => f.payload.type === 'session/event')) projector.apply(frame.payload.event as any)
     expect(projector.messages()[0]?.text).toBe('hello world')
     await h.client.history('s', 5)
-    expect(h.requests.at(-1)).toEqual({ endpoint: 'session/page', args: { request: { address: { kind: 'session', sessionId: 's' }, throughSeq: 5, beforeSeq: 5, maxMessages: 100 } } })
+    expect(h.requests.at(-1)).toEqual({
+      endpoint: 'session/page',
+      args: {
+        request: {
+          address: { kind: 'session', sessionId: 's' },
+          throughSeq: 5,
+          beforeSeq: 5,
+          maxMessages: 500,
+          turnWindow: { minMessages: 50, minTurns: 2 },
+        },
+      },
+    })
   })
 
   it('opts into 0.1.5 streaming, buffers the live baseline and settlement, and keeps history cursors durable', async () => {
@@ -381,7 +397,7 @@ describe('DSH Remote chat transport', () => {
       if (frame.payload.type === 'session/assistant-stream') projector.applyStream(frame.payload.update as any)
       if (frame.payload.type === 'session/event') projector.apply(frame.payload.event as any)
     }
-    expect(projector.messages()).toEqual([{ id: 'assistant:1:1', role: 'assistant', text: 'Hello world' }])
+    expect(projector.messages()).toEqual([{ id: 'assistant:1:1', role: 'assistant', text: 'Hello world', turn: 1 }])
     expect(h.frames.filter(f => f.payload.type === 'session/event')).toHaveLength(1)
     await h.client.history('s', 5)
     expect(h.requests.at(-1)?.args.request).toMatchObject({ throughSeq: 5, beforeSeq: 5 })

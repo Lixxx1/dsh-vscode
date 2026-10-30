@@ -26,8 +26,10 @@ Ask DeepSeek to inspect, change, and verify code without switching between your 
 
 - **Autonomous VS Code debugging.** Let DeepSeek launch the current project from `.vscode/launch.json`, manage breakpoints, step through execution, and inspect stack frames and local variables using VS Code's native debugger.
 - **Official DSH inside VS Code.** Sessions, streaming responses, tool calls, approvals, and follow-up questions run through the official DSH runtime.
+- **Turn activity.** Follow the latest reasoning as it streams, then expand one turn summary to review reasoning and tool calls. Summaries of partially loaded older turns are marked until their history is loaded.
 - **Project-aware editor context.** The active file, selected code, and `@file` or `@folder` references travel with your prompt.
 - **Session controls where you need them.** Switch Permission and Plan modes, choose Model and Reasoning Effort, or steer an active task.
+- **Session usage.** Reference cost is a multiplier against pricing all displayed session tokens at the cache-hit rate, using official DeepSeek reference pricing for the selected supported model, not the actual provider charge. It reprices cumulative tokens from earlier model selections at the current model and excludes non-token charges; peak pricing does not change the multiplier.
 - **Native review and safe revert.** Review changes in VS Code's Diff Editor, Keep or Revert edits, and stop DSH before it overwrites a file with unsaved changes.
 - **Extend DSH from the sidebar.** Discover and manage Tools, Skills, MCP integrations, Memory, and Agent Hooks loaded by DSH.
 
