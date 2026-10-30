@@ -270,16 +270,18 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     .usage-breakdown-title { margin-top: 8px; }
     .usage-bar { height: 4px; margin: 10px 0 8px; display: flex; gap: 1px; overflow: hidden; border-radius: 999px; background: var(--vscode-toolbar-hoverBackground); }
     .usage-segment { height: 100%; border-radius: 1px; }
-    .usage-system { background: var(--vscode-descriptionForeground); }
-    .usage-tools { background: #a78bfa; }
     .usage-messages { background: #4d6bfe; }
     .usage-rows { margin: 0; }
     .usage-row { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0 10px; padding: 2px 0; }
     .usage-row dt, .usage-row dd { min-width: 0; max-width: 100%; margin: 0; overflow-wrap: anywhere; }
     .usage-row dd { color: var(--vscode-foreground); font-variant-numeric: tabular-nums; }
-    .usage-swatch { width: 7px; height: 7px; margin-right: 6px; display: inline-block; border-radius: 2px; }
-    .usage-stats { display: flex; flex-wrap: wrap; gap: 2px 10px; min-width: 0; padding: 0 12px 8px; color: var(--vscode-descriptionForeground); font-size: 10px; line-height: 14px; }
-    .usage-stat { white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .usage-section { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--vscode-widget-border); }
+    .usage-section-title { margin: 0 0 2px; color: var(--vscode-foreground); font-size: inherit; font-weight: 600; }
+    .usage-caption { margin: 0 0 6px; overflow-wrap: anywhere; }
+    .usage-details > summary { cursor: pointer; padding: 2px 0; }
+    .usage-details > summary:hover { color: var(--vscode-foreground); }
+    .usage-details > summary:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
+    .usage-details[open] > summary { margin-bottom: 6px; }
     .inspect-action { display: block; width: 100%; margin-top: 10px; padding: 7px 0 0; border: 0; border-top: 1px solid var(--vscode-widget-border); color: var(--vscode-textLink-foreground); background: transparent; text-align: left; }
     .inspector { width: min(620px, calc(100vw - 24px)); max-width: none; max-height: calc(100vh - 24px); padding: 0; border: 1px solid var(--vscode-widget-border); border-radius: 10px; color: var(--vscode-foreground); background: var(--vscode-sideBar-background); box-shadow: 0 12px 36px var(--vscode-widget-shadow); }
     .inspector[open] { display: flex; flex-direction: column; }
@@ -384,13 +386,12 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
           <div class="run-actions">
             <div id="usageControl" class="usage-control hidden">
               <button id="usageTrigger" class="icon-button usage-trigger" title="Context usage" aria-label="Context usage" aria-haspopup="dialog" aria-expanded="false"><svg viewBox="0 0 14 14"><circle class="usage-track" cx="7" cy="7" r="5.5"/><circle id="usageFill" class="usage-fill" cx="7" cy="7" r="5.5" transform="rotate(-90 7 7)"/></svg></button>
-              <div id="usagePanel" class="usage-panel hidden" role="dialog" aria-label="Context usage details" tabindex="0"></div>
+              <div id="usagePanel" class="usage-panel hidden" role="dialog" aria-label="Context and session usage" tabindex="0"></div>
             </div>
             <button id="cancel" class="icon-button cancel hidden" title="Stop" aria-label="Stop"><svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1"/></svg></button>
             <button id="send" class="icon-button send" title="Send (Enter)" aria-label="Send"><svg viewBox="0 0 24 24"><path d="M12 19V5M6.5 10.5 12 5l5.5 5.5"/></svg></button>
           </div>
         </div>
-        <div id="usageStats" class="usage-stats hidden"></div>
       </div>
     </footer>
   </div>
@@ -458,7 +459,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       models: document.getElementById('models'), efforts: document.getElementById('efforts'),
       policyTrigger: document.getElementById('policyTrigger'), policyMenu: document.getElementById('policyMenu'),
       send: document.getElementById('send'), cancel: document.getElementById('cancel'),
-      usageControl: document.getElementById('usageControl'), usageTrigger: document.getElementById('usageTrigger'), usageFill: document.getElementById('usageFill'), usagePanel: document.getElementById('usagePanel'), usageStats: document.getElementById('usageStats'),
+      usageControl: document.getElementById('usageControl'), usageTrigger: document.getElementById('usageTrigger'), usageFill: document.getElementById('usageFill'), usagePanel: document.getElementById('usagePanel'),
       inspector: document.getElementById('contextInspector'), inspectorRefresh: document.getElementById('inspectorRefresh'), inspectorClose: document.getElementById('inspectorClose'), inspectorStatus: document.getElementById('inspectorStatus'), inspectorWarnings: document.getElementById('inspectorWarnings'), inspectorFilters: document.getElementById('inspectorFilters'), inspectorSearch: document.getElementById('inspectorSearch'), inspectorSort: document.getElementById('inspectorSort'), inspectorGroups: document.getElementById('inspectorGroups'),
       attach: document.getElementById('attach'), attachments: document.getElementById('attachments'),
       queueDock: document.getElementById('queueDock'),
@@ -1394,52 +1395,51 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       if (value < 60000) return (value / 1000).toFixed(value < 10000 ? 1 : 0) + 's';
       return (value / 60000).toFixed(1) + 'm';
     }
-    function usageStats(usage, selectedModel) {
-      const items = []; const groups = [];
+    function usageStats(usage) {
+      const rows = []; const details = [];
       const stats = usage && usage.sessionStats;
       const tokens = usage && usage.tokenUsage;
-      if (!stats && !tokens) return { items, tooltip: '' };
-      const input = tokens ? tokens.uncachedInputTokens + tokens.cacheReadTokens + tokens.cacheWriteTokens : 0;
-      const rawTotal = tokens && input + tokens.outputTokens;
-      const tps = stats && stats.decodeMs > 0 ? (stats.decodeTokens / (stats.decodeMs / 1000)).toFixed(1) : undefined;
-      const ttft = stats && stats.ttftSteps > 0 ? formatDuration(stats.ttftMs / stats.ttftSteps) : undefined;
-      const cache = input > 0 ? Math.round(tokens.cacheReadTokens / input * 100) + '%' : undefined;
-      if (stats && stats.steps > 0) {
-        const labels = [stats.turns + (stats.turns === 1 ? ' turn' : ' turns'), stats.steps + (stats.steps === 1 ? ' step' : ' steps')];
-        items.push(...labels); groups.push(labels.join(' · '));
-        const durations = [];
-        if (stats.llmMs > 0) durations.push('LLM ' + formatDuration(stats.llmMs));
-        if (stats.toolMs > 0) durations.push('tools ' + formatDuration(stats.toolMs));
-        if (durations.length) groups.push(durations.join(' · '));
-        const speeds = [];
-        if (ttft !== undefined) speeds.push('TTFT avg ' + ttft);
-        if (tps !== undefined) speeds.push('TPS (aggregate session decode throughput) ' + tps + ' tok/s');
-        if (speeds.length) groups.push(speeds.join(' · '));
-      }
+      const valid = value => Number.isFinite(value) && value >= 0;
       if (tokens) {
-        if (rawTotal > 0) items.push(formatTokens(rawTotal) + ' tokens');
-        if (input > 0 || tokens.outputTokens > 0) {
-          if (input > 0) groups.push('cache ' + cache);
-          groups.push('in ' + formatTokens(input) + ' · out ' + formatTokens(tokens.outputTokens));
-        }
+        const inputs = [tokens.uncachedInputTokens, tokens.cacheReadTokens, tokens.cacheWriteTokens];
+        const input = inputs.every(valid) ? inputs.reduce((sum, value) => sum + value, 0) : undefined;
+        rows.push(['Input tokens', valid(input) ? formatTokens(input) : '—']);
+        rows.push(['Output tokens', valid(tokens.outputTokens) ? formatTokens(tokens.outputTokens) : '—']);
+        rows.push(['Cache hit rate', valid(input) && input > 0 ? Math.round(tokens.cacheReadTokens / input * 100) + '%' : '—']);
       }
-      items.push('TPS ' + (tps === undefined ? '—' : tps));
-      items.push('TTFT avg ' + (ttft === undefined ? '—' : ttft));
-      items.push('Cache hit ' + (cache === undefined ? '—' : cache));
-      const counts = tokens && [tokens.uncachedInputTokens, tokens.cacheReadTokens, tokens.cacheWriteTokens, tokens.outputTokens];
-      const total = counts && counts.every(value => Number.isFinite(value) && value >= 0) ? counts.reduce((sum, value) => sum + value, 0) : 0;
-      const share = value => total > 0 && Number.isFinite(total) ? (value / total * 100).toFixed(1) + '%' : '—';
-      items.push('Cache read ' + share(tokens && tokens.cacheReadTokens));
-      items.push('Input miss ' + share(tokens && (tokens.uncachedInputTokens + tokens.cacheWriteTokens)));
-      items.push('Output ' + share(tokens && tokens.outputTokens));
-      const model = selectedModel && selectedModel.model;
-      const rates = model === 'deepseek-v4-pro' ? [30, 90] :
-        ['deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp'].includes(model) ? [50, 200] : undefined;
-      const cost = rates && total > 0 && Number.isFinite(total) ?
-        counts[1] / total + (counts[0] / total + counts[2] / total) * rates[0] + counts[3] / total * rates[1] : undefined;
-      items.push('Reference cost ' + (Number.isFinite(cost) ? '≈' + cost.toFixed(2) + '×' : '—'));
-      if (rates) groups.push('Official DeepSeek reference pricing for ' + model + ': cache hit 1×, input miss ' + rates[0] + '×, output ' + rates[1] + '×. Cumulative session tokens, including prior model selections, are repriced at the current model; excludes non-token charges. Not the actual provider charge.');
-      return { items, tooltip: groups.join('  |  ') };
+      if (stats) {
+        const tps = valid(stats.decodeMs) && stats.decodeMs > 0 && valid(stats.decodeTokens) ? stats.decodeTokens / (stats.decodeMs / 1000) : undefined;
+        const ttft = valid(stats.ttftSteps) && stats.ttftSteps > 0 && valid(stats.ttftMs) ? stats.ttftMs / stats.ttftSteps : undefined;
+        details.push(['Decode speed (TPS)', valid(tps) ? tps.toFixed(1) + ' tok/s' : '—']);
+        details.push(['Time to first token (avg)', valid(ttft) ? formatDuration(ttft) : '—']);
+      }
+      return { rows, details };
+    }
+    function updateUsageRows(container, rows) {
+      rows.forEach(([label, value], index) => {
+        let row = container.children[index];
+        if (!row) { row = node('div', 'usage-row'); row.append(node('dt', ''), node('dd', '')); container.append(row); }
+        if (row.firstElementChild.textContent !== label) row.firstElementChild.textContent = label;
+        if (row.lastElementChild.textContent !== value) row.lastElementChild.textContent = value;
+      });
+      while (container.children.length > rows.length) container.lastElementChild.remove();
+    }
+    function createUsagePanel() {
+      const header = node('div', 'usage-header'); header.append(node('span', '', 'Context'), node('span', 'usage-percent'));
+      const context = node('div', 'usage-context');
+      const bar = node('div', 'usage-bar'); bar.append(node('span', 'usage-segment usage-messages'));
+      context.append(node('dl', 'usage-rows'), bar);
+      const session = node('section', 'usage-section usage-session');
+      session.append(node('h3', 'usage-section-title', 'Session usage'), node('p', 'usage-caption', 'Cumulative across requests, not context size.'), node('dl', 'usage-rows'));
+      const details = node('details', 'usage-section usage-details');
+      const summary = node('summary', '', 'Detailed statistics');
+      const performance = node('dl', 'usage-rows usage-performance'); performance.title = 'Aggregate session decode speed and average time to first token.';
+      const composition = node('section', 'usage-composition');
+      composition.append(node('div', 'usage-breakdown-title', 'Content composition (independent estimate)'), node('dl', 'usage-rows'));
+      details.append(summary, performance, composition);
+      const inspect = node('button', 'inspect-action', 'Inspect context…');
+      inspect.type = 'button'; inspect.addEventListener('click', openContextInspector);
+      elements.usagePanel.append(header, context, session, details, inspect);
     }
     function updateUsagePanelHeight() {
       if (!usageOpen) return;
@@ -1461,61 +1461,47 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
     }
     function renderUsage(current) {
       const usage = current.usage || { available: false, percent: 0, usedTokens: 0, contextWindow: 0 };
-      const stats = usageStats(usage, (current.models || []).find(model => model.selected));
-      elements.usageStats.replaceChildren(...stats.items.map(text => node('span', 'usage-stat', text)));
-      elements.usageStats.title = stats.tooltip;
-      elements.usageStats.classList.toggle('hidden', stats.items.length === 0);
+      const stats = usageStats(usage);
       const ready = current.phase === 'ready' && Boolean(current.sessionId);
-      elements.usageControl.classList.toggle('hidden', !ready && usage.available !== true);
-      if (!ready && usage.available !== true) {
+      const visible = ready || usage.available === true || stats.rows.length > 0 || stats.details.length > 0;
+      elements.usageControl.classList.toggle('hidden', !visible);
+      if (!visible) {
         usageOpen = false;
         elements.usagePanel.classList.add('hidden');
         elements.usageTrigger.setAttribute('aria-expanded', 'false');
         return;
       }
-      const percent = Math.max(0, Math.min(100, Number(usage.percent) || 0));
+      const percent = usage.available ? Math.max(0, Math.min(100, Number(usage.percent) || 0)) : 0;
       const circumference = 2 * Math.PI * 5.5;
       elements.usageFill.setAttribute('stroke-dasharray', (circumference * percent / 100) + ' ' + circumference);
       elements.usageTrigger.classList.toggle('warning', percent >= 75 && percent < 90);
       elements.usageTrigger.classList.toggle('danger', percent >= 90);
-      elements.usageTrigger.title = usage.available ? 'Context ' + percent + '% used' : 'Inspect context';
+      elements.usageTrigger.title = usage.available ? 'Context ' + percent + '% used' : 'Context and session usage';
       elements.usageTrigger.setAttribute('aria-label', elements.usageTrigger.title);
       elements.usageTrigger.setAttribute('aria-expanded', String(usageOpen));
-      elements.usagePanel.replaceChildren();
       if (usageOpen) {
-        const header = node('div', 'usage-header');
-        header.append(node('span', '', 'Context'));
-        if (usage.available) header.append(node('span', 'usage-percent', percent + '% used'));
-        else header.append(node('span', '', 'Usage not available yet'));
-        const figures = node('dl', 'usage-rows');
-        for (const [label, value] of [['Estimated usage', usage.usedTokens], ['Context limit', usage.contextWindow]]) {
-          const row = node('div', 'usage-row');
-          row.append(node('dt', '', label), node('dd', '', (Number.isFinite(value) ? value : 0).toLocaleString('en-US') + ' tokens'));
-          figures.append(row);
+        // Keep interactive nodes stable while usage streams in: preserve expansion, focus and scroll.
+        if (!elements.usagePanel.firstElementChild) createUsagePanel();
+        const panel = elements.usagePanel;
+        const details = panel.querySelector('.usage-details');
+        const sessionId = current.sessionId || '';
+        if (panel.dataset.sessionId !== sessionId) {
+          details.open = false; panel.scrollTop = 0; panel.dataset.sessionId = sessionId;
         }
-        const bar = node('div', 'usage-bar');
+        panel.querySelector('.usage-percent').textContent = usage.available ? percent + '% used' : 'Usage not available yet';
+        panel.querySelector('.usage-context').classList.toggle('hidden', !usage.available);
+        updateUsageRows(panel.querySelector('.usage-context .usage-rows'), [['Estimated usage', usage.usedTokens], ['Context limit', usage.contextWindow]]
+          .map(([label, value]) => [label, Number.isFinite(value) && value >= 0 ? value.toLocaleString('en-US') + ' tokens' : '—']));
+        panel.querySelector('.usage-segment').style.width = percent + '%';
+        panel.querySelector('.usage-session').classList.toggle('hidden', stats.rows.length === 0);
+        updateUsageRows(panel.querySelector('.usage-session .usage-rows'), stats.rows);
+        updateUsageRows(panel.querySelector('.usage-performance'), stats.details);
         const breakdown = usage.breakdown;
-        const parts = breakdown ? [
-          { key: 'systemTokens', label: 'System prompt', className: 'usage-system' },
-          { key: 'toolsTokens', label: 'Tools', className: 'usage-tools' },
-          { key: 'messageTokens', label: 'Messages', className: 'usage-messages' },
-        ] : [];
-        elements.usagePanel.append(header);
-        const segment = node('span', 'usage-segment usage-messages'); segment.style.width = percent + '%'; bar.append(segment);
-        if (usage.available) elements.usagePanel.append(figures, bar);
-        if (usage.available && breakdown) {
-          elements.usagePanel.append(node('div', 'usage-breakdown-title', 'Content composition (independent estimate)'));
-          const rows = node('dl', 'usage-rows');
-          for (const part of parts) {
-            const row = node('div', 'usage-row');
-            const term = node('dt', ''); term.append(node('span', 'usage-swatch ' + part.className), document.createTextNode(part.label));
-            row.append(term, node('dd', '', '~' + formatTokens(breakdown[part.key]))); rows.append(row);
-          }
-          elements.usagePanel.append(rows);
-        }
-        const inspect = node('button', 'inspect-action', 'Inspect context…');
-        inspect.type = 'button'; inspect.disabled = !ready; inspect.addEventListener('click', openContextInspector);
-        elements.usagePanel.append(inspect);
+        const parts = usage.available && breakdown ? [['System prompt', breakdown.systemTokens], ['Tools', breakdown.toolsTokens], ['Messages', breakdown.messageTokens]] : [];
+        panel.querySelector('.usage-composition').classList.toggle('hidden', parts.length === 0);
+        updateUsageRows(panel.querySelector('.usage-composition .usage-rows'), parts.map(([label, value]) => [label, Number.isFinite(value) && value >= 0 ? '~' + formatTokens(value) : '—']));
+        details.classList.toggle('hidden', stats.details.length === 0 && parts.length === 0);
+        panel.querySelector('.inspect-action').disabled = !ready;
       }
       elements.usagePanel.classList.toggle('hidden', !usageOpen);
       updateUsagePanelHeight();
@@ -2066,7 +2052,7 @@ export function chatHtml(webview: vscode.Webview, deepseekMarkUri: vscode.Uri, m
       }
       const policyChanged = renderedChrome.agentPreset !== current.agentPreset || renderedChrome.permissions !== current.permissions || renderedChrome.plan !== current.plan || renderedChrome.running !== current.running || renderedChrome.phase !== current.phase;
       if (policyChanged) renderPolicyState(current);
-      if (renderedChrome.usage !== current.usage || renderedChrome.models !== current.models || renderedChrome.phase !== current.phase || renderedChrome.sessionId !== current.sessionId) renderUsage(current);
+      if (renderedChrome.usage !== current.usage || renderedChrome.phase !== current.phase || renderedChrome.sessionId !== current.sessionId) renderUsage(current);
       if (renderedChrome.jobs !== current.jobs || renderedChrome.subagentCount !== current.subagentCount || renderedChrome.phase !== current.phase) renderJobs();
       renderConversation(current);
       finishNavigationJump();

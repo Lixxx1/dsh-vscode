@@ -85,6 +85,7 @@ try {
   await page('Page.setDocumentContent', { frameId: frameTree.frame.id, html: shell })
   await evaluate(`window.sent = []; window.acquireVsCodeApi = () => ({postMessage: message => sent.push(message)});
     document.documentElement.style.cssText = '--vscode-foreground:#cccccc;--vscode-sideBar-background:#181818;--vscode-editor-background:#202020;--vscode-font-family:Arial;--vscode-editor-font-family:monospace;--vscode-descriptionForeground:#999;--vscode-widget-border:#454545;--vscode-focusBorder:#4d6bfe;--vscode-button-secondaryBackground:#333;--vscode-button-secondaryForeground:#fff;--vscode-button-secondaryHoverBackground:#454545;--vscode-widget-shadow:#0006;--vscode-textLink-foreground:#65aaff';`)
+  await evaluate(`document.documentElement.style.setProperty('--vscode-menu-background', '#252526'); document.documentElement.style.setProperty('--vscode-toolbar-hoverBackground', '#ffffff12');`)
   await evaluate(markdown); await evaluate(scrollBundle); await evaluate(inline)
   await evaluate(`window.tick = (ms = 90) => new Promise(resolve => setTimeout(resolve, ms));
     window.ensure = (value, message) => { if (!value) throw new Error(message); };
@@ -95,43 +96,55 @@ try {
   await evaluate('tick()')
   assert.equal(await evaluate('gap() <= 2 && conversationScroller.following'), true)
 
-  await page('Emulation.setDeviceMetricsOverride', { width: 640, height: 720, deviceScaleFactor: 1, mobile: false })
-  await evaluate(`(async () => {
-    const usage = {available:false, sessionStats:{turns:9999,steps:99999,llmMs:1,toolMs:1,ttftMs:13000,ttftSteps:1,decodeMs:1000,decodeTokens:9999},
-      tokenUsage:{uncachedInputTokens:100000,cacheReadTokens:98000000,cacheWriteTokens:200000,outputTokens:1000000}};
-    showState({...baseline,usage,models:[{provider:'custom',model:'deepseek-v4-flash',label:'Flash',selected:true}]}); await tick();
-    const grid = elements.usageStats;
-    ensure(grid.lastElementChild.textContent.startsWith('Reference cost ≈'), 'numeric cost missing');
-    grid.style.boxSizing = 'border-box';
-    for (const width of [180, 260, 300, 410]) {
-      grid.style.width = width + 'px';
-      const items = [...grid.children];
-      ensure(items.length === 10, 'missing usage metrics at ' + width);
-      const bounds = items.map(item => item.getBoundingClientRect());
-      const parent = grid.getBoundingClientRect();
-      ensure(new Set(bounds.map(rect => rect.top)).size > 1, 'metrics did not wrap at ' + width);
-      ensure(bounds[0].top === bounds[1].top && Math.abs(bounds[1].left - bounds[0].right - 10) < 1, 'metrics did not pack compactly at ' + width);
-      if (width >= 260) ensure(bounds[0].top === bounds[2].top, 'too few metrics on first row at ' + width);
-      for (let i = 0; i < items.length; i++) {
-        const item = items[i], rect = bounds[i];
-        ensure(getComputedStyle(item).whiteSpace === 'nowrap' && item.scrollWidth <= item.clientWidth + 1, 'metric clipped or wrapped at ' + width + ': ' + item.textContent);
-        ensure(rect.left >= parent.left && rect.right <= parent.right, 'overflowing metric at ' + width);
-        for (let j = 0; j < i; j++) {
-          const other = bounds[j];
-          ensure(rect.right <= other.left || other.right <= rect.left || rect.bottom <= other.top || other.bottom <= rect.top, 'overlapping metrics at ' + width);
-        }
-      }
-    }
-    grid.style.width = ''; grid.style.boxSizing = '';
-    showState({...baseline,usage,models:[{provider:'custom',model:'unknown',label:'deepseek-v4-flash',selected:true}]}); await tick();
-    ensure(grid.lastElementChild.textContent === 'Reference cost —', 'unknown model retained previous cost');
-    showState({...baseline,usage,models:[{provider:'custom',model:'deepseek-v4-pro',label:'Pro',selected:true}]}); await tick();
-    ensure(grid.lastElementChild.textContent.startsWith('Reference cost ≈'), 'known model did not restore cost');
-    ensure(grid.title.includes('deepseek-v4-pro'), 'cost tooltip did not update with model');
-    showState(baseline); await tick();
-  })()`)
-  console.log('PASS: compact wrapping usage metrics at 180, 260, 300, and 410px')
+  for (const width of [180, 260, 300, 410]) {
+    await page('Emulation.setDeviceMetricsOverride', { width, height: 720, deviceScaleFactor: 1, mobile: false })
+    await evaluate(`(async () => {
+      showState({...baseline,sessionId:'usage-layout'}); await tick();
+      const composerHeight = document.querySelector('.composer').getBoundingClientRect().height;
+      const usage = {available:true,percent:19,usedTokens:199790,contextWindow:1048576,
+        breakdown:{systemTokens:16,toolsTokens:397,messageTokens:148918},
+        sessionStats:{turns:9999,steps:99999,llmMs:1000,toolMs:1000,ttftMs:13000,ttftSteps:1,decodeMs:1000,decodeTokens:188},
+        tokenUsage:{uncachedInputTokens:100000,cacheReadTokens:98000000,cacheWriteTokens:200000,outputTokens:1000000}};
+      showState({...state,usage}); await tick();
+      ensure(!document.getElementById('usageStats'), 'metrics strip still exists');
+      ensure(document.querySelector('.composer').getBoundingClientRect().height === composerHeight, 'usage adds composer rows');
+      ensure(elements.usagePanel.classList.contains('hidden'), 'usage opened without interaction');
+      elements.usageTrigger.click(); await tick();
+      const panel = elements.usagePanel, details = panel.querySelector('.usage-details'), summary = details.querySelector('summary');
+      ensure(!details.open, 'advanced statistics should start collapsed');
+      ensure(panel.textContent.includes('Input tokens98M') && panel.textContent.includes('Output tokens1M'), 'cumulative counts missing');
+      ensure(!panel.textContent.includes('Reference cost'), 'reference cost still displayed');
+      details.open = true; await tick();
+      summary.focus(); panel.scrollTop = 30;
+      const scrollTop = panel.scrollTop;
+      showState({...state,usage:{...usage,tokenUsage:{...usage.tokenUsage,outputTokens:1200000}}}); await tick();
+      ensure(panel.querySelector('.usage-details') === details && details.open, 'streaming replaced or collapsed details');
+      ensure(document.activeElement === summary, 'streaming lost detail focus');
+      ensure(panel.scrollTop === scrollTop, 'streaming reset usage scroll');
+      const bounds = panel.getBoundingClientRect();
+      ensure(bounds.left >= 0 && bounds.right <= innerWidth && bounds.top >= 0 && bounds.bottom <= innerHeight, 'usage escaped viewport');
+      ensure(panel.scrollWidth <= panel.clientWidth + 1, 'usage overflowed horizontally');
+      elements.usageTrigger.click(); await tick();
+      showState({...baseline,sessionId:'usage-next'}); await tick();
+      elements.usageTrigger.click(); await tick();
+      ensure(!details.open && details.classList.contains('hidden'), 'new session retained advanced statistics');
+      ensure(panel.querySelector('.usage-session .usage-rows').textContent === '', 'new session retained token counts');
+      elements.usageTrigger.click(); showState(baseline); await tick();
+    })()`)
+  }
+  console.log('PASS: compact composer and on-demand session usage at 180, 260, 300, and 410px')
   await page('Emulation.setDeviceMetricsOverride', { width: 410, height: 720, deviceScaleFactor: 1, mobile: false })
+  if (process.env.DSH_USAGE_SCREENSHOT) {
+    await evaluate(`(async () => {
+      showState({...baseline,usage:{available:true,percent:19,usedTokens:199790,contextWindow:1048576,
+        sessionStats:{decodeMs:1000,decodeTokens:188,ttftMs:748,ttftSteps:1},
+        tokenUsage:{uncachedInputTokens:10000,cacheReadTokens:118000,cacheWriteTokens:0,outputTokens:3000}}});
+      elements.usageTrigger.click(); await tick();
+    })()`)
+    const { data } = await page('Page.captureScreenshot', { format: 'png' })
+    await writeFile(process.env.DSH_USAGE_SCREENSHOT, Buffer.from(data, 'base64'))
+    await evaluate('elements.usageTrigger.click(); showState(baseline); tick()')
+  }
 
   // The actual production controller, with two renders bracketing its rAF write.
   await evaluate(`(async () => {
@@ -550,11 +563,13 @@ try {
       ensure(hit && elements.usagePanel.contains(hit), 'usage popup is clipped or obscured');
       ensure(elements.usagePanel.textContent.includes('2,048 tokens') && elements.usagePanel.textContent.includes('9,999,999,999,999 tokens'), 'full context counts missing');
       for (const item of elements.usagePanel.querySelectorAll('.usage-header, .usage-header span, .usage-breakdown-title, .usage-row, .usage-row dt, .usage-row dd')) {
+        if (!item.checkVisibility()) continue;
         const rect = item.getBoundingClientRect();
         ensure(rect.left >= panel.left && rect.right <= panel.right && rect.top >= panel.top && rect.bottom <= panel.bottom, 'usage content escaped popup: ' + item.textContent);
         ensure(item.scrollWidth <= item.clientWidth + 1, 'usage content clipped: ' + item.textContent);
       }
       for (const item of elements.usagePanel.querySelectorAll('.usage-row')) {
+        if (!item.checkVisibility()) continue;
         const [term, value] = [...item.children].map(child => child.getBoundingClientRect());
         ensure(term.right <= value.left || value.right <= term.left || term.bottom <= value.top || value.bottom <= term.top, 'usage row overlaps');
       }
@@ -588,8 +603,8 @@ try {
       sessionStats:{turns:2,steps:4,llmMs:2000,toolMs:300,ttftMs:900,ttftSteps:2,decodeMs:2000,decodeTokens:75},
       tokenUsage:{uncachedInputTokens:100,cacheReadTokens:300,cacheWriteTokens:100,outputTokens:500}};
     showState({...baseline,usage}); await tick();
-    ensure(elements.usageStats.children.length === 10, 'realistic metrics not rendered');
     elements.usageTrigger.click(); await tick();
+    elements.usagePanel.querySelector('.usage-details').open = true; await tick();
     window.checkShortUsage = (requireScroll = true) => {
       const panel = elements.usagePanel;
       const bounds = panel.getBoundingClientRect();

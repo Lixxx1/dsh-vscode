@@ -16,7 +16,7 @@ function usageFixture() {
   const html = chatHtml({ cspSource: 'vscode-webview:' } as vscode.Webview, { toString: () => 'mark' } as vscode.Uri)
   const dom = new DOMParser().parseFromString(html, 'text/html')
   const elements = {
-    usageStats: dom.getElementById('usageStats')!, usageControl: dom.getElementById('usageControl')!,
+    usageControl: dom.getElementById('usageControl')!,
     usagePanel: dom.getElementById('usagePanel')!, usageTrigger: dom.getElementById('usageTrigger')!,
     usageFill: dom.getElementById('usageFill')!,
   }
@@ -89,69 +89,81 @@ describe('chat webview', () => {
     expect(extension).toContain("case 'manage-plugins': await vscode.commands.executeCommand('deepseekHarness.managePlugins'); return")
   })
 
-  it('renders session metrics and disjoint token shares as separate items', () => {
-    const { elements, renderUsage, usageStats } = usageFixture()
-    const usageStatsItems = (usage: unknown) => usageStats(usage).items
+  it('keeps cumulative usage in the context popup, with performance details collapsed', () => {
+    const { elements, renderUsage, open } = usageFixture()
     const sessionStats = { turns: 2, steps: 4, llmMs: 2000, toolMs: 300, ttftMs: 900, ttftSteps: 2, decodeMs: 2000, decodeTokens: 75 }
     const tokenUsage = { uncachedInputTokens: 100, cacheReadTokens: 300, cacheWriteTokens: 100, outputTokens: 500 }
-    renderUsage({ usage: { available: false, sessionStats, tokenUsage } })
-    const texts = () => [...elements.usageStats.children].map(child => child.textContent)
-    expect(texts()).toEqual(['2 turns', '4 steps', '1K tokens', 'TPS 37.5', 'TTFT avg 450ms', 'Cache hit 60%', 'Cache read 30.0%', 'Input miss 20.0%', 'Output 50.0%', 'Reference cost —'])
-    expect([...elements.usageStats.children].every(child => child.tagName === 'SPAN' && child.className === 'usage-stat')).toBe(true)
-    expect(elements.usageStats.title).toBe('2 turns · 4 steps  |  LLM 2.0s · tools 300ms  |  TTFT avg 450ms · TPS (aggregate session decode throughput) 37.5 tok/s  |  cache 60%  |  in 500 · out 500')
-    expect(elements.usageStats.classList.contains('hidden')).toBe(false)
-    expect(elements.usageControl.classList.contains('hidden')).toBe(true)
-
-    const zeros = usageStatsItems({ sessionStats: { ...sessionStats, decodeTokens: 0, ttftMs: 0 }, tokenUsage: { ...tokenUsage, cacheReadTokens: 0 } })
-    expect(zeros).toEqual(['2 turns', '4 steps', '700 tokens', 'TPS 0.0', 'TTFT avg 0ms', 'Cache hit 0%', 'Cache read 0.0%', 'Input miss 28.6%', 'Output 71.4%', 'Reference cost —'])
-    const outputOnly = usageStatsItems({ sessionStats: { ...sessionStats, decodeMs: 0, ttftSteps: 0 }, tokenUsage: { uncachedInputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 500 } })
-    expect(outputOnly).toEqual(['2 turns', '4 steps', '500 tokens', 'TPS —', 'TTFT avg —', 'Cache hit —', 'Cache read 0.0%', 'Input miss 0.0%', 'Output 100.0%', 'Reference cost —'])
-    expect(usageStatsItems({ sessionStats })).toEqual(['2 turns', '4 steps', 'TPS 37.5', 'TTFT avg 450ms', 'Cache hit —', 'Cache read —', 'Input miss —', 'Output —', 'Reference cost —'])
-    expect(usageStatsItems({ tokenUsage })).toEqual(['1K tokens', 'TPS —', 'TTFT avg —', 'Cache hit 60%', 'Cache read 30.0%', 'Input miss 20.0%', 'Output 50.0%', 'Reference cost —'])
-    const small = usageStatsItems({ tokenUsage: { uncachedInputTokens: 1, cacheReadTokens: 998, cacheWriteTokens: 0, outputTokens: 1 } })
-    expect(small.slice(-4, -1)).toEqual(['Cache read 99.8%', 'Input miss 0.1%', 'Output 0.1%'])
-    expect(small.slice(-4, -1).reduce((sum: number, item: string) => sum + Number.parseFloat(item.split(' ').at(-1)!), 0)).toBeCloseTo(100, 1)
-    expect(usageStats({ tokenUsage: { uncachedInputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0 } })).toEqual({ items: ['TPS —', 'TTFT avg —', 'Cache hit —', 'Cache read —', 'Input miss —', 'Output —', 'Reference cost —'], tooltip: '' })
-    expect(usageStats({ tokenUsage: { uncachedInputTokens: 1, cacheReadTokens: 1, outputTokens: 1 } })).toEqual({ items: ['TPS —', 'TTFT avg —', 'Cache hit —', 'Cache read —', 'Input miss —', 'Output —', 'Reference cost —'], tooltip: 'in 0 · out 1' })
-    expect(usageStats({})).toEqual({ items: [], tooltip: '' })
-    expect(usageStats({ sessionStats: { ...sessionStats, steps: 0 }, tokenUsage })).toEqual({
-      items: ['1K tokens', 'TPS 37.5', 'TTFT avg 450ms', 'Cache hit 60%', 'Cache read 30.0%', 'Input miss 20.0%', 'Output 50.0%', 'Reference cost —'],
-      tooltip: 'cache 60%  |  in 500 · out 500',
-    })
-    expect(usageStats({ tokenUsage: { uncachedInputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 500 } }).tooltip).toBe('in 0 · out 500')
-    renderUsage({ usage: { available: false, tokenUsage } })
-    expect(texts()).toEqual(['1K tokens', 'TPS —', 'TTFT avg —', 'Cache hit 60%', 'Cache read 30.0%', 'Input miss 20.0%', 'Output 50.0%', 'Reference cost —'])
-    renderUsage({})
-    expect(texts()).toEqual([])
-    expect(elements.usageStats.classList.contains('hidden')).toBe(true)
+    const current = { phase: 'ready', sessionId: 'a', usage: { available: true, percent: 2, usedTokens: 2000, contextWindow: 100000, sessionStats, tokenUsage } }
+    renderUsage(current)
+    expect(elements.usagePanel.classList.contains('hidden')).toBe(true)
+    expect(elements.usagePanel.ownerDocument.getElementById('usageStats')).toBeNull()
+    expect(elements.usageControl.closest('.composer-row')).not.toBeNull()
+    expect(elements.usageTrigger.title).toBe('Context 2% used')
+    open()
+    renderUsage(current)
+    expect(elements.usagePanel.querySelector('.usage-session')?.textContent).toBe('Session usageCumulative across requests, not context size.Input tokens500Output tokens500Cache hit rate60%')
+    const details = elements.usagePanel.querySelector<HTMLDetailsElement>('.usage-details')!
+    expect(details.open).toBe(false)
+    expect(details.textContent).toContain('Decode speed (TPS)37.5 tok/s')
+    expect(details.textContent).toContain('Time to first token (avg)450ms')
+    expect(elements.usagePanel.textContent).not.toMatch(/Reference cost|2 turns|4 steps|Input miss|Cache read/)
+    details.open = true
+    renderUsage({ ...current, usage: { ...current.usage, tokenUsage: { ...tokenUsage, outputTokens: 700 } } })
+    expect(elements.usagePanel.querySelector('.usage-details')).toBe(details)
+    expect(details.open).toBe(true)
+    expect(elements.usagePanel.querySelector('.usage-session')?.textContent).toContain('Output tokens700')
+    renderUsage({ phase: 'ready', sessionId: 'b' })
+    expect(details.open).toBe(false)
+    expect(details.classList.contains('hidden')).toBe(true)
+    expect(elements.usagePanel.querySelector('.usage-session')?.classList.contains('hidden')).toBe(true)
+    expect(elements.usagePanel.querySelector('.usage-session .usage-rows')?.textContent).toBe('')
+    expect(elements.usagePanel.querySelector('.usage-performance')?.textContent).toBe('')
   })
 
-  it('calculates the cost multiplier using validated raw session tokens and exact model IDs', () => {
-    const { usageStats, renderUsage, elements } = usageFixture()
-    const hit = { uncachedInputTokens: 0, cacheReadTokens: 100, cacheWriteTokens: 0, outputTokens: 0 }
-    const cost = (tokenUsage: unknown, model: string) => usageStats({ tokenUsage }, { model }).items.at(-1)
-    for (const model of ['deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp', 'deepseek-v4-pro']) {
-      const pro = model === 'deepseek-v4-pro'
-      expect(cost(hit, model)).toBe('Reference cost ≈1.00×')
-      expect(cost({ ...hit, cacheReadTokens: 0, uncachedInputTokens: 100 }, model)).toBe(`Reference cost ≈${pro ? '30.00' : '50.00'}×`)
-      expect(cost({ ...hit, cacheReadTokens: 0, cacheWriteTokens: 100 }, model)).toBe(`Reference cost ≈${pro ? '30.00' : '50.00'}×`)
-      expect(cost({ ...hit, cacheReadTokens: 0, outputTokens: 100 }, model)).toBe(`Reference cost ≈${pro ? '90.00' : '200.00'}×`)
-      expect(cost({ uncachedInputTokens: 100, cacheReadTokens: 300, cacheWriteTokens: 100, outputTokens: 500 }, model)).toBe(`Reference cost ≈${pro ? '51.30' : '110.30'}×`)
-    }
-    expect(cost({ ...hit, cacheReadTokens: 9999, outputTokens: 1 }, 'deepseek-flash')).toBe('Reference cost ≈1.02×')
-    expect(cost({ ...hit, cacheReadTokens: 0 }, 'deepseek-flash')).toBe('Reference cost —')
+  it('distinguishes missing session metrics from valid zero values', () => {
+    const { usageStats } = usageFixture()
+    expect(usageStats({})).toEqual({ rows: [], details: [] })
+    expect(usageStats({ tokenUsage: { uncachedInputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0 } })).toEqual({
+      rows: [['Input tokens', '0'], ['Output tokens', '0'], ['Cache hit rate', '—']], details: [],
+    })
+    expect(usageStats({ tokenUsage: { uncachedInputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 500 } }).rows).toEqual([
+      ['Input tokens', '100'], ['Output tokens', '500'], ['Cache hit rate', '0%'],
+    ])
     for (const invalid of [undefined, -1, NaN, Infinity, -Infinity]) {
-      expect(cost({ ...hit, cacheWriteTokens: invalid }, 'deepseek-flash')).toBe('Reference cost —')
+      const result = usageStats({
+        tokenUsage: { uncachedInputTokens: 100, cacheReadTokens: 300, cacheWriteTokens: invalid, outputTokens: invalid },
+        sessionStats: { decodeMs: 1000, decodeTokens: invalid, ttftMs: invalid, ttftSteps: 1 },
+      })
+      expect(result).toEqual({
+        rows: [['Input tokens', '—'], ['Output tokens', '—'], ['Cache hit rate', '—']],
+        details: [['Decode speed (TPS)', '—'], ['Time to first token (avg)', '—']],
+      })
     }
-    expect(cost({ ...hit, cacheReadTokens: Number.MAX_VALUE, outputTokens: Number.MAX_VALUE }, 'deepseek-flash')).toBe('Reference cost —')
-    expect(cost({ ...hit, cacheReadTokens: Number.MAX_VALUE / 2, outputTokens: Number.MAX_VALUE / 2 }, 'deepseek-flash')).toBe('Reference cost ≈100.50×')
-    for (const model of ['deepseek-chat', 'DeepSeek-Flash', 'deepseek-v4-flash-extra', '', 'deepseek-v4-pro ']) expect(cost(hit, model)).toBe('Reference cost —')
-    expect(usageStats({ tokenUsage: hit }, { model: 'unknown', label: 'deepseek-flash' }).items.at(-1)).toBe('Reference cost —')
-    renderUsage({ usage: { tokenUsage: hit }, models: [{ provider: 'custom', model: 'deepseek-v4-pro', selected: true }] })
-    expect(elements.usageStats.lastElementChild?.textContent).toBe('Reference cost ≈1.00×')
-    expect(elements.usageStats.title).toContain('Official DeepSeek reference pricing for deepseek-v4-pro: cache hit 1×, input miss 30×, output 90×')
-    expect(elements.usageStats.title).toContain('including prior model selections')
-    expect(elements.usageStats.title).toContain('excludes non-token charges. Not the actual provider charge.')
+    expect(usageStats({ sessionStats: { decodeMs: 1000, decodeTokens: 0, ttftMs: 0, ttftSteps: 1 } }).details).toEqual([
+      ['Decode speed (TPS)', '0.0 tok/s'], ['Time to first token (avg)', '0ms'],
+    ])
+    expect(usageStats({ sessionStats: { decodeMs: 0, decodeTokens: 100, ttftMs: 0, ttftSteps: 0 } }).details).toEqual([
+      ['Decode speed (TPS)', '—'], ['Time to first token (avg)', '—'],
+    ])
+    expect(usageStats({ tokenUsage: { uncachedInputTokens: Number.MAX_VALUE, cacheReadTokens: Number.MAX_VALUE, cacheWriteTokens: 0, outputTokens: 1 } }).rows[0]).toEqual(['Input tokens', '—'])
+  })
+
+  it('keeps usage accessible without context estimates and never substitutes session totals for context', () => {
+    const { elements, renderUsage, open } = usageFixture()
+    const usage = { available: false, percent: 95, tokenUsage: { uncachedInputTokens: 100000, cacheReadTokens: 30000, cacheWriteTokens: 0, outputTokens: 1000 } }
+    open()
+    renderUsage({ phase: 'error', sessionId: 'a', usage })
+    expect(elements.usageControl.classList.contains('hidden')).toBe(false)
+    expect(elements.usageTrigger.title).toBe('Context and session usage')
+    expect(elements.usageTrigger.classList.contains('danger')).toBe(false)
+    expect(elements.usagePanel.querySelector('.usage-context')?.classList.contains('hidden')).toBe(true)
+    expect(elements.usagePanel.querySelector('.usage-session')?.textContent).toContain('Input tokens130K')
+    expect(elements.usagePanel.querySelector<HTMLButtonElement>('.inspect-action')?.disabled).toBe(true)
+    renderUsage({ phase: 'ready', sessionId: 'a', usage })
+    expect(elements.usagePanel.querySelector<HTMLButtonElement>('.inspect-action')?.disabled).toBe(false)
+    renderUsage({})
+    expect(elements.usageControl.classList.contains('hidden')).toBe(true)
+    expect(elements.usagePanel.classList.contains('hidden')).toBe(true)
   })
 
   it('formats token counts in the generated script and renders explicit context figures', () => {
